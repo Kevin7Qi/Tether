@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertCircle,
@@ -29,6 +29,39 @@ import "@fontsource/newsreader/latin-400.css";
 import "@fontsource/newsreader/latin-600.css";
 import "./styles.css";
 import sampleMarkdown from "../../samples/sample.md?raw";
+import {
+  basename,
+  canGoUp,
+  compactPath,
+  compactPathStart,
+  dirname,
+  formatSidebarDirectoryPath,
+  localCanGoUp,
+  localDirname,
+  localParentPath,
+  normalizeLocalComparisonPath,
+  parentRemotePath,
+  pathsReferToSameLocalFile
+} from "./lib/paths.js";
+import {
+  applyConnectionTarget,
+  countLines,
+  countWords,
+  formatConnectionTarget,
+  formatFileModifiedLabel,
+  formatFileTimestamp,
+  formatLatency,
+  formatPoll,
+  formatSourcePathDetail,
+  healthCheckErrorMessage,
+  healthCheckPendingMessage,
+  healthCheckSuccessMessage,
+  statusTextForLoading
+} from "./lib/format.js";
+import { createDocumentState, documentReducer } from "./lib/documentState.js";
+import { PAGE_WIDTH_DEFAULT, clampPageWidth } from "./lib/constants.js";
+import { DocumentSurfaceFallback, FilesPanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
+import { ConnectionPalette, SettingsPanel, StatusBar, ThemeSwitch } from "./components/dialogs.jsx";
 
 const LazyDocumentSurface = React.lazy(() => import("./DocumentSurface.jsx"));
 const BOOT_PREFERENCES_KEY = "remoteMarkdownPreview.preferences";
@@ -57,10 +90,6 @@ const SOURCE_SESSION_LIMIT = 8;
 const SIDEBAR_MIN_WIDTH = 208;
 const SIDEBAR_MAX_WIDTH = 520;
 const SIDEBAR_DEFAULT_WIDTH = 256;
-const PAGE_WIDTH_MIN = 560;
-const PAGE_WIDTH_MAX = 1320;
-const PAGE_WIDTH_DEFAULT = 980;
-const PAGE_WIDTH_STEP = 20;
 const THEME_OPTIONS = ["system", "dark", "light"];
 const defaultPreferences = {
   theme: "system",
@@ -231,17 +260,15 @@ function App() {
   const [localSampleContent, setLocalSampleContent] = useState(initialSampleMarkdown);
   const [localWorkspaceDirectory, setLocalWorkspaceDirectory] = useState(null);
   const [localFile, setLocalFile] = useState(null);
-  const [content, setContent] = useState(initialSampleMarkdown);
-  const [editorContent, setEditorContent] = useState(initialSampleMarkdown);
-  const [remoteShadow, setRemoteShadow] = useState(null);
-  const [fileVersion, setFileVersion] = useState(null);
+  const [documentState, dispatchDocument] = useReducer(documentReducer, undefined, () =>
+    createDocumentState(initialSampleMarkdown)
+  );
+  const { content, editorContent, remoteShadow, fileVersion, dirty, conflict } = documentState;
   const [fileMetadata, setFileMetadata] = useState(null);
   const [lastRefresh, setLastRefresh] = useState(null);
   const [connected, setConnected] = useState(false);
   const [watching, setWatching] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const [conflict, setConflict] = useState(false);
   const [preferences, setPreferences] = useState(initialPreferences);
   const [fontsReady, setFontsReady] = useState(initialFontsReady);
   const [systemTheme, setSystemTheme] = useState(getSystemTheme);
@@ -274,6 +301,7 @@ function App() {
   const documentRefreshTimerRef = useRef(null);
   const treeRefreshTimerRef = useRef(null);
   const sourceOpeningRef = useRef(null);
+  const saveActionRef = useRef(null);
 
   useEffect(() => {
     remoteApi.getDefaultPrivateKeyPath().then((response) => {
@@ -434,9 +462,19 @@ function App() {
 
   useEffect(() => {
     function onKeyDown(event) {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      if (event.isComposing) return;
+      const key = event.key ? event.key.toLowerCase() : "";
+
+      if ((event.ctrlKey || event.metaKey) && key === "k") {
         event.preventDefault();
         setConnectionPaletteOpen((open) => !open);
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && key === "s") {
+        event.preventDefault();
+        saveActionRef.current?.();
+        return;
       }
 
       if (event.key === "Escape") {
@@ -480,6 +518,9 @@ function App() {
   }, [resizingSidebar]);
 
   const previewContent = dirty ? editorContent : content;
+  // Defer the rendered-preview content so typing in the textarea stays responsive
+  // while the heavy Markdown re-render runs at lower priority.
+  const deferredPreviewContent = useDeferredValue(previewContent);
   const hasLocalDocument = Boolean(localFile || localWorkspaceDirectory);
   const documentSource = connected ? "remote" : hasLocalDocument ? "local" : sampleSourceOpen ? "sample" : "none";
   const documentTitle = connected
@@ -555,8 +596,8 @@ function App() {
         : documentSource === "sample"
           ? "sample"
           : "idle";
-  const wordCount = countWords(previewContent);
-  const lineCount = countLines(editorContent);
+  const wordCount = useMemo(() => countWords(deferredPreviewContent), [deferredPreviewContent]);
+  const lineCount = useMemo(() => countLines(editorContent), [editorContent]);
   const sidebarRailMode = sidebarCollapsed || compactLayout;
   const showLocalSource = sampleSourceOpen;
   const expandedSidebarWidth = Math.max(sidebarWidth, SIDEBAR_MIN_WIDTH);
@@ -567,9 +608,7 @@ function App() {
     remoteApi.readLocalSample().then((response) => {
       if (canceled || !response?.ok || !response.file) return;
       setLocalSampleContent(response.file.content);
-      setContent(response.file.content);
-      setEditorContent(response.file.content);
-      setFileVersion(response.file.version);
+      dispatchDocument({ type: "LOAD_FRESH", file: response.file });
       setFileMetadata(response.file.metadata);
       setLastRefresh(response.file.refreshedAt);
       setFileEntries([
@@ -589,29 +628,17 @@ function App() {
   function applyRemoteFile(file) {
     setLastRefresh(file.refreshedAt);
     setError(null);
-
-    if (dirty) {
-      setRemoteShadow(file);
-      setConflict(true);
-      return;
-    }
-
-    setContent(file.content);
-    setEditorContent(file.content);
-    setFileVersion(file.version);
-    setFileMetadata(file.metadata);
-    setRemoteShadow(null);
-    setConflict(false);
+    // Metadata only updates when adopting the file; during a conflict the open
+    // file's metadata is preserved (matching the pre-reducer behavior).
+    if (!dirty) setFileMetadata(file.metadata);
+    dispatchDocument({ type: "REMOTE_UPDATE", file });
   }
 
   function applyFreshFile(file) {
     captureScrollRatio(previewRef, scrollRatioRef);
-    setContent(file.content);
-    setEditorContent(file.content);
-    setFileVersion(file.version);
+    dispatchDocument({ type: "LOAD_FRESH", file });
     setFileMetadata(file.metadata);
     setLastRefresh(file.refreshedAt);
-    setRemoteShadow(null);
     setError(null);
   }
 
@@ -720,8 +747,6 @@ function App() {
       setWatching(false);
       setLocalWorkspaceDirectory(null);
       setLocalFile(null);
-      setDirty(false);
-      setConflict(false);
       setSelectedPath(openedPath);
       setCurrentDirectory(directory);
       setFileEntries(response.entries || []);
@@ -729,9 +754,7 @@ function App() {
         applyFreshFile(response.file);
         setStatus((current) => ({ ...current, state: "connected", message: "Remote file opened" }));
       } else {
-        setContent(chooseRemoteFileMarkdown);
-        setEditorContent(chooseRemoteFileMarkdown);
-        setFileVersion(null);
+        dispatchDocument({ type: "SET_TEXT", text: chooseRemoteFileMarkdown });
         setFileMetadata(null);
         setLastRefresh(null);
         setStatus((current) => ({
@@ -845,8 +868,6 @@ function App() {
 
     setSelectedPath(entry.path);
     setConnection((current) => ({ ...current, remotePath: entry.path }));
-    setDirty(false);
-    setConflict(false);
     applyFreshFile(response.file);
     const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
     rememberSourceSession(
@@ -890,9 +911,6 @@ function App() {
     setLocalWorkspaceDirectory(response.directory || localDirname(response.file.path));
     setCurrentDirectory(response.directory || localDirname(response.file.path));
     setFileEntries(response.entries || []);
-    setDirty(false);
-    setConflict(false);
-    setRemoteShadow(null);
     applyFreshFile(response.file);
     rememberSourceSession(buildLocalFileSourceSession(response.file.path, response.directory || localDirname(response.file.path)));
     setStatus({ state: "idle", message: "Opened local file", checkedAt: null, metadata: response.file.metadata });
@@ -929,12 +947,7 @@ function App() {
     setSelectedPath("");
     setCurrentDirectory(response.directory);
     setFileEntries(response.entries || []);
-    setContent(chooseLocalFileMarkdown);
-    setEditorContent(chooseLocalFileMarkdown);
-    setDirty(false);
-    setConflict(false);
-    setRemoteShadow(null);
-    setFileVersion(null);
+    dispatchDocument({ type: "SET_TEXT", text: chooseLocalFileMarkdown });
     setFileMetadata(null);
     setLastRefresh(null);
     rememberSourceSession(buildLocalFolderSourceSession(response.directory, response.directory, ""));
@@ -964,9 +977,6 @@ function App() {
     setLocalWorkspaceDirectory(currentDirectory);
     setLocalFile({ path: response.file.path });
     setSelectedPath(response.file.path);
-    setDirty(false);
-    setConflict(false);
-    setRemoteShadow(null);
     applyFreshFile(response.file);
     const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
     if (activeSession?.kind === "local-folder") {
@@ -1048,12 +1058,7 @@ function App() {
     setLocalWorkspaceDirectory(null);
     setLocalFile(null);
     setLocalSampleContent(file.content);
-    setContent(file.content);
-    setEditorContent(file.content);
-    setDirty(false);
-    setConflict(false);
-    setRemoteShadow(null);
-    setFileVersion(file.version);
+    dispatchDocument({ type: "LOAD_FRESH", file });
     setFileMetadata(file.metadata);
     setLastRefresh(file.refreshedAt);
     setSelectedPath(file.path || sampleEntry.path);
@@ -1095,12 +1100,7 @@ function App() {
     captureScrollRatio(previewRef, scrollRatioRef);
     setLocalWorkspaceDirectory(null);
     setLocalFile(null);
-    setContent("");
-    setEditorContent("");
-    setDirty(false);
-    setConflict(false);
-    setRemoteShadow(null);
-    setFileVersion(null);
+    dispatchDocument({ type: "SET_TEXT", text: "" });
     setFileMetadata(null);
     setLastRefresh(null);
     setSelectedPath("");
@@ -1256,9 +1256,6 @@ function App() {
         setSelectedPath(fileResponse.file.path);
         setCurrentDirectory(directory);
         setFileEntries(entriesResponse.ok ? entriesResponse.entries : []);
-        setDirty(false);
-        setConflict(false);
-        setRemoteShadow(null);
         applyFreshFile(fileResponse.file);
         rememberSourceSession(buildLocalFileSourceSession(fileResponse.file.path, directory, session.id));
         setStatus({ state: "idle", message: "Restored local file", checkedAt: null, metadata: fileResponse.file.metadata });
@@ -1279,10 +1276,6 @@ function App() {
       setLocalWorkspaceDirectory(directory);
       setCurrentDirectory(directory);
       setFileEntries(entriesResponse.entries);
-      setDirty(false);
-      setConflict(false);
-      setRemoteShadow(null);
-      setFileVersion(null);
       setFileMetadata(null);
       setLastRefresh(null);
 
@@ -1297,8 +1290,7 @@ function App() {
 
       setLocalFile(null);
       setSelectedPath("");
-      setContent(chooseLocalFileMarkdown);
-      setEditorContent(chooseLocalFileMarkdown);
+      dispatchDocument({ type: "SET_TEXT", text: chooseLocalFileMarkdown });
       setError(fileResponse?.error || null);
       setStatus({ state: "idle", message: "Restored local folder", checkedAt: null, metadata: null });
       rememberSourceSession(buildLocalFolderSourceSession(session.rootPath || directory, directory, "", session.id));
@@ -1308,16 +1300,15 @@ function App() {
     }
   }
 
-  function onEditorChange(event) {
-    setEditorContent(event.target.value);
-    setDirty(event.target.value !== content);
-  }
+  // The reducer derives dirty from the value vs. the base and clears a stuck
+  // conflict when edits are reverted, so this stays stable (no deps needed).
+  const onEditorChange = useCallback((event) => {
+    dispatchDocument({ type: "EDIT", value: event.target.value });
+  }, []);
 
   function useLatestRemote() {
     if (!remoteShadow) return;
     applyFreshFile(remoteShadow);
-    setDirty(false);
-    setConflict(false);
   }
 
   async function keepLocalEditsAndOverwrite() {
@@ -1352,8 +1343,6 @@ function App() {
 
     if (documentSource === "local") setLocalFile({ path: response.file.path });
     applyFreshFile(response.file);
-    setDirty(false);
-    setConflict(false);
     setStatus((current) => ({
       ...current,
       state: documentSource === "remote" ? "connected" : "idle",
@@ -1379,8 +1368,6 @@ function App() {
 
       setLocalSampleContent(editorContent);
       applyFreshFile(response.file);
-      setDirty(false);
-      setConflict(false);
       setStatus({ state: "idle", message: "Saved local sample", checkedAt: null, metadata: response.file.metadata });
       return;
     }
@@ -1397,8 +1384,10 @@ function App() {
         setError(response.error);
         if (response.error.code === "LOCAL_CONFLICT") {
           const latest = localFile?.path ? await remoteApi.readLocalFile(localFile.path) : null;
-          if (latest?.ok && latest.file) setRemoteShadow(latest.file);
-          setConflict(true);
+          dispatchDocument({
+            type: "CONFLICT_DETECTED",
+            shadow: latest?.ok && latest.file ? latest.file : remoteShadow
+          });
         }
         setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
         return;
@@ -1406,8 +1395,6 @@ function App() {
 
       setLocalFile({ path: response.file.path });
       applyFreshFile(response.file);
-      setDirty(false);
-      setConflict(false);
       setStatus({ state: "idle", message: "Saved local file", checkedAt: null, metadata: response.file.metadata });
       return;
     }
@@ -1424,15 +1411,15 @@ function App() {
       setError(response.error);
       if (response.error.code === "REMOTE_CONFLICT") {
         const latest = selectedPath ? await remoteApi.openFile(selectedPath) : null;
-        if (latest?.ok && latest.file) setRemoteShadow(latest.file);
-        setConflict(true);
+        dispatchDocument({
+          type: "CONFLICT_DETECTED",
+          shadow: latest?.ok && latest.file ? latest.file : remoteShadow
+        });
       }
       return;
     }
 
     applyFreshFile(response.file);
-    setDirty(false);
-    setConflict(false);
     setStatus((current) => ({ ...current, message: "Saved remote file" }));
   }
 
@@ -1524,6 +1511,12 @@ function App() {
   const railToggleTitle = compactLayout ? "Show sidebar" : "Open sidebar";
   const headerToggleTitle = compactLayout ? "Close sidebar" : "Collapse sidebar";
 
+  // Keep the latest save action in a ref so the global Cmd/Ctrl+S handler can
+  // invoke the current closure without re-subscribing the keydown listener.
+  saveActionRef.current = () => {
+    if (canSave && !busy) saveCurrentFile();
+  };
+
   return (
     <div
       className={`app-shell ${zenMode ? "zen" : ""} ${resizingSidebar ? "is-resizing-sidebar" : ""} ${
@@ -1544,7 +1537,18 @@ function App() {
         >
           <div className="sidebar-expanded">
             <div className="brand-row">
-              <div className="brand-lockup" onClick={triggerTetherPing}>
+              <div
+                className="brand-lockup"
+                role="button"
+                tabIndex={0}
+                title="Run a connection health check"
+                onClick={triggerTetherPing}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  triggerTetherPing();
+                }}
+              >
                 <TetherGlyph pingKey={tetherPing?.id} />
                 <strong>tether</strong>
                 <span>v0.0</span>
@@ -1712,8 +1716,8 @@ function App() {
             <span>
               <strong>conflict</strong> - {documentTitle} changed while you were editing
             </span>
-            <button onClick={useLatestRemote}>take theirs</button>
-            <button className="warn" onClick={keepLocalEditsAndOverwrite}>
+            <button disabled={busy} onClick={useLatestRemote}>take theirs</button>
+            <button className="warn" disabled={busy} onClick={keepLocalEditsAndOverwrite}>
               keep mine - overwrite
             </button>
           </div>
@@ -1729,7 +1733,7 @@ function App() {
           }
         >
           <LazyDocumentSurface
-            content={previewContent}
+            content={deferredPreviewContent}
             copyText={copyCodeText}
             dirty={dirty}
             documentEyebrow={documentEyebrow}
@@ -1798,836 +1802,6 @@ function App() {
   );
 }
 
-function TetherGlyph({ dashed = false, pingKey = null }) {
-  return (
-    <svg className="tether-glyph" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <circle cx="3.6" cy="12.4" r="2.1" fill="var(--accent)" />
-      <path
-        d="M5.4 10.6 C 7.4 8.6, 8.4 7.4, 10.4 5.4"
-        stroke="var(--ink3)"
-        strokeDasharray={dashed ? "1.6 1.6" : undefined}
-        strokeWidth="1.2"
-        fill="none"
-      />
-      <circle cx="12" cy="4" r="2.4" fill="none" stroke="var(--ink)" strokeWidth="1.6" />
-      {pingKey && <circle key={pingKey} className="tether-ping-dot" cx="3.6" cy="12.4" r="1.35" fill="var(--accent)" />}
-    </svg>
-  );
-}
-
-function DocumentSurfaceFallback({ loadingMessage, loadingTitle, previewRef }) {
-  return (
-    <div className="document-grid mode-preview is-loading">
-      <section ref={previewRef} className="preview-pane preview-loading-pane" aria-label="Opening document">
-        <article className="document-loading" role="status" aria-live="polite">
-          <span className="loading-mark" aria-hidden="true">
-            <TetherGlyph pingKey="loading" />
-          </span>
-          <strong>{loadingTitle || "loading renderer"}</strong>
-          <span>{loadingMessage || "Preparing the Markdown view."}</span>
-        </article>
-      </section>
-    </div>
-  );
-}
-
-function SourcesPanel({
-  activeSessionId,
-  connected,
-  documentSource,
-  localWorkspaceDirectory,
-  onCloseLocalSource,
-  onCloseSampleSource,
-  onDisconnect,
-  onEditConnection,
-  onForgetSession,
-  onLoadSample,
-  onOpenPalette,
-  onOpenSession,
-  showLocalSource,
-  sourceLabel,
-  sourceSessions
-}) {
-  const hasActiveRemoteSession = sourceSessions.some((session) => session.id === activeSessionId && session.kind === "remote");
-  const sampleSourceActive = showLocalSource && documentSource === "sample";
-
-  return (
-    <section className="sources-panel">
-      <div className="sidebar-label">
-        <span>sources</span>
-        <i />
-      </div>
-      {connected && !hasActiveRemoteSession && (
-        <div className={`source-row ${documentSource === "remote" ? "active" : ""}`} aria-label="Remote source">
-          <span className="source-icon">
-            <span className="status-dot pulse" />
-          </span>
-          <span className="source-name">{sourceLabel}</span>
-          <span className="tag">ssh</span>
-          <button
-            className="source-edit"
-            type="button"
-            title="Edit connection"
-            aria-label="Edit connection"
-            onClick={(event) => {
-              event.stopPropagation();
-              onEditConnection();
-            }}
-          >
-            <Settings size={11} aria-hidden="true" />
-          </button>
-          <button
-            className="source-remove"
-            type="button"
-            title="Disconnect"
-            aria-label="Disconnect remote source"
-            onClick={(event) => {
-              event.stopPropagation();
-              onDisconnect();
-            }}
-          >
-            x
-          </button>
-        </div>
-      )}
-      {sourceSessions.map((session) => {
-        const active = session.id === activeSessionId;
-        return (
-          <div
-            key={session.id}
-            className={`source-row remembered-source ${active ? "active" : ""}`}
-            role={active ? undefined : "button"}
-            tabIndex={active ? undefined : 0}
-            aria-current={active ? "true" : undefined}
-            title={session.title || session.detail || session.label}
-            onClick={active ? undefined : () => onOpenSession(session)}
-            onKeyDown={
-              active
-                ? undefined
-                : (event) => {
-                    if (event.key !== "Enter" && event.key !== " ") return;
-                    event.preventDefault();
-                    onOpenSession(session);
-                  }
-            }
-          >
-            <span className="source-icon">
-              {session.kind === "remote" ? (
-                <span className={`status-dot ${active && connected ? "pulse connected" : ""}`} />
-              ) : session.kind === "local-file" ? (
-                <FileText size={13} />
-              ) : (
-                <Folder size={13} />
-              )}
-            </span>
-            <span className="source-copy">
-              <span className="source-name">{session.label}</span>
-              {session.detail && <span className="source-detail">{session.detail}</span>}
-            </span>
-            <span className="tag">{session.tag}</span>
-            {active && session.kind === "remote" && (
-              <button
-                className="source-edit"
-                type="button"
-                title="Edit connection"
-                aria-label="Edit connection"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onEditConnection();
-                }}
-              >
-                <Settings size={11} aria-hidden="true" />
-              </button>
-            )}
-            {active && session.kind === "remote" ? (
-              <button
-                className="source-remove"
-                type="button"
-                title="Disconnect"
-                aria-label="Disconnect remote source"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onDisconnect();
-                }}
-              >
-                x
-              </button>
-            ) : active ? (
-              <button
-                className="source-remove"
-                type="button"
-                title="Close source"
-                aria-label={`Close ${session.label}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onCloseLocalSource();
-                }}
-              >
-                x
-              </button>
-            ) : (
-              <button
-                className="source-remove"
-                type="button"
-                title="Forget source"
-                aria-label={`Forget ${session.label}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onForgetSession(session.id);
-                }}
-              >
-                x
-              </button>
-            )}
-          </div>
-        );
-      })}
-      {showLocalSource && (
-        <div
-          className={`source-row ${sampleSourceActive ? "active" : ""}`}
-          role={sampleSourceActive ? undefined : "button"}
-          tabIndex={sampleSourceActive ? undefined : 0}
-          aria-current={sampleSourceActive ? "true" : undefined}
-          aria-label={sampleSourceActive ? "Local sample source" : "Open local sample source"}
-          title={sampleSourceActive ? "Local sample is open" : "Open local sample"}
-          onClick={sampleSourceActive ? undefined : onLoadSample}
-          onKeyDown={
-            sampleSourceActive
-              ? undefined
-              : (event) => {
-                  if (event.key !== "Enter" && event.key !== " ") return;
-                  event.preventDefault();
-                  onLoadSample();
-                }
-          }
-        >
-          <span className="source-icon">
-            <Folder size={13} />
-          </span>
-          <span className="source-name">local sample</span>
-          <span className="tag">local</span>
-          <button
-            className="source-remove"
-            type="button"
-            title="Close local sample"
-            aria-label="Close local sample"
-            onClick={(event) => {
-              event.stopPropagation();
-              onCloseSampleSource();
-            }}
-          >
-            x
-          </button>
-        </div>
-      )}
-      <button className="source-row add-source" type="button" onClick={onOpenPalette}>
-        <span className="source-icon">+</span>
-        <span className="source-name">add source</span>
-      </button>
-    </section>
-  );
-}
-
-function FilesPanel({
-  connected,
-  currentDirectory,
-  documentSource,
-  entries,
-  sampleSourceOpen,
-  localFile,
-  rootLabel,
-  selectedPath,
-  sourceLoading,
-  sourceLoadingMessage,
-  sourceLoadingTitle,
-  treeLoading,
-  onOpenEntry,
-  onRefresh,
-  onLoadSample
-}) {
-  const showLocalTree = !connected && documentSource === "local";
-  const canRefreshTree = !sourceLoading && (connected || sampleSourceOpen || showLocalTree);
-  const showSourceLoading = sourceLoading;
-  const showSampleFile = !connected && documentSource === "sample";
-  const directoryPath = formatSidebarDirectoryPath(rootLabel || currentDirectory);
-
-  return (
-    <section className="sidebar-section files-section">
-      <div className="sidebar-label">
-        <span>files</span>
-        <i />
-      </div>
-      {directoryPath && !sourceLoading && (
-        <div className="sidebar-path" title={directoryPath.full} aria-label={`Current folder: ${directoryPath.full}`}>
-          <span>{directoryPath.display}</span>
-        </div>
-      )}
-
-      <div className="file-list" aria-label="Markdown files">
-        {showSourceLoading && (
-          <div className="sidebar-loading" role="status" aria-live="polite">
-            <span className="loading-mark" aria-hidden="true">
-              <TetherGlyph pingKey="loading" />
-            </span>
-            <strong>{sourceLoadingTitle || (connected ? "opening source" : "connecting source")}</strong>
-            <span>{sourceLoadingMessage || statusTextForLoading(documentSource)}</span>
-          </div>
-        )}
-
-        {!showSourceLoading && showSampleFile && (
-          <button className="file-row active" onClick={onLoadSample}>
-            <FileText size={16} />
-            <span>sample.md</span>
-          </button>
-        )}
-
-        {!showSourceLoading && documentSource === "none" && <div className="empty-state">No source open</div>}
-
-        {!showSourceLoading && connected && canGoUp(currentDirectory) && (
-          <button
-            className="file-row"
-            onClick={() =>
-              onOpenEntry({
-                name: "..",
-                path: parentRemotePath(currentDirectory),
-                type: "directory"
-              })
-            }
-          >
-            <FolderOpen size={16} />
-            <span>..</span>
-          </button>
-        )}
-
-        {!showSourceLoading && showLocalTree && localCanGoUp(currentDirectory) && (
-          <button
-            className="file-row"
-            onClick={() =>
-              onOpenEntry({
-                name: "..",
-                path: localParentPath(currentDirectory),
-                type: "directory",
-                isMarkdown: true
-              })
-            }
-          >
-            <FolderOpen size={16} />
-            <span>..</span>
-          </button>
-        )}
-
-        {!showSourceLoading && (connected || showLocalTree) && entries.length === 0 && (
-          <div className="empty-state">{treeLoading ? "Loading..." : "No files in this folder"}</div>
-        )}
-
-        {!showSourceLoading &&
-          (connected || showLocalTree) &&
-          entries.map((entry) => (
-            <button
-              key={entry.path}
-              className={`file-row ${entry.path === selectedPath ? "active" : ""} ${
-                entry.name.startsWith(".") ? "muted" : ""
-              }`}
-              disabled={entry.type === "file" && !entry.isMarkdown}
-              onClick={() => onOpenEntry(entry)}
-              title={entry.path}
-            >
-              {entry.type === "directory" ? <FolderOpen size={16} /> : <File size={16} />}
-              <span>{entry.name}</span>
-            </button>
-          ))}
-      </div>
-      {canRefreshTree && (
-        <button
-          className={`file-refresh ${treeLoading ? "loading" : ""}`}
-          type="button"
-          disabled={treeLoading}
-          aria-busy={treeLoading}
-          onClick={onRefresh}
-        >
-          <RefreshCw size={12} />
-          {treeLoading ? "refreshing" : "refresh tree"}
-        </button>
-      )}
-    </section>
-  );
-}
-
-function ConnectionPalette({
-  busy,
-  connected,
-  connection,
-  connectionProfile,
-  defaultPrivateKeyPath,
-  error,
-  open,
-  onChoosePrivateKey,
-  onClose,
-  onConnect,
-  onDisconnect,
-  onOpenLocalDirectory,
-  onOpenLocalFile,
-  onUpdate,
-  status
-}) {
-  if (!open) return null;
-
-  return (
-    <div className="palette-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="connection-palette"
-        role="dialog"
-        aria-modal="true"
-        aria-label={connected ? "Edit connection" : "Open or connect"}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="palette-header">
-          <span>{connected ? "edit connection" : "open / connect"}</span>
-          <button className="esc-chip" type="button" onClick={onClose}>
-            esc
-          </button>
-        </div>
-
-        <div className="target-input">
-          <span>&gt;</span>
-          <input
-            value={formatConnectionTarget(connection)}
-            onChange={(event) => applyConnectionTarget(event.target.value, onUpdate)}
-            placeholder="user@host:/path/to/doc.md - or use local actions below"
-            spellCheck="false"
-          />
-        </div>
-        <p className="palette-helper">Host aliases from ~/.ssh/config work; an empty remote path browses from home.</p>
-
-        <div className="palette-section">
-          <div className="palette-label">local</div>
-          <div className="palette-local-actions">
-            <button type="button" onClick={onOpenLocalDirectory}>
-              <FolderOpen size={13} />
-              open folder...
-            </button>
-            <button type="button" onClick={onOpenLocalFile}>
-              <FileText size={13} />
-              open file...
-            </button>
-          </div>
-        </div>
-
-        <ConnectionPanel
-          connected={connected}
-          connection={connection}
-          connectionProfile={connectionProfile}
-          defaultPrivateKeyPath={defaultPrivateKeyPath}
-          error={error}
-          onChoosePrivateKey={onChoosePrivateKey}
-          onUpdate={onUpdate}
-          status={status}
-        />
-
-        <div className="palette-footer">
-          {connected ? (
-            <button className="disconnect-action" type="button" onClick={onDisconnect}>
-              disconnect
-            </button>
-          ) : (
-            <span className="palette-hint">local files or ssh remotes</span>
-          )}
-          <span className="footer-spacer" />
-          <button className="outline-action" type="button" onClick={onClose}>
-            cancel
-          </button>
-          <button className="connect-action" type="button" disabled={busy} onClick={onConnect}>
-            {connected ? "reconnect" : "connect"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ConnectionPanel({
-  connected,
-  connection,
-  connectionProfile,
-  defaultPrivateKeyPath,
-  error,
-  onChoosePrivateKey,
-  onUpdate,
-  status
-}) {
-  return (
-    <section className="sidebar-section">
-      <h2>Connection</h2>
-      <div className={`connection-note ${error ? "error" : connected ? "connected" : ""}`}>
-        {error
-          ? error.message
-          : connected
-            ? "Edit fields and reconnect to apply changes."
-            : "Enter host and username. The remote file path is optional; you can pick a Markdown file after connecting."}
-      </div>
-      <div className="connection-fields">
-        <Field label="Host">
-          <input
-            value={connection.host}
-            autoComplete="off"
-            onChange={(event) => onUpdate("host", event.target.value)}
-            placeholder="docs.example.com"
-          />
-        </Field>
-        <Field label="Username">
-          <input
-            value={connection.username}
-            autoComplete="username"
-            onChange={(event) => onUpdate("username", event.target.value)}
-            placeholder="deploy"
-          />
-        </Field>
-      </div>
-      <div className="connection-fields compact">
-        <Field label="Port">
-          <input
-            type="number"
-            min="1"
-            value={connection.port}
-            onChange={(event) => onUpdate("port", event.target.value)}
-          />
-        </Field>
-        <Field label="Polling">
-          <SegmentedControl
-            ariaLabel="Polling interval"
-            options={[
-              { label: "1s", value: 1000 },
-              { label: "2s", value: 2000 },
-              { label: "5s", value: 5000 }
-            ]}
-            value={Number(connection.intervalMs)}
-            onChange={(value) => onUpdate("intervalMs", value)}
-          />
-        </Field>
-      </div>
-      <Field label="Authentication">
-        <SegmentedControl
-          ariaLabel="Authentication method"
-          options={[
-            { label: "auto", value: "auto" },
-            { label: "key", value: "privateKey" },
-            { label: "password", value: "password" }
-          ]}
-          value={connection.authMode}
-          onChange={(value) => onUpdate("authMode", value)}
-        />
-      </Field>
-
-      {connection.authMode === "password" ? (
-        <Field label="Password">
-          <input
-            type="password"
-            value={connection.password}
-            autoComplete="current-password"
-            onChange={(event) => onUpdate("password", event.target.value)}
-            placeholder="Kept in memory only"
-          />
-        </Field>
-      ) : (
-        <>
-          <Field label="Private Key Path">
-            <div className="input-row">
-              <input
-                value={connection.privateKeyPath}
-                autoComplete="off"
-                onChange={(event) => onUpdate("privateKeyPath", event.target.value)}
-                placeholder={
-                  connection.authMode === "auto"
-                    ? "Optional; Auto checks SSH config and common keys"
-                    : defaultPrivateKeyPath || "Choose or enter a private key"
-                  }
-                />
-              <button
-                className="icon-button compact"
-                type="button"
-                onClick={onChoosePrivateKey}
-                title="Choose private key"
-              >
-                <FolderOpen size={16} />
-              </button>
-            </div>
-          </Field>
-          <Field label="Key Passphrase">
-            <input
-              type="password"
-              value={connection.passphrase}
-              autoComplete="off"
-              onChange={(event) => onUpdate("passphrase", event.target.value)}
-              placeholder="Optional"
-            />
-          </Field>
-        </>
-      )}
-
-      <Field label="Remote Markdown Path">
-        <input
-          value={connection.remotePath}
-          autoComplete="off"
-          onChange={(event) => onUpdate("remotePath", event.target.value)}
-          placeholder="Optional: /srv/docs/readme.md"
-        />
-      </Field>
-
-      <ConnectionProfile profile={connectionProfile} />
-    </section>
-  );
-}
-
-function SegmentedControl({ ariaLabel, options, value, onChange }) {
-  return (
-    <div className="segmented-control" role="group" aria-label={ariaLabel}>
-      {options.map((option) => (
-        <button
-          key={option.value}
-          className={option.value === value ? "active" : ""}
-          type="button"
-          onClick={() => onChange(option.value)}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function PageWidthControl({ value, onChange }) {
-  const width = clampPageWidth(value);
-
-  function updateWidth(nextValue) {
-    onChange(clampPageWidth(nextValue));
-  }
-
-  return (
-    <div className="width-control">
-      <input
-        aria-label="Page width"
-        type="range"
-        min={PAGE_WIDTH_MIN}
-        max={PAGE_WIDTH_MAX}
-        step={PAGE_WIDTH_STEP}
-        value={width}
-        onChange={(event) => updateWidth(event.target.value)}
-      />
-      <label className="width-value">
-        <input
-          aria-label="Page width in pixels"
-          type="number"
-          min={PAGE_WIDTH_MIN}
-          max={PAGE_WIDTH_MAX}
-          step={PAGE_WIDTH_STEP}
-          value={width}
-          onChange={(event) => updateWidth(event.target.value)}
-        />
-        <span>px</span>
-      </label>
-    </div>
-  );
-}
-
-function ThemeSwitch({ value, resolvedTheme, onChange }) {
-  const options = [
-    { value: "system", label: `Use system theme (${resolvedTheme})`, icon: Monitor },
-    { value: "dark", label: "Use dark theme", icon: Moon },
-    { value: "light", label: "Use light theme", icon: Sun }
-  ];
-
-  return (
-    <div className="theme-switch" role="group" aria-label="Theme mode">
-      {options.map((option) => {
-        const Icon = option.icon;
-        return (
-          <button
-            key={option.value}
-            aria-label={option.label}
-            aria-pressed={value === option.value}
-            className={value === option.value ? "active" : ""}
-            title={option.label}
-            type="button"
-            onClick={() => onChange(option.value)}
-          >
-            <Icon size={13} aria-hidden="true" />
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function ConnectionProfile({ profile }) {
-  if (!profile) return null;
-
-  const resolvedHost = profile.host
-    ? `${profile.username || "unknown"}@${profile.host}:${profile.port || 22}`
-    : "Enter a host to resolve SSH settings";
-  const keyCandidates = profile.privateKeyCandidates || [];
-  const configuredKeys = profile.configuredIdentityFiles || [];
-
-  return (
-    <div className="connection-profile" aria-label="Resolved connection settings">
-      <div className="profile-row">
-        <span>resolved</span>
-        <strong>{resolvedHost}</strong>
-      </div>
-      {profile.hostAlias && profile.hostAlias !== profile.host && (
-        <div className="profile-row">
-          <span>alias</span>
-          <strong>{profile.hostAlias}</strong>
-        </div>
-      )}
-      <div className="profile-row">
-        <span>auth</span>
-        <strong>{profile.agentAvailable ? "keys + agent" : "keys only"}</strong>
-      </div>
-      {configuredKeys.length > 0 && (
-        <div className="profile-list">
-          <span>ssh config</span>
-          {configuredKeys.map((keyPath) => (
-            <code key={keyPath}>{keyPath}</code>
-          ))}
-        </div>
-      )}
-      <div className="profile-list">
-        <span>auto keys</span>
-        {keyCandidates.length > 0 ? (
-          keyCandidates.map((keyPath) => <code key={keyPath}>{keyPath}</code>)
-        ) : (
-          <em>None found yet</em>
-        )}
-      </div>
-      {profile.warnings?.length > 0 && (
-        <div className="profile-warnings">
-          {profile.warnings.map((warning) => (
-            <p key={warning}>{warning}</p>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SettingsPanel({ open, preferences, onClose, onUpdate }) {
-  if (!open) return null;
-
-  return (
-    <div className="palette-backdrop" role="presentation" onClick={onClose}>
-      <div className="settings-panel" role="dialog" aria-modal="true" aria-label="Settings" onClick={(event) => event.stopPropagation()}>
-        <div className="palette-header">
-          <span>settings</span>
-          <button className="esc-chip" type="button" onClick={onClose}>
-            esc
-          </button>
-        </div>
-
-        <section className="settings-section">
-          <div className="palette-label">appearance</div>
-          <div className="settings-row">
-            <div>
-              <strong>theme</strong>
-            </div>
-            <SegmentedControl
-              ariaLabel="Theme"
-              options={[
-                { label: "system", value: "system" },
-                { label: "dark", value: "dark" },
-                { label: "light", value: "light" }
-              ]}
-              value={preferences.theme}
-              onChange={(value) => onUpdate("theme", value)}
-            />
-          </div>
-
-          <div className="settings-row">
-            <div>
-              <strong>accent</strong>
-            </div>
-            <div className="accent-picker" role="group" aria-label="Accent color">
-              {[
-                { label: "phosphor", value: "phosphor", color: "#43b37a" },
-                { label: "amber", value: "amber", color: "#dba33e" },
-                { label: "cobalt", value: "cobalt", color: "#4d80e8" }
-              ].map((accent) => (
-                <button
-                  key={accent.value}
-                  aria-label={`${accent.label} accent`}
-                  aria-pressed={preferences.accent === accent.value}
-                  className={`accent-option accent-${accent.value} ${preferences.accent === accent.value ? "active" : ""}`}
-                  style={{ "--swatch": accent.color }}
-                  title={accent.label}
-                  type="button"
-                  onClick={() => onUpdate("accent", accent.value)}
-                >
-                  <i aria-hidden="true" />
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="settings-row">
-            <div>
-              <strong>reading</strong>
-            </div>
-            <SegmentedControl
-              ariaLabel="Reading font"
-              options={[
-                { label: "sans", value: "sans" },
-                { label: "serif", value: "serif" }
-              ]}
-              value={preferences.readingFont}
-              onChange={(value) => onUpdate("readingFont", value)}
-            />
-          </div>
-
-          <div className="settings-row">
-            <div>
-              <strong>width</strong>
-            </div>
-            <PageWidthControl
-              value={preferences.pageWidthPx}
-              onChange={(value) => onUpdate("pageWidthPx", value)}
-            />
-          </div>
-        </section>
-
-      </div>
-    </div>
-  );
-}
-
-function StatusBar({ lineCount, statusLabel, syncLabel, tone, wordCount }) {
-  const showStatusDot = tone === "watching" || tone === "conflict" || tone === "error";
-  const metrics = [`${wordCount}w`, `${lineCount}L`, "utf-8", syncLabel].filter(Boolean);
-
-  return (
-    <footer className="status-bar" aria-label={`Status: ${[statusLabel, ...metrics].join("; ")}`} aria-live="polite">
-      <span className="status-cluster">
-        {showStatusDot && <span className={`status-dot ${tone === "watching" ? "pulse" : ""} ${tone}`} />}
-        <span className="status-primary">{statusLabel}</span>
-      </span>
-      <span className="status-spacer" />
-      <span className="status-metrics" aria-hidden="true">
-        {metrics.map((metric) => (
-          <span className="status-metric" key={metric}>
-            {metric}
-          </span>
-        ))}
-      </span>
-    </footer>
-  );
-}
-
-function Field({ label, children }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
 
 async function copyCodeText(text) {
   try {
@@ -2669,165 +1843,6 @@ async function copyTextToBrowserClipboard(text) {
   }
 
   return false;
-}
-
-function formatConnectionTarget(connection) {
-  const userHost = connection.username ? `${connection.username}@${connection.host}` : connection.host;
-  const remotePath = connection.remotePath ? `:${connection.remotePath}` : "";
-  return `${userHost}${remotePath}`;
-}
-
-function applyConnectionTarget(value, onUpdate) {
-  const match = value.match(/^(?:(?<username>[^@:]+)@)?(?<host>[^:]*)(?::(?<remotePath>.*))?$/);
-  if (!match?.groups) return;
-  onUpdate("host", match.groups.host || "");
-  if (match.groups.username !== undefined) onUpdate("username", match.groups.username);
-  if (match.groups.remotePath !== undefined) onUpdate("remotePath", match.groups.remotePath);
-}
-
-function countWords(text) {
-  const matches = text.trim().match(/\S+/g);
-  return matches ? matches.length : 0;
-}
-
-function countLines(text) {
-  return Math.max(text.split(/\r\n|\r|\n/).length, 1);
-}
-
-function compactPath(value) {
-  if (!value) return "";
-  const normalized = String(value).replace(/\\/g, "/");
-  const homeMatch = normalized.match(/^(?:[A-Za-z]:)?\/Users\/[^/]+(\/.*)?$/i);
-  if (homeMatch) return `~${homeMatch[1] || ""}`;
-  if (normalized.length <= 34) return normalized;
-  return `...${normalized.slice(-31)}`;
-}
-
-function pathsReferToSameLocalFile(left, right) {
-  if (!left || !right) return false;
-  return normalizeLocalComparisonPath(left) === normalizeLocalComparisonPath(right);
-}
-
-function normalizeLocalComparisonPath(value) {
-  const normalized = String(value).replace(/\\/g, "/").replace(/\/+$/, "");
-  return /^[A-Za-z]:/.test(normalized) ? normalized.toLowerCase() : normalized;
-}
-
-function formatStatusMessage(message, fallback) {
-  const cleanMessage = String(message || "")
-    .trim()
-    .replace(/^connected(?:\s*[-.]|\s+)/i, "")
-    .trim();
-
-  if (!cleanMessage) return fallback;
-  return cleanMessage.charAt(0).toLowerCase() + cleanMessage.slice(1);
-}
-
-function formatFileModifiedLabel(value) {
-  const timestamp = formatFileTimestamp(value);
-  return timestamp ? `edited ${timestamp}` : "";
-}
-
-function formatFileTimestamp(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-
-  const today = new Date();
-  const sameDay =
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate();
-
-  return new Intl.DateTimeFormat(
-    undefined,
-    sameDay
-      ? { hour: "2-digit", minute: "2-digit" }
-      : { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }
-  ).format(date);
-}
-
-function formatLatency(value) {
-  const rawLatency = Number(value);
-  if (!Number.isFinite(rawLatency) || rawLatency < 1) return "<1ms";
-  const latency = rawLatency < 10 ? Math.round(rawLatency * 10) / 10 : Math.round(rawLatency);
-  return `${latency}ms`;
-}
-
-function healthCheckPendingMessage(context) {
-  if (!context.hasNativeBackend) return "checking preview";
-  if (context.documentSource === "remote") return "checking server";
-  if (context.documentSource === "sample") return "checking sample";
-  if (context.documentSource === "local") return "checking local source";
-  return "checking source";
-}
-
-function healthCheckSuccessMessage(response) {
-  const latency = formatLatency(response.latencyMs);
-  if (response.kind === "remote") return `server checked - ${latency}`;
-  if (response.kind === "sample") return `sample checked - ${latency}`;
-  if (response.kind === "local") return `local source checked - ${latency}`;
-  if (response.kind === "preview") return `preview checked - ${latency}`;
-  return `source checked - ${latency}`;
-}
-
-function healthCheckErrorMessage(error) {
-  return `check failed - ${error?.message || "Unable to reach source."}`;
-}
-
-function statusTextForLoading(documentSource) {
-  if (documentSource === "remote") return "Refreshing the remote file tree.";
-  if (documentSource === "local") return "Reading the local folder.";
-  return "Resolving connection and files.";
-}
-
-function formatSidebarDirectoryPath(value) {
-  if (!value) return null;
-
-  const full = String(value).replace(/\\/g, "/");
-  const readable = full
-    .replace(/^(?:[A-Za-z]:)?\/Users\/[^/]+(?=\/|$)/i, "~")
-    .replace(/^\/home\/[^/]+(?=\/|$)/i, "~");
-
-  return { full, display: compactPathStart(readable, 30) };
-}
-
-function compactPathStart(value, maxLength) {
-  if (!value || value.length <= maxLength) return value;
-
-  const normalized = String(value).replace(/\\/g, "/");
-  const parts = normalized.split("/").filter(Boolean);
-  if (parts.length <= 1) return `...${normalized.slice(-(maxLength - 3))}`;
-
-  const tail = [parts[parts.length - 1]];
-
-  for (let index = parts.length - 2; index >= 0; index -= 1) {
-    const nextTail = [parts[index], ...tail];
-    const candidate = `.../${nextTail.join("/")}`;
-    if (candidate.length > maxLength) break;
-    tail.unshift(parts[index]);
-  }
-
-  const display = `.../${tail.join("/")}`;
-  return display.length <= maxLength ? display : `...${display.slice(-(maxLength - 3))}`;
-}
-
-function formatPoll(value) {
-  const ms = Number(value) || 0;
-  if (ms >= 1000) return `${Math.round(ms / 1000)}s`;
-  return `${ms}ms`;
-}
-
-function formatRelativeTime(value) {
-  if (!value) return "just now";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "just now";
-  const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
-  if (seconds < 45) return "just now";
-  if (seconds < 90) return "1m ago";
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
-  if (seconds < 5400) return "1h ago";
-  return `${Math.round(seconds / 3600)}h ago`;
 }
 
 function captureScrollRatio(previewRef, ratioRef) {
@@ -2908,20 +1923,6 @@ async function waitForAppReadyToReveal(container) {
       await Promise.allSettled([waitForImagesToSettle(container), waitForFrames(1)]);
     })(),
     waitForTimeout(650)
-  ]);
-}
-
-async function waitForFontSetToSettle(timeoutMs = 700) {
-  if (typeof document === "undefined" || !document.fonts) return;
-  await Promise.race([
-    (async () => {
-      for (;;) {
-        await document.fonts.ready;
-        await waitForFrames(2);
-        if (document.fonts.status !== "loading") return;
-      }
-    })(),
-    waitForTimeout(timeoutMs)
   ]);
 }
 
@@ -3282,11 +2283,6 @@ function getRemoteSourceSessionId(connection) {
   return `remote:${username}@${host}:${port}`;
 }
 
-function formatSourcePathDetail(value) {
-  if (!value) return "";
-  return formatSidebarDirectoryPath(value)?.display || value;
-}
-
 function normalizeStoredNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : fallback;
@@ -3305,12 +2301,6 @@ function getStoredPageWidth(storedPreferences) {
   };
 
   return clampPageWidth(legacyWidths[storedPreferences.pageWidth] || PAGE_WIDTH_DEFAULT);
-}
-
-function clampPageWidth(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return PAGE_WIDTH_DEFAULT;
-  return Math.min(PAGE_WIDTH_MAX, Math.max(PAGE_WIDTH_MIN, Math.round(number)));
 }
 
 function getIsCompactLayout() {
@@ -3398,50 +2388,6 @@ function getInitialSidebarWidth() {
 function clampSidebarWidth(width) {
   const viewportMax = Math.max(SIDEBAR_MIN_WIDTH, window.innerWidth - 560);
   return Math.min(Math.max(Number(width) || SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH), Math.min(SIDEBAR_MAX_WIDTH, viewportMax));
-}
-
-function basename(remotePath) {
-  return remotePath?.split(/[\\/]/).filter(Boolean).pop() || "Remote file";
-}
-
-function dirname(remotePath) {
-  const normalized = remotePath.replace(/\\/g, "/");
-  const parts = normalized.split("/");
-  parts.pop();
-  const directory = parts.join("/");
-  return directory || "/";
-}
-
-function localDirname(filePath) {
-  const normalized = filePath.replace(/\\/g, "/");
-  const trimmed = normalized.replace(/\/+$/, "");
-  const slashIndex = trimmed.lastIndexOf("/");
-
-  if (slashIndex < 0) return ".";
-  if (slashIndex === 0) return "/";
-  if (slashIndex === 2 && /^[A-Za-z]:/.test(trimmed)) return trimmed.slice(0, 3);
-  return trimmed.slice(0, slashIndex);
-}
-
-function canGoUp(remotePath) {
-  return remotePath && remotePath !== "." && remotePath !== "/";
-}
-
-function localCanGoUp(directory) {
-  if (!directory || directory === "." || directory === "/") return false;
-  return !/^[A-Za-z]:\/?$/.test(directory.replace(/\\/g, "/"));
-}
-
-function parentRemotePath(remotePath) {
-  if (!canGoUp(remotePath)) return remotePath || ".";
-  const normalized = remotePath.replace(/\\/g, "/").replace(/\/+$/, "");
-  const parent = normalized.split("/").slice(0, -1).join("/");
-  return parent || (normalized.startsWith("/") ? "/" : ".");
-}
-
-function localParentPath(directory) {
-  if (!localCanGoUp(directory)) return directory || ".";
-  return localDirname(directory);
 }
 
 const rootElement = document.getElementById("root");
