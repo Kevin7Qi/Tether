@@ -18,6 +18,7 @@ class RemoteFileProvider extends EventEmitter {
     this.watchPath = null;
     this.lastVersion = null;
     this.polling = false;
+    this.disconnecting = false;
     this.knownHostsPath = options.knownHostsPath || defaultKnownHostsPath;
     this.hostVerificationError = null;
   }
@@ -142,6 +143,7 @@ class RemoteFileProvider extends EventEmitter {
   }
 
   async disconnect() {
+    this.disconnecting = true;
     this.stopWatching();
     if (this.client) {
       try {
@@ -150,8 +152,11 @@ class RemoteFileProvider extends EventEmitter {
         this.client = null;
         this.connected = false;
         this.lastVersion = null;
+        this.disconnecting = false;
         this.emit("status", { state: "disconnected", message: "Disconnected" });
       }
+    } else {
+      this.disconnecting = false;
     }
   }
 
@@ -278,17 +283,21 @@ class RemoteFileProvider extends EventEmitter {
 
   async pollOnce() {
     if (this.polling || !this.watchPath) return;
+    const target = this.watchPath;
     this.polling = true;
 
     try {
-      const metadata = await this.statFile(this.watchPath);
+      const metadata = await this.statFile(target);
+      // Bail if a disconnect or watch-target change landed while we awaited.
+      if (this.disconnecting || this.watchPath !== target) return;
       const statSignature = `${metadata.mtimeMs || ""}:${metadata.size}`;
       const lastSignature = this.lastVersion
         ? `${this.lastVersion.mtimeMs || ""}:${this.lastVersion.size}`
         : null;
 
       if (statSignature !== lastSignature) {
-        const file = await this.readFile(this.watchPath);
+        const file = await this.readFile(target);
+        if (this.disconnecting || this.watchPath !== target) return;
         if (!this.lastVersion || !versionsMatch(file.version, this.lastVersion)) {
           this.lastVersion = file.version;
           this.emit("update", file);
@@ -302,6 +311,8 @@ class RemoteFileProvider extends EventEmitter {
         checkedAt: new Date().toISOString()
       });
     } catch (error) {
+      // Suppress errors caused by an intentional disconnect or watch change.
+      if (this.disconnecting || this.watchPath !== target) return;
       this.emit("error", error);
       this.emit("status", {
         state: "watching",
