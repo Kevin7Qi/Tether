@@ -34,7 +34,10 @@ function DocumentSurface({
 
   useEffect(() => {
     if (!showEditor || !gutterRef.current || !textareaRef.current) return;
-    gutterRef.current.scrollTop = textareaRef.current.scrollTop;
+    // Track the textarea via transform, not scrollTop: long lines give the
+    // textarea a horizontal scrollbar that shortens its scroll range, so a
+    // scrollTop-synced gutter would clamp early and drift near the bottom.
+    gutterRef.current.style.transform = `translateY(${-textareaRef.current.scrollTop}px)`;
   }, [editorContent, showEditor]);
 
   function syncScrollRatio(source, target) {
@@ -50,7 +53,9 @@ function DocumentSurface({
   }
 
   function syncLineNumberScroll(event) {
-    if (gutterRef.current) gutterRef.current.scrollTop = event.currentTarget.scrollTop;
+    if (gutterRef.current) {
+      gutterRef.current.style.transform = `translateY(${-event.currentTarget.scrollTop}px)`;
+    }
     if (viewMode === "split") syncScrollRatio(event.currentTarget, previewRef?.current);
   }
 
@@ -78,9 +83,11 @@ function DocumentSurface({
             {dirty && <strong>Unsaved</strong>}
           </div>
           <div className="source-editor">
-            <pre ref={gutterRef} className="line-gutter" aria-hidden="true">
-              {lineNumbers}
-            </pre>
+            <div className="line-gutter" aria-hidden="true">
+              <pre ref={gutterRef} className="line-gutter-track">
+                {lineNumbers}
+              </pre>
+            </div>
             <textarea
               ref={textareaRef}
               spellCheck="false"

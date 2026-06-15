@@ -1100,10 +1100,13 @@ textarea:focus-visible,
 }
 
 .line-gutter {
-  margin: 0;
-  padding: var(--editor-pad-top) 14px var(--editor-pad-bottom) 0;
   overflow: hidden;
   border-right: 1px solid var(--line);
+}
+
+.line-gutter-track {
+  margin: 0;
+  padding: var(--editor-pad-top) 14px var(--editor-pad-bottom) 0;
   color: var(--ink3);
   font-family: var(--mono);
   font-size: var(--editor-font-size);
@@ -1112,6 +1115,7 @@ textarea:focus-visible,
   text-align: right;
   user-select: none;
   white-space: pre;
+  will-change: transform;
 }
 
 .editor-pane textarea {
