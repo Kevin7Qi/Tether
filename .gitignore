@@ -30,3 +30,6 @@ yarn-error.log*
 
 # Alternate package manager locks
 bun.lockb
+
+# macOS Finder artifacts
+.DS_Store
