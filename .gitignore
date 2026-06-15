@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build and cache output
+dist/
+out/
+release/
+.vite/
+resources/tether-icon.ico
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+# Logs and diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local package artifacts
+*.zip
+*.tar
+*.tgz
+
+# Alternate package manager locks
+bun.lockb
