@@ -135,6 +135,17 @@
           transform: translate(0, 0) scale(0.75);
         }
       }
+
+      @media (prefers-reduced-motion: reduce) {
+        .tether-boot-ping {
+          animation: none !important;
+          opacity: 1 !important;
+        }
+
+        #tether-boot {
+          transition-duration: 0.001ms !important;
+        }
+      }
     </style>
   </head>
   <body>

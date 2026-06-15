@@ -11,6 +11,13 @@
   --ok: #4dbe83;
   --accent: #4dbe83;
   --accent-contrast: #0e1112;
+  --accent-phosphor: #4dbe83;
+  --accent-amber: #d9a13c;
+  --accent-cobalt: #6b96f2;
+  --line-strong: #2f363c;
+  --scrim: rgba(5, 7, 8, 0.45);
+  --scrollbar-thumb: rgba(128, 138, 146, 0.25);
+  --scrollbar-thumb-strong: rgba(128, 138, 146, 0.3);
   --warn: #d9a13c;
   --warn-bg: rgba(217, 161, 60, 0.09);
   --syntax-keyword: #b89cff;
@@ -69,7 +76,7 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(128, 138, 146, 0.25);
+  background: var(--scrollbar-thumb);
   background-clip: content-box;
   border: 4px solid transparent;
   border-radius: 6px;
@@ -115,9 +122,17 @@ button:disabled {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
-textarea:focus-visible {
-  outline: 1px solid var(--accent);
+textarea:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--surface);
+}
+
+/* Filled primary actions: ring in --ink so it never sits accent-on-accent. */
+.save-button:not(:disabled):focus-visible,
+.connect-action:focus-visible {
+  outline-color: var(--ink);
 }
 
 :root[data-tether-theme="light"],
@@ -134,6 +149,13 @@ textarea:focus-visible {
   --ok: #25885a;
   --accent: #1f8754;
   --accent-contrast: #ffffff;
+  --accent-phosphor: #1f8754;
+  --accent-amber: #9a6e1b;
+  --accent-cobalt: #2f62c4;
+  --line-strong: #c4cbce;
+  --scrim: rgba(20, 25, 28, 0.28);
+  --scrollbar-thumb: rgba(90, 100, 108, 0.28);
+  --scrollbar-thumb-strong: rgba(90, 100, 108, 0.4);
   --warn: #8a6215;
   --warn-bg: rgba(154, 110, 27, 0.1);
   --syntax-keyword: #6f42c1;
@@ -241,6 +263,21 @@ textarea:focus-visible {
 @keyframes tetherSpin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .status-dot.pulse {
+    animation: none !important;
   }
 }
 
@@ -601,11 +638,6 @@ textarea:focus-visible {
   padding-bottom: 8px;
 }
 
-.file-row {
-  padding: 6px 8px;
-  color: var(--ink2);
-}
-
 .file-row:hover:not(:disabled):not(.active),
 .file-row:focus-visible:not(:disabled):not(.active) {
   border-color: color-mix(in srgb, var(--line) 72%, transparent);
@@ -753,7 +785,7 @@ textarea:focus-visible {
 .sidebar-resizer:hover,
 .sidebar-resizer:focus-visible,
 .is-resizing-sidebar .sidebar-resizer {
-  background: rgba(127, 138, 146, 0.3);
+  background: var(--scrollbar-thumb-strong);
   color: var(--accent);
 }
 
@@ -941,16 +973,13 @@ textarea:focus-visible {
   background: var(--ok);
 }
 
-.status-dot.pulse {
-  background: var(--accent);
-}
-
 .status-dot.error,
 .status-dot.conflict {
   background: var(--warn);
 }
 
 .status-dot.pulse {
+  background: var(--accent);
   animation: tetherPulse 2.6s infinite;
 }
 
@@ -1554,7 +1583,7 @@ textarea:focus-visible {
 }
 
 .markdown-document th {
-  border-bottom: 1px solid var(--ink3);
+  border-bottom: 1px solid var(--line-strong);
   color: var(--ink2);
   font-family: var(--mono);
   font-size: 10.5px;
@@ -1701,7 +1730,7 @@ textarea:focus-visible {
   align-items: flex-start;
   justify-content: center;
   padding-top: 10vh;
-  background: rgba(5, 7, 8, 0.45);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
   animation: tetherFade 160ms ease-out;
 }
@@ -2163,6 +2192,19 @@ textarea:focus-visible {
   border-color: transparent;
   border-radius: 3px;
   background: transparent;
+}
+
+/* Swatch follows the real accent tokens (theme-aware) instead of a hardcoded hex. */
+.accent-option.accent-phosphor {
+  --swatch: var(--accent-phosphor);
+}
+
+.accent-option.accent-amber {
+  --swatch: var(--accent-amber);
+}
+
+.accent-option.accent-cobalt {
+  --swatch: var(--accent-cobalt);
 }
 
 .accent-option i {
