@@ -6,7 +6,7 @@ import rehypeKatex from "rehype-katex";
 import { Check, Copy } from "lucide-react";
 import "katex/dist/katex.min.css";
 
-export default function DocumentSurface({
+function DocumentSurface({
   content,
   copyText,
   dirty,
@@ -23,6 +23,7 @@ export default function DocumentSurface({
 }) {
   const gutterRef = useRef(null);
   const textareaRef = useRef(null);
+  const scrollSyncRef = useRef(false);
   const showEditor = viewMode === "source" || viewMode === "split";
   const showPreview = viewMode === "preview" || viewMode === "split";
   const showEyebrow = documentEyebrow && documentEyebrow !== "No source";
@@ -36,9 +37,25 @@ export default function DocumentSurface({
     gutterRef.current.scrollTop = textareaRef.current.scrollTop;
   }, [editorContent, showEditor]);
 
+  function syncScrollRatio(source, target) {
+    if (!source || !target || scrollSyncRef.current) return;
+    const sourceMax = source.scrollHeight - source.clientHeight;
+    if (sourceMax <= 0) return;
+    const targetMax = target.scrollHeight - target.clientHeight;
+    scrollSyncRef.current = true;
+    target.scrollTop = (source.scrollTop / sourceMax) * targetMax;
+    window.requestAnimationFrame(() => {
+      scrollSyncRef.current = false;
+    });
+  }
+
   function syncLineNumberScroll(event) {
-    if (!gutterRef.current) return;
-    gutterRef.current.scrollTop = event.currentTarget.scrollTop;
+    if (gutterRef.current) gutterRef.current.scrollTop = event.currentTarget.scrollTop;
+    if (viewMode === "split") syncScrollRatio(event.currentTarget, previewRef?.current);
+  }
+
+  function syncPreviewScroll(event) {
+    if (viewMode === "split") syncScrollRatio(event.currentTarget, textareaRef.current);
   }
 
   if (loading) {
@@ -78,7 +95,12 @@ export default function DocumentSurface({
       )}
 
       {showPreview && (
-        <section ref={previewRef} className="preview-pane" aria-label="Rendered Markdown preview">
+        <section
+          ref={previewRef}
+          className="preview-pane"
+          aria-label="Rendered Markdown preview"
+          onScroll={syncPreviewScroll}
+        >
           <article className="markdown-document">
             {showEyebrow && (
               <div className="markdown-eyebrow">
@@ -151,6 +173,10 @@ function CodeBlock({ code, copyText, language }) {
   const copyTimerRef = useRef(null);
   const normalizedCode = useMemo(() => code.replace(/\r\n/g, "\n").replace(/\r/g, "\n"), [code]);
   const lines = useMemo(() => splitCodeLines(normalizedCode), [normalizedCode]);
+  const tokenizedLines = useMemo(
+    () => lines.map((line) => highlightCodeLine(line, language)),
+    [lines, language]
+  );
   const languageLabel = getCodeLanguageLabel(language);
   const copied = copyStatus === "copied";
   const copyFailed = copyStatus === "failed";
@@ -196,9 +222,9 @@ function CodeBlock({ code, copyText, language }) {
         </pre>
         <pre className="code-block-pre">
           <code>
-            {lines.map((line, lineIndex) => (
+            {tokenizedLines.map((tokens, lineIndex) => (
               <span className="code-line" key={`code-line-${lineIndex}`}>
-                {highlightCodeLine(line, language).map((token, tokenIndex) => renderCodeToken(token, tokenIndex))}
+                {tokens.map((token, tokenIndex) => renderCodeToken(token, tokenIndex))}
               </span>
             ))}
           </code>
@@ -487,13 +513,24 @@ function highlightCssLine(line) {
   );
 }
 
+const GENERIC_PATTERN_CACHE = new Map();
+
+function getGenericPattern(group) {
+  let pattern = GENERIC_PATTERN_CACHE.get(group);
+  if (!pattern) {
+    const commentSource = getCommentPatternSource(group);
+    pattern = new RegExp(
+      `(${commentSource}|"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|\`(?:\\\\.|[^\`\\\\])*\`|\\b\\d+(?:\\.\\d+)?\\b|\\b[A-Za-z_$][\\w$]*\\b|[{}()[\\].,;:+\\-*/%=!<>|&?~^@]+)`,
+      "g"
+    );
+    GENERIC_PATTERN_CACHE.set(group, pattern);
+  }
+  return pattern;
+}
+
 function highlightGenericCodeLine(line, group) {
   const keywords = getKeywordSet(group);
-  const commentSource = getCommentPatternSource(group);
-  const pattern = new RegExp(
-    `(${commentSource}|"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|\`(?:\\\\.|[^\`\\\\])*\`|\\b\\d+(?:\\.\\d+)?\\b|\\b[A-Za-z_$][\\w$]*\\b|[{}()[\\].,;:+\\-*/%=!<>|&?~^@]+)`,
-    "g"
-  );
+  const pattern = getGenericPattern(group);
 
   return tokenizeWithPattern(line, pattern, (match, index) => {
     if (isCommentToken(match, group)) return "comment";
@@ -544,6 +581,7 @@ function tokenizeWithPattern(line, pattern, classify) {
   let lastIndex = 0;
   let match;
 
+  pattern.lastIndex = 0;
   while ((match = pattern.exec(line))) {
     if (match.index > lastIndex) {
       tokens.push({ text: line.slice(lastIndex, match.index), type: "" });
@@ -570,3 +608,5 @@ function previousNonSpace(line, index) {
   }
   return "";
 }
+
+export default React.memo(DocumentSurface);
