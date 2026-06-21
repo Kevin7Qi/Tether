@@ -490,10 +490,12 @@ function App() {
         return;
       }
 
-      if ((event.ctrlKey || event.metaKey) && (key === "o" || event.code === "KeyO")) {
+      // Open file on Ctrl/Cmd+O. The folder shortcut (adds Shift) is handled on
+      // key-UP below: a global OS/app hotkey can swallow the Ctrl+Shift+O key-down
+      // before the app sees it, but the key-up still arrives.
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && (key === "o" || event.code === "KeyO")) {
         event.preventDefault();
-        if (event.shiftKey) openFolderActionRef.current?.();
-        else openFileActionRef.current?.();
+        openFileActionRef.current?.();
         return;
       }
 
@@ -505,9 +507,18 @@ function App() {
       }
     }
 
+    function onKeyUp(event) {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.code === "KeyO") {
+        event.preventDefault();
+        openFolderActionRef.current?.();
+      }
+    }
+
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
     };
   }, [connectionPaletteOpen, settingsPanelOpen, sidebarPeeking, zenMode]);
 
