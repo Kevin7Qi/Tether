@@ -1,8 +1,8 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FileText, FolderOpen, Monitor, Moon, Sun } from "lucide-react";
 import { applyConnectionTarget, formatConnectionTarget } from "../lib/format.js";
 import { useDialogFocus } from "../lib/useDialogFocus.js";
-import { PAGE_WIDTH_MAX, PAGE_WIDTH_MIN, PAGE_WIDTH_STEP, clampPageWidth } from "../lib/constants.js";
+import { PAGE_WIDTH_MAX, PAGE_WIDTH_MIN, PAGE_WIDTH_STEP, clampPageWidth, hotkey } from "../lib/constants.js";
 
 export function ConnectionPalette({
   busy,
@@ -44,26 +44,33 @@ export function ConnectionPalette({
         </div>
 
         <div className="target-input">
-          <span>&gt;</span>
+          <span>❯</span>
           <input
             value={formatConnectionTarget(connection)}
             onChange={(event) => applyConnectionTarget(event.target.value, onUpdate)}
-            placeholder="user@host:/path/to/doc.md - or use local actions below"
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.shiftKey || busy) return;
+              event.preventDefault();
+              onConnect();
+            }}
+            placeholder="user@host:/path/to/doc.md — or use local actions below"
             spellCheck="false"
           />
         </div>
-        <p className="palette-helper">Host aliases from ~/.ssh/config work; an empty remote path browses from home.</p>
+        <p className="palette-helper">host aliases from ~/.ssh/config work · empty path browses from home</p>
 
         <div className="palette-section">
           <div className="palette-label">local</div>
           <div className="palette-local-actions">
             <button type="button" onClick={onOpenLocalDirectory}>
               <FolderOpen size={13} />
-              open folder...
+              open folder…
+              <span className="palette-kbd">{hotkey("o", { shift: true })}</span>
             </button>
             <button type="button" onClick={onOpenLocalFile}>
               <FileText size={13} />
-              open file...
+              open file…
+              <span className="palette-kbd">{hotkey("o")}</span>
             </button>
           </div>
         </div>
@@ -92,7 +99,7 @@ export function ConnectionPalette({
             cancel
           </button>
           <button className="connect-action" type="button" disabled={busy} onClick={onConnect}>
-            {connected ? "reconnect" : "connect"}
+            {connected ? "reconnect" : "connect"} ↵
           </button>
         </div>
       </div>
@@ -110,6 +117,16 @@ export function ConnectionPanel({
   onUpdate,
   status
 }) {
+  // Folded by default — the smart ❯ target input covers the common connect; the
+  // section auto-opens only when there is an error to surface and correct.
+  const [optionsOpen, setOptionsOpen] = useState(Boolean(error));
+
+  // A connect error that arrives while the palette is already open should reveal
+  // the fields so the user can correct them.
+  useEffect(() => {
+    if (error) setOptionsOpen(true);
+  }, [error]);
+
   return (
     <section className="sidebar-section">
       <h2>Connection</h2>
@@ -120,6 +137,14 @@ export function ConnectionPanel({
             ? "Edit fields and reconnect to apply changes."
             : "Enter host and username. The remote file path is optional; you can pick a Markdown file after connecting."}
       </div>
+
+      <details
+        className="palette-disclosure"
+        open={optionsOpen}
+        onToggle={(event) => setOptionsOpen(event.currentTarget.open)}
+      >
+        <summary>auth &amp; options</summary>
+        <div className="disclosure-body">
       <div className="connection-fields">
         <Field label="Host">
           <input
@@ -180,7 +205,7 @@ export function ConnectionPanel({
             value={connection.password}
             autoComplete="current-password"
             onChange={(event) => onUpdate("password", event.target.value)}
-            placeholder="Kept in memory only"
+            placeholder="Held in memory only — never written to disk"
           />
         </Field>
       ) : (
@@ -227,8 +252,19 @@ export function ConnectionPanel({
           placeholder="Optional: /srv/docs/readme.md"
         />
       </Field>
+        </div>
+      </details>
 
-      <ConnectionProfile profile={connectionProfile} />
+      {connectionProfile && (
+        <details className="palette-disclosure">
+          <summary>
+            <span className="diag-dot" aria-hidden="true" /> diagnostics
+          </summary>
+          <div className="disclosure-body">
+            <ConnectionProfile profile={connectionProfile} />
+          </div>
+        </details>
+      )}
     </section>
   );
 }
@@ -382,9 +418,11 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
 
         <section className="settings-section">
           <div className="palette-label">appearance</div>
+
           <div className="settings-row">
-            <div>
+            <div className="settings-label">
               <strong>theme</strong>
+              <span>Match your system, or force light or dark.</span>
             </div>
             <SegmentedControl
               ariaLabel="Theme"
@@ -399,8 +437,9 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
           </div>
 
           <div className="settings-row">
-            <div>
+            <div className="settings-label">
               <strong>accent</strong>
+              <span>Highlight color used across the interface.</span>
             </div>
             <div className="accent-picker" role="group" aria-label="Accent color">
               {[
@@ -424,8 +463,9 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
           </div>
 
           <div className="settings-row">
-            <div>
-              <strong>reading</strong>
+            <div className="settings-label">
+              <strong>reading font</strong>
+              <span>Typeface for the document body.</span>
             </div>
             <SegmentedControl
               ariaLabel="Reading font"
@@ -439,8 +479,26 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
           </div>
 
           <div className="settings-row">
-            <div>
-              <strong>width</strong>
+            <div className="settings-label">
+              <strong>default view</strong>
+              <span>Which pane documents open in.</span>
+            </div>
+            <SegmentedControl
+              ariaLabel="Default view"
+              options={[
+                { label: "read", value: "preview" },
+                { label: "split", value: "split" },
+                { label: "src", value: "source" }
+              ]}
+              value={preferences.defaultView}
+              onChange={(value) => onUpdate("defaultView", value)}
+            />
+          </div>
+
+          <div className="settings-row">
+            <div className="settings-label">
+              <strong>reading width</strong>
+              <span>Measure of the centered article column.</span>
             </div>
             <PageWidthControl
               value={preferences.pageWidthPx}
@@ -454,24 +512,26 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
   );
 }
 
-export function StatusBar({ lineCount, statusLabel, syncLabel, tone, wordCount }) {
-  const showStatusDot = tone === "watching" || tone === "conflict" || tone === "error";
+export function StatusBar({ detached, lineCount, statusLabel, syncLabel, tone, wordCount }) {
+  const showDot = tone === "watching" || tone === "conflict" || tone === "error";
   const metrics = [`${wordCount}w`, `${lineCount}L`, "utf-8", syncLabel].filter(Boolean);
 
   return (
     <footer className="status-bar" aria-label={`Status: ${statusLabel}`} aria-live="polite">
       <span className="status-cluster">
-        {showStatusDot && <span className={`status-dot ${tone === "watching" ? "pulse" : ""} ${tone}`} />}
+        {showDot && <span className={`status-dot ${tone === "watching" ? "pulse" : ""} ${tone}`} />}
         <span className="status-primary">{statusLabel}</span>
       </span>
       <span className="status-spacer" />
-      <span className="status-metrics" aria-hidden="true">
-        {metrics.map((metric) => (
-          <span className="status-metric" key={metric}>
-            {metric}
-          </span>
-        ))}
-      </span>
+      {!detached && (
+        <span className="status-metrics" aria-hidden="true">
+          {metrics.map((metric) => (
+            <span className="status-metric" key={metric}>
+              {metric}
+            </span>
+          ))}
+        </span>
+      )}
     </footer>
   );
 }

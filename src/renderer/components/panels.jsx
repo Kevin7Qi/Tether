@@ -1,6 +1,7 @@
 import { File, FileText, Folder, FolderOpen, RefreshCw, Settings } from "lucide-react";
 import { canGoUp, formatSidebarDirectoryPath, localCanGoUp, localParentPath, parentRemotePath } from "../lib/paths.js";
 import { statusTextForLoading } from "../lib/format.js";
+import { hotkey } from "../lib/constants.js";
 
 export function TetherGlyph({ dashed = false, pingKey = null }) {
   return (
@@ -90,7 +91,7 @@ export function SourcesPanel({
               onDisconnect();
             }}
           >
-            x
+            ×
           </button>
         </div>
       )}
@@ -154,7 +155,7 @@ export function SourcesPanel({
                   onDisconnect();
                 }}
               >
-                x
+                ×
               </button>
             ) : active ? (
               <button
@@ -167,7 +168,7 @@ export function SourcesPanel({
                   onCloseLocalSource();
                 }}
               >
-                x
+                ×
               </button>
             ) : (
               <button
@@ -180,7 +181,7 @@ export function SourcesPanel({
                   onForgetSession(session.id);
                 }}
               >
-                x
+                ×
               </button>
             )}
           </div>
@@ -220,15 +221,40 @@ export function SourcesPanel({
               onCloseSampleSource();
             }}
           >
-            x
+            ×
           </button>
         </div>
       )}
       <button className="source-row add-source" type="button" onClick={onOpenPalette}>
         <span className="source-icon">+</span>
         <span className="source-name">add source</span>
+        <span className="source-kbd">{hotkey("k")}</span>
       </button>
     </section>
+  );
+}
+
+export function OutlinePanel({ headings, activeId, onJump }) {
+  if (headings.length === 0) {
+    return <div className="outline-empty">no headings in this document</div>;
+  }
+
+  return (
+    <div className="outline-list" aria-label="Document outline">
+      {headings.map((heading, index) => (
+        <button
+          key={heading.id}
+          type="button"
+          className={`outline-row level-${heading.level} ${heading.id === activeId ? "active" : ""}`}
+          style={{ paddingLeft: `${10 + (heading.level - 1) * 13}px` }}
+          title={heading.text}
+          aria-current={heading.id === activeId ? "true" : undefined}
+          onClick={() => onJump(heading, index)}
+        >
+          <span>{heading.text}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -285,7 +311,7 @@ export function FilesPanel({
           </button>
         )}
 
-        {!showSourceLoading && documentSource === "none" && <div className="empty-state">No source open</div>}
+        {!showSourceLoading && documentSource === "none" && <div className="empty-state">no files</div>}
 
         {!showSourceLoading && connected && canGoUp(currentDirectory) && (
           <button
@@ -321,7 +347,7 @@ export function FilesPanel({
         )}
 
         {!showSourceLoading && (connected || showLocalTree) && entries.length === 0 && (
-          <div className="empty-state">{treeLoading ? "Loading..." : "No files in this folder"}</div>
+          <div className="empty-state">{treeLoading ? "loading…" : "no files in this folder"}</div>
         )}
 
         {!showSourceLoading &&

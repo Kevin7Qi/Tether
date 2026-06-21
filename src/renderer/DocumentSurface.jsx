@@ -108,7 +108,7 @@ function DocumentSurface({
           aria-label="Rendered Markdown preview"
           onScroll={syncPreviewScroll}
         >
-          <article className="markdown-document">
+          <article className="markdown-document" lang="en">
             {showEyebrow && (
               <div className="markdown-eyebrow">
                 <span>{documentEyebrow}</span>
@@ -122,7 +122,13 @@ function DocumentSurface({
               components={{
                 a: LinkRenderer,
                 pre: PreRenderer,
-                code: (props) => <CodeRenderer {...props} copyText={copyText} />
+                code: (props) => <CodeRenderer {...props} copyText={copyText} />,
+                h1: HeadingRenderer,
+                h2: HeadingRenderer,
+                h3: HeadingRenderer,
+                h4: HeadingRenderer,
+                h5: HeadingRenderer,
+                h6: HeadingRenderer
               }}
             >
               {content}
@@ -152,6 +158,19 @@ function DocumentLoading({ LoadingGlyph, loadingMessage, loadingTitle, previewRe
 
 function LinkRenderer(props) {
   return <a {...props} target="_blank" rel="noopener noreferrer" />;
+}
+
+// Tag headings with a stable anchor keyed on their source line so the outline
+// panel can scroll to them. The line matches lib/outline.js parseOutline().
+function HeadingRenderer({ node, children, ...props }) {
+  const level = Math.min(Math.max(Number(String(node?.tagName || "h1").slice(1)) || 1, 1), 6);
+  const line = node?.position?.start?.line;
+  const Tag = `h${level}`;
+  return (
+    <Tag id={line ? `tether-h-${line}` : undefined} {...props}>
+      {children}
+    </Tag>
+  );
 }
 
 function PreRenderer({ children }) {

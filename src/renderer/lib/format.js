@@ -59,15 +59,15 @@ export function healthCheckPendingMessage(context) {
 
 export function healthCheckSuccessMessage(response) {
   const latency = formatLatency(response.latencyMs);
-  if (response.kind === "remote") return `server checked - ${latency}`;
-  if (response.kind === "sample") return `sample checked - ${latency}`;
-  if (response.kind === "local") return `local source checked - ${latency}`;
-  if (response.kind === "preview") return `preview checked - ${latency}`;
-  return `source checked - ${latency}`;
+  if (response.kind === "remote") return `server checked · ${latency}`;
+  if (response.kind === "sample") return `sample checked · ${latency}`;
+  if (response.kind === "local") return `local source checked · ${latency}`;
+  if (response.kind === "preview") return `preview checked · ${latency}`;
+  return `source checked · ${latency}`;
 }
 
 export function healthCheckErrorMessage(error) {
-  return `check failed - ${error?.message || "Unable to reach source."}`;
+  return `check failed · ${error?.message || "Unable to reach source."}`;
 }
 
 export function statusTextForLoading(documentSource) {

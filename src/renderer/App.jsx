@@ -1,18 +1,17 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  AlertCircle,
+  AlertTriangle,
   File,
   FileText,
   Folder,
   FolderOpen,
-  GripVertical,
+  List,
   Maximize2,
   Monitor,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
-  Plus,
   RefreshCw,
   Save,
   Settings,
@@ -59,8 +58,9 @@ import {
   statusTextForLoading
 } from "./lib/format.js";
 import { createDocumentState, documentReducer } from "./lib/documentState.js";
-import { PAGE_WIDTH_DEFAULT, clampPageWidth } from "./lib/constants.js";
-import { DocumentSurfaceFallback, FilesPanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
+import { PAGE_WIDTH_DEFAULT, clampPageWidth, hotkey } from "./lib/constants.js";
+import { parseOutline } from "./lib/outline.js";
+import { DocumentSurfaceFallback, FilesPanel, OutlinePanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
 import { ConnectionPalette, SettingsPanel, StatusBar, ThemeSwitch } from "./components/dialogs.jsx";
 
 const LazyDocumentSurface = React.lazy(() => import("./DocumentSurface.jsx"));
@@ -276,6 +276,8 @@ function App() {
   const [zenMode, setZenMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialPreferences.sidebarCollapsed);
   const [sidebarPeeking, setSidebarPeeking] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [activeHeadingId, setActiveHeadingId] = useState(null);
   const [compactLayout, setCompactLayout] = useState(() => getIsCompactLayout());
   const [connectionPaletteOpen, setConnectionPaletteOpen] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
@@ -302,6 +304,8 @@ function App() {
   const treeRefreshTimerRef = useRef(null);
   const sourceOpeningRef = useRef(null);
   const saveActionRef = useRef(null);
+  const openFileActionRef = useRef(null);
+  const openFolderActionRef = useRef(null);
 
   useEffect(() => {
     remoteApi.getDefaultPrivateKeyPath().then((response) => {
@@ -477,6 +481,13 @@ function App() {
         return;
       }
 
+      if ((event.ctrlKey || event.metaKey) && (key === "o" || event.code === "KeyO")) {
+        event.preventDefault();
+        if (event.shiftKey) openFolderActionRef.current?.();
+        else openFileActionRef.current?.();
+        return;
+      }
+
       if (event.key === "Escape") {
         if (connectionPaletteOpen) setConnectionPaletteOpen(false);
         if (settingsPanelOpen) setSettingsPanelOpen(false);
@@ -521,6 +532,37 @@ function App() {
   // Defer the rendered-preview content so typing in the textarea stays responsive
   // while the heavy Markdown re-render runs at lower priority.
   const deferredPreviewContent = useDeferredValue(previewContent);
+  const outline = useMemo(() => parseOutline(deferredPreviewContent), [deferredPreviewContent]);
+
+  // Scroll-spy: while the outline is visible, highlight the heading the reader is in.
+  useEffect(() => {
+    if (!outlineOpen) return undefined;
+    const pane = previewRef.current;
+    if (!pane) return undefined;
+
+    let raf = 0;
+    function compute() {
+      raf = 0;
+      const headings = pane.querySelectorAll("h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]");
+      const threshold = pane.getBoundingClientRect().top + 28;
+      let active = null;
+      for (const heading of headings) {
+        if (heading.getBoundingClientRect().top <= threshold) active = heading.id;
+        else break;
+      }
+      setActiveHeadingId(active);
+    }
+    function onScroll() {
+      if (!raf) raf = window.requestAnimationFrame(compute);
+    }
+
+    pane.addEventListener("scroll", onScroll, { passive: true });
+    compute();
+    return () => {
+      pane.removeEventListener("scroll", onScroll);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, [outlineOpen, deferredPreviewContent, viewMode, zenMode]);
   const hasLocalDocument = Boolean(localFile || localWorkspaceDirectory);
   const documentSource = connected ? "remote" : hasLocalDocument ? "local" : sampleSourceOpen ? "sample" : "none";
   const documentTitle = connected
@@ -553,7 +595,7 @@ function App() {
         : "no source";
   const rootLabel = connected || (documentSource === "local" && localWorkspaceDirectory) ? currentDirectory : documentSource === "sample" ? "samples" : "";
   const toolbarDocumentLabel =
-    sourceOpening?.title || (documentSource === "none" ? documentTitle : selectedPath ? compactPath(selectedPath) : documentTitle);
+    sourceOpening?.title || (documentSource === "none" ? "no source" : selectedPath ? compactPath(selectedPath) : documentTitle);
   const toolbarDocumentTitle = sourceOpening?.message || selectedPath || documentTitle;
   const fileModifiedLabel = formatFileModifiedLabel(fileMetadata?.mtime || status.metadata?.mtime);
   const statusLabel = sourceOpening
@@ -567,12 +609,12 @@ function App() {
           : treeRefreshNotice
             ? treeRefreshNotice
             : conflict
-              ? "conflict - resolve to save"
+              ? "conflict · resolve to save"
               : error
                 ? status.message || "error"
                 : dirty
                   ? fileModifiedLabel
-                    ? `unsaved - ${fileModifiedLabel}`
+                    ? `unsaved · ${fileModifiedLabel}`
                     : "unsaved edits"
                   : documentSource === "remote"
                     ? selectedPath
@@ -584,7 +626,7 @@ function App() {
                         : "choose a Markdown file"
                       : documentSource === "sample"
                         ? fileModifiedLabel || "local sample"
-                        : "no document open";
+                        : `no source · ${hotkey("k")} to connect`;
   const sourceTone = sourceOpening || documentRefreshing || treeLoading ? "idle" : conflict ? "conflict" : error ? "error" : watching ? "watching" : connected ? "connected" : "idle";
   const syncLabel =
     sourceOpening
@@ -1492,6 +1534,33 @@ function App() {
     }, 2200);
   }
 
+  function jumpToHeading(heading, index) {
+    if (!heading) return;
+
+    function performScroll() {
+      const pane = previewRef.current;
+      if (!pane) return;
+      let target = pane.querySelector(`#tether-h-${heading.line}`);
+      // Fallback: headings render in document order, so the Nth outline entry maps
+      // to the Nth rendered heading even if a line anchor is unavailable.
+      if (!target && Number.isInteger(index)) {
+        target = pane.querySelectorAll("h1,h2,h3,h4,h5,h6")[index] || null;
+      }
+      if (!target) return;
+      const top = target.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop - 16;
+      pane.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+      setActiveHeadingId(heading.id);
+    }
+
+    if (viewMode === "source") {
+      // The preview must be mounted to scroll it; split keeps the editor visible too.
+      setViewMode("split");
+      window.requestAnimationFrame(() => window.requestAnimationFrame(performScroll));
+    } else {
+      performScroll();
+    }
+  }
+
   function openSidebarFromRail() {
     if (compactLayout) {
       setSidebarPeeking(true);
@@ -1501,6 +1570,12 @@ function App() {
   }
 
   function toggleSidebarFromHeader() {
+    // While peeking, the header button pins the flyout open (expands flush).
+    if (sidebarPeeking) {
+      setSidebarPeeking(false);
+      if (!compactLayout) setSidebarCollapsedPreference(false);
+      return;
+    }
     if (compactLayout) {
       setSidebarPeeking(false);
       return;
@@ -1515,6 +1590,18 @@ function App() {
   // invoke the current closure without re-subscribing the keydown listener.
   saveActionRef.current = () => {
     if (canSave && !busy) saveCurrentFile();
+  };
+  openFileActionRef.current = () => {
+    if (busy) return;
+    setConnectionPaletteOpen(false);
+    setSettingsPanelOpen(false);
+    openLocalFile();
+  };
+  openFolderActionRef.current = () => {
+    if (busy) return;
+    setConnectionPaletteOpen(false);
+    setSettingsPanelOpen(false);
+    openLocalDirectory();
   };
 
   return (
@@ -1534,6 +1621,10 @@ function App() {
         <aside
           className="navigation-panel"
           aria-label="Documentation sidebar"
+          onMouseEnter={() => {
+            if (sidebarRailMode) setSidebarPeeking(true);
+          }}
+          onMouseLeave={() => setSidebarPeeking(false)}
         >
           <div className="sidebar-expanded">
             <div className="brand-row">
@@ -1555,10 +1646,10 @@ function App() {
               </div>
               <button
                 className="icon-button compact panel-toggle"
-                title={headerToggleTitle}
+                title={sidebarPeeking ? "Keep sidebar open" : headerToggleTitle}
                 onClick={toggleSidebarFromHeader}
               >
-                <PanelLeftClose size={15} />
+                {sidebarPeeking ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
               </button>
             </div>
 
@@ -1601,23 +1692,19 @@ function App() {
           </div>
 
           <div className="sidebar-rail">
-            <button className="icon-button compact panel-toggle" title={railToggleTitle} onClick={openSidebarFromRail}>
-              <PanelLeftOpen size={15} />
+            <button
+              className="rail-brand"
+              type="button"
+              title={railToggleTitle}
+              aria-label={railToggleTitle}
+              onClick={openSidebarFromRail}
+            >
+              <TetherGlyph />
             </button>
             <div className="rail-divider" />
-            <button className="rail-source" title={sourceLabel} onClick={openSidebarFromRail}>
+            <span className="rail-source-indicator" title={sourceLabel} aria-label={sourceLabel}>
               {connected ? <span className="status-dot pulse" /> : <Folder size={14} />}
-            </button>
-            <button
-              className="icon-button compact"
-              title="Add source"
-              onClick={() => {
-                setSidebarPeeking(false);
-                setConnectionPaletteOpen(true);
-              }}
-            >
-              <Plus size={15} />
-            </button>
+            </span>
           </div>
         </aside>
       )}
@@ -1637,9 +1724,8 @@ function App() {
             event.preventDefault();
             setResizingSidebar(true);
           }}
-        >
-          <GripVertical size={14} aria-hidden="true" />
-        </div>
+        />
+
       )}
 
       <main className={`workspace ${conflict && !zenMode ? "has-conflict" : ""}`}>
@@ -1650,17 +1736,22 @@ function App() {
               {dirty && <span className="dirty-dot" title="Unsaved changes" />}
             </div>
             <div className="toolbar-actions">
-              <div className="view-switch" role="group" aria-label="View mode">
-                <button className={viewMode === "preview" ? "active" : ""} onClick={() => setViewMode("preview")}>
-                  read
-                </button>
-                <button className={viewMode === "split" ? "active" : ""} onClick={() => setViewMode("split")}>
-                  split
-                </button>
-                <button className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
-                  src
-                </button>
-              </div>
+              {documentSource !== "none" && (
+                <>
+                  <div className="view-switch" role="group" aria-label="View mode">
+                    <button className={viewMode === "preview" ? "active" : ""} onClick={() => setViewMode("preview")}>
+                      read
+                    </button>
+                    <button className={viewMode === "split" ? "active" : ""} onClick={() => setViewMode("split")}>
+                      split
+                    </button>
+                    <button className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
+                      src
+                    </button>
+                  </div>
+                  <div className="toolbar-divider" />
+                </>
+              )}
               {documentSource === "remote" && (
                 <>
                   <button
@@ -1684,25 +1775,40 @@ function App() {
                   </button>
                 </>
               )}
-              <button
-                className="save-button"
-                disabled={!canSave || busy}
-                onClick={saveCurrentFile}
-                title={canSave ? "Save" : "No changes to save"}
-                aria-label="Save current document"
-              >
-                <Save size={13} />
-                <span className="action-label">save</span>
-              </button>
-              <div className="toolbar-divider" />
+              {documentSource !== "none" && (
+                <button
+                  className="save-button"
+                  disabled={!canSave || busy}
+                  onClick={saveCurrentFile}
+                  title={canSave ? "Save" : "No changes to save"}
+                  aria-label="Save current document"
+                >
+                  <Save size={13} />
+                  <span className="action-label">save</span>
+                </button>
+              )}
+              {documentSource !== "none" && <div className="toolbar-divider" />}
               <ThemeSwitch
                 value={preferences.theme}
                 resolvedTheme={resolvedTheme}
                 onChange={(value) => updatePreference("theme", value)}
               />
-              <button className="icon-button compact" title="Zen reading" aria-label="Zen reading" onClick={() => setZenMode(true)}>
-                <Maximize2 size={14} />
-              </button>
+              {documentSource !== "none" && (
+                <button
+                  className={`icon-button compact ${outlineOpen ? "active" : ""}`}
+                  title="Document outline"
+                  aria-label="Toggle document outline"
+                  aria-pressed={outlineOpen}
+                  onClick={() => setOutlineOpen((open) => !open)}
+                >
+                  <List size={14} />
+                </button>
+              )}
+              {documentSource !== "none" && (
+                <button className="icon-button compact" title="Zen reading" aria-label="Zen reading" onClick={() => setZenMode(true)}>
+                  <Maximize2 size={14} />
+                </button>
+              )}
               <button className="icon-button compact" title="Settings" aria-label="Settings" onClick={() => setSettingsPanelOpen(true)}>
                 <Settings size={14} />
               </button>
@@ -1712,17 +1818,24 @@ function App() {
 
         {conflict && !zenMode && (
           <div className="conflict-banner">
-            <AlertCircle size={14} />
+            <AlertTriangle size={14} />
             <span>
-              <strong>conflict</strong> - {documentTitle} changed while you were editing
+              <strong>conflict</strong> — {documentTitle} changed
+              {connected && connection.host ? ` on ${connection.host}` : ""} while you were editing
             </span>
             <button disabled={busy} onClick={useLatestRemote}>take theirs</button>
             <button className="warn" disabled={busy} onClick={keepLocalEditsAndOverwrite}>
-              keep mine - overwrite
+              keep mine — overwrite
             </button>
           </div>
         )}
 
+        {documentSource === "none" && !zenMode && !sourceOpening ? (
+          <ContentEmptyState
+            onConnect={() => setConnectionPaletteOpen(true)}
+            onOpenLocalFolder={openLocalDirectory}
+          />
+        ) : (
         <React.Suspense
           fallback={
             <DocumentSurfaceFallback
@@ -1748,9 +1861,11 @@ function App() {
             viewMode={zenMode ? "preview" : viewMode}
           />
         </React.Suspense>
+        )}
 
         {!zenMode && (
           <StatusBar
+            detached={documentSource === "none"}
             lineCount={lineCount}
             statusLabel={tetherPing?.message || statusLabel}
             syncLabel={syncLabel}
@@ -1759,8 +1874,26 @@ function App() {
           />
         )}
 
+        {!zenMode && outlineOpen && documentSource !== "none" && (
+          <div className="outline-flyout" role="region" aria-label="Document outline">
+            <div className="outline-flyout-header">
+              <span>outline</span>
+              <button
+                className="outline-flyout-close"
+                type="button"
+                title="Close outline"
+                aria-label="Close outline"
+                onClick={() => setOutlineOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <OutlinePanel headings={outline} activeId={activeHeadingId} onJump={jumpToHeading} />
+          </div>
+        )}
+
         {zenMode && (
-          <button className="zen-exit" onClick={() => setZenMode(false)} title="Exit Zen mode">
+          <button className="zen-exit" onClick={() => setZenMode(false)} title="Exit zen — Esc">
             esc
           </button>
         )}
@@ -1802,6 +1935,24 @@ function App() {
   );
 }
 
+
+function ContentEmptyState({ onConnect, onOpenLocalFolder }) {
+  return (
+    <div className="content-empty" role="region" aria-label="No source connected">
+      <TetherGlyph dashed />
+      <div className="content-empty-title">no source connected</div>
+      <p className="content-empty-text">Connect to a host over SSH, or open a local folder to start reading.</p>
+      <div className="content-empty-actions">
+        <button className="empty-connect" type="button" onClick={onConnect}>
+          {hotkey("k")} connect
+        </button>
+        <button className="empty-open" type="button" onClick={onOpenLocalFolder}>
+          open local folder
+        </button>
+      </div>
+    </div>
+  );
+}
 
 async function copyCodeText(text) {
   try {

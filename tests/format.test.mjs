@@ -62,11 +62,11 @@ test("healthCheckPendingMessage branches on backend + source", () => {
 });
 
 test("healthCheck success/error messages format kind + latency", () => {
-  assert.equal(healthCheckSuccessMessage({ kind: "remote", latencyMs: 42 }), "server checked - 42ms");
-  assert.equal(healthCheckSuccessMessage({ kind: "sample", latencyMs: 1 }), "sample checked - 1ms");
-  assert.equal(healthCheckSuccessMessage({ kind: "other", latencyMs: 0.5 }), "source checked - <1ms");
-  assert.equal(healthCheckErrorMessage({ message: "boom" }), "check failed - boom");
-  assert.equal(healthCheckErrorMessage(undefined), "check failed - Unable to reach source.");
+  assert.equal(healthCheckSuccessMessage({ kind: "remote", latencyMs: 42 }), "server checked · 42ms");
+  assert.equal(healthCheckSuccessMessage({ kind: "sample", latencyMs: 1 }), "sample checked · 1ms");
+  assert.equal(healthCheckSuccessMessage({ kind: "other", latencyMs: 0.5 }), "source checked · <1ms");
+  assert.equal(healthCheckErrorMessage({ message: "boom" }), "check failed · boom");
+  assert.equal(healthCheckErrorMessage(undefined), "check failed · Unable to reach source.");
 });
 
 test("statusTextForLoading branches on source", () => {
