@@ -61,9 +61,9 @@ body {
   min-width: 320px;
 }
 
-/* Selection stays phosphor green under every accent (matches the design). */
+/* Selection highlight follows the active accent. */
 ::selection {
-  background: color-mix(in srgb, var(--accent-phosphor) 28%, transparent);
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
 /* Inline-SVG icons share the design's 1.6 stroke weight. */
