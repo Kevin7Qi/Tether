@@ -61,6 +61,7 @@ import { createDocumentState, documentReducer } from "./lib/documentState.js";
 import { PAGE_WIDTH_DEFAULT, clampPageWidth, hotkey } from "./lib/constants.js";
 import { parseOutline } from "./lib/outline.js";
 import { isConnectionLostError, connectionLostMessage } from "./lib/connection.js";
+import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, selectNeighborTab } from "./lib/tabs.js";
 import { DocumentSurfaceFallback, FilesPanel, OutlinePanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
 import { ConnectionPalette, SettingsPanel, StatusBar, ThemeSwitch } from "./components/dialogs.jsx";
 
@@ -279,6 +280,8 @@ function App() {
   const [sidebarPeeking, setSidebarPeeking] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [activeHeadingId, setActiveHeadingId] = useState(null);
+  const [tabs, setTabs] = useState([]);
+  const [activeTabId, setActiveTabId] = useState(null);
   const [compactLayout, setCompactLayout] = useState(() => getIsCompactLayout());
   const [connectionPaletteOpen, setConnectionPaletteOpen] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
@@ -294,6 +297,9 @@ function App() {
   const [documentRefreshNotice, setDocumentRefreshNotice] = useState(null);
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeRefreshNotice, setTreeRefreshNotice] = useState(null);
+  const [expandedDirs, setExpandedDirs] = useState(() => new Set());
+  const [childrenByDir, setChildrenByDir] = useState({});
+  const [loadingDirs, setLoadingDirs] = useState(() => new Set());
   const [defaultPrivateKeyPath, setDefaultPrivateKeyPath] = useState("");
   const [connectionProfile, setConnectionProfile] = useState(null);
   const resolvedTheme = preferences.theme === "system" ? systemTheme : preferences.theme;
@@ -585,6 +591,16 @@ function App() {
   }, [outlineOpen, deferredPreviewContent, viewMode, zenMode]);
   const hasLocalDocument = Boolean(localFile || localWorkspaceDirectory);
   const documentSource = connected ? "remote" : hasLocalDocument ? "local" : sampleSourceOpen ? "sample" : "none";
+  const currentSourceKey = sourceKeyFor(documentSource, connection, localWorkspaceDirectory, localFile);
+  const sourceTabs = useMemo(() => tabsForSource(tabs, currentSourceKey), [tabs, currentSourceKey]);
+
+  // The lazily-loaded directory tree is rooted at the current source's directory;
+  // reset its expansion + child cache when the source or its root changes.
+  useEffect(() => {
+    setExpandedDirs(new Set());
+    setChildrenByDir({});
+    setLoadingDirs(new Set());
+  }, [currentSourceKey, currentDirectory]);
   const documentTitle = connected
     ? selectedPath
       ? basename(selectedPath)
@@ -719,6 +735,86 @@ function App() {
     setStatus({ state: "error", message: text, checkedAt: null, metadata: null });
   }
 
+  function tabExistsFor(sourceKey, path) {
+    return tabs.some((tab) => tab.id === tabId(sourceKey, path));
+  }
+
+  // Open a file as a tab (or focus the existing one): snapshot the outgoing
+  // active tab's live edits, upsert the new tab, and make it the live document.
+  function adoptFileIntoTab({ sourceKey, kind, path, label, file }) {
+    const id = tabId(sourceKey, path);
+    setTabs((prev) => {
+      const snapshotted =
+        activeTabId && activeTabId !== id
+          ? patchTab(prev, activeTabId, { doc: documentState, metadata: fileMetadata, refreshedAt: lastRefresh })
+          : prev;
+      return upsertTab(
+        snapshotted,
+        makeTab({ sourceKey, kind, path, label, doc: docFromFile(file), metadata: file.metadata, refreshedAt: file.refreshedAt })
+      );
+    });
+    setActiveTabId(id);
+    applyFreshFile(file);
+    setSelectedPath(path);
+  }
+
+  // Make a stored tab live again (tab switch / close-to-neighbor).
+  function restoreTab(tab) {
+    scrollRatioRef.current = 0;
+    dispatchDocument({ type: "RESTORE", doc: tab.doc });
+    setSelectedPath(tab.path);
+    setFileMetadata(tab.metadata);
+    setLastRefresh(tab.refreshedAt);
+    setActiveTabId(tab.id);
+    setError(null);
+    if (tab.kind === "remote") setConnection((current) => ({ ...current, remotePath: tab.path }));
+    if (tab.kind === "local") setLocalFile({ path: tab.path });
+  }
+
+  function switchToTab(id) {
+    if (id === activeTabId) return;
+    const target = tabs.find((tab) => tab.id === id);
+    if (!target) return;
+    if (watching) {
+      remoteApi.stopWatching();
+      setWatching(false);
+    }
+    if (activeTabId) {
+      setTabs((prev) => patchTab(prev, activeTabId, { doc: documentState, metadata: fileMetadata, refreshedAt: lastRefresh }));
+    }
+    restoreTab(target);
+  }
+
+  function closeTab(id) {
+    const tab = tabs.find((existing) => existing.id === id);
+    if (!tab) return;
+    const isActive = id === activeTabId;
+    const tabDirty = isActive ? dirty : Boolean(tab.doc && tab.doc.dirty);
+    if (tabDirty && !window.confirm("Discard unsaved edits and close this tab?")) return;
+
+    if (!isActive) {
+      setTabs((prev) => removeTab(prev, id));
+      return;
+    }
+
+    if (watching) {
+      remoteApi.stopWatching();
+      setWatching(false);
+    }
+    const nextId = selectNeighborTab(tabs, tab.sourceKey, id);
+    setTabs((prev) => removeTab(prev, id));
+    if (nextId) {
+      restoreTab(tabs.find((existing) => existing.id === nextId));
+    } else {
+      setActiveTabId(null);
+      setSelectedPath("");
+      dispatchDocument({ type: "SET_TEXT", text: tab.kind === "remote" ? chooseRemoteFileMarkdown : chooseLocalFileMarkdown });
+      setFileMetadata(null);
+      setLastRefresh(null);
+      setError(null);
+    }
+  }
+
   function updateConnection(field, value) {
     setConnection((current) => ({ ...current, [field]: value }));
   }
@@ -828,9 +924,10 @@ function App() {
       setCurrentDirectory(directory);
       setFileEntries(response.entries || []);
       if (response.file) {
-        applyFreshFile(response.file);
+        adoptFileIntoTab({ sourceKey: remoteSourceKey(nextConnection), kind: "remote", path: openedPath, label: basename(openedPath), file: response.file });
         setStatus((current) => ({ ...current, state: "connected", message: "Remote file opened" }));
       } else {
+        setActiveTabId(null);
         dispatchDocument({ type: "SET_TEXT", text: chooseRemoteFileMarkdown });
         setFileMetadata(null);
         setLastRefresh(null);
@@ -860,59 +957,64 @@ function App() {
     return true;
   }
 
-  async function loadDirectory(directory = currentDirectory) {
+  async function loadChildren(dirPath) {
+    setLoadingDirs((prev) => new Set(prev).add(dirPath));
+    try {
+      const response = connected
+        ? await remoteApi.listDirectory(dirPath)
+        : await remoteApi.listLocalDirectory(dirPath);
+      if (!response.ok) {
+        if (connected && isConnectionLostError(response.error)) {
+          handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        } else {
+          setError(response.error);
+        }
+        return;
+      }
+      setChildrenByDir((prev) => ({ ...prev, [dirPath]: response.entries }));
+    } finally {
+      setLoadingDirs((prev) => {
+        const next = new Set(prev);
+        next.delete(dirPath);
+        return next;
+      });
+    }
+  }
+
+  function toggleDir(entry) {
+    const dirPath = entry.path;
+    const willExpand = !expandedDirs.has(dirPath);
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(dirPath)) next.delete(dirPath);
+      else next.add(dirPath);
+      return next;
+    });
+    if (willExpand && !childrenByDir[dirPath]) loadChildren(dirPath);
+  }
+
+  // Re-root the tree at a folder (drill down) or its parent (".." goes up). Only
+  // the browse root (currentDirectory) moves; the source identity and open tabs
+  // are untouched. The reset effect rebuilds the tree at the new root.
+  async function enterDirectory(entry) {
+    if (!entry || entry.type !== "directory" || entry.path === currentDirectory) return;
     setTreeLoading(true);
     setError(null);
     try {
-      const response = await remoteApi.listDirectory(directory);
-
+      const response = connected
+        ? await remoteApi.listDirectory(entry.path)
+        : await remoteApi.listLocalDirectory(entry.path);
       if (!response.ok) {
-        if (isConnectionLostError(response.error)) {
+        if (connected && isConnectionLostError(response.error)) {
           handleRemoteConnectionLoss(connectionLostMessage(connection.host));
         } else {
           setError(response.error);
           setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
         }
-        return false;
+        return;
       }
-
-      setCurrentDirectory(directory);
+      setCurrentDirectory(entry.path);
       setFileEntries(response.entries);
-      const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
-      rememberSourceSession(
-        buildRemoteSourceSession(
-          connection,
-          directory,
-          selectedPath && dirname(selectedPath) === directory ? selectedPath : "",
-          activeSession?.kind === "remote" ? activeSession.id : ""
-        )
-      );
-      return true;
-    } finally {
-      setTreeLoading(false);
-    }
-  }
-
-  async function loadLocalDirectory(directory = currentDirectory) {
-    setTreeLoading(true);
-    setError(null);
-    try {
-      const response = await remoteApi.listLocalDirectory(directory);
-
-      if (!response.ok) {
-        setError(response.error);
-        setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
-        return false;
-      }
-
-      setLocalWorkspaceDirectory(directory);
-      setCurrentDirectory(directory);
-      setFileEntries(response.entries);
-      const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
-      if (activeSession?.kind === "local-folder") {
-        rememberSourceSession(buildLocalFolderSourceSession(activeSession.rootPath || directory, directory, "", activeSession.id));
-      }
-      return true;
     } finally {
       setTreeLoading(false);
     }
@@ -920,15 +1022,19 @@ function App() {
 
   async function openEntry(entry) {
     if (entry.type === "directory") {
-      await loadDirectory(entry.path);
+      await enterDirectory(entry);
       return;
     }
 
     if (!entry.isMarkdown) return;
-    if (dirty && !window.confirm("Discard unsaved local edits and open another file?")) return;
 
     if (!connected) {
       await loadSample();
+      return;
+    }
+
+    if (tabExistsFor(remoteSourceKey(connection), entry.path)) {
+      switchToTab(tabId(remoteSourceKey(connection), entry.path));
       return;
     }
 
@@ -951,9 +1057,8 @@ function App() {
       return;
     }
 
-    setSelectedPath(entry.path);
     setConnection((current) => ({ ...current, remotePath: entry.path }));
-    applyFreshFile(response.file);
+    adoptFileIntoTab({ sourceKey: remoteSourceKey(connection), kind: "remote", path: entry.path, label: entry.name, file: response.file });
     const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
     rememberSourceSession(
       buildRemoteSourceSession(connection, dirname(entry.path), entry.path, activeSession?.kind === "remote" ? activeSession.id : "")
@@ -966,8 +1071,6 @@ function App() {
   }
 
   async function openLocalFile() {
-    if (dirty && !window.confirm("Discard unsaved local edits and open another file?")) return;
-
     setBusy(true);
     setError(null);
     const response = await remoteApi.openLocalFile();
@@ -992,11 +1095,16 @@ function App() {
     }
 
     setLocalFile({ path: response.file.path });
-    setSelectedPath(response.file.path);
     setLocalWorkspaceDirectory(response.directory || localDirname(response.file.path));
     setCurrentDirectory(response.directory || localDirname(response.file.path));
     setFileEntries(response.entries || []);
-    applyFreshFile(response.file);
+    adoptFileIntoTab({
+      sourceKey: localSourceKey(response.directory || localDirname(response.file.path)),
+      kind: "local",
+      path: response.file.path,
+      label: basename(response.file.path),
+      file: response.file
+    });
     rememberSourceSession(buildLocalFileSourceSession(response.file.path, response.directory || localDirname(response.file.path)));
     setStatus({ state: "idle", message: "Opened local file", checkedAt: null, metadata: response.file.metadata });
   }
@@ -1030,6 +1138,7 @@ function App() {
     setLocalWorkspaceDirectory(response.directory);
     setLocalFile(null);
     setSelectedPath("");
+    setActiveTabId(null);
     setCurrentDirectory(response.directory);
     setFileEntries(response.entries || []);
     dispatchDocument({ type: "SET_TEXT", text: chooseLocalFileMarkdown });
@@ -1041,12 +1150,19 @@ function App() {
 
   async function openLocalEntry(entry) {
     if (entry.type === "directory") {
-      await loadLocalDirectory(entry.path);
+      await enterDirectory(entry);
       return;
     }
 
     if (!entry.isMarkdown) return;
-    if (dirty && !window.confirm("Discard unsaved local edits and open another file?")) return;
+
+    // The source identity stays the originally opened folder, not the drilled-in
+    // browse root — so drilling never fragments the open tabs.
+    const sourceRoot = localWorkspaceDirectory || currentDirectory;
+    if (tabExistsFor(localSourceKey(sourceRoot), entry.path)) {
+      switchToTab(tabId(localSourceKey(sourceRoot), entry.path));
+      return;
+    }
 
     setBusy(true);
     setError(null);
@@ -1059,10 +1175,8 @@ function App() {
       return;
     }
 
-    setLocalWorkspaceDirectory(currentDirectory);
     setLocalFile({ path: response.file.path });
-    setSelectedPath(response.file.path);
-    applyFreshFile(response.file);
+    adoptFileIntoTab({ sourceKey: localSourceKey(sourceRoot), kind: "local", path: response.file.path, label: basename(response.file.path), file: response.file });
     const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
     if (activeSession?.kind === "local-folder") {
       rememberSourceSession(buildLocalFolderSourceSession(activeSession.rootPath || currentDirectory, currentDirectory, response.file.path, activeSession.id));
@@ -1155,6 +1269,7 @@ function App() {
     setFileEntries([nextEntry]);
     setError(null);
     setActiveSessionId(null);
+    setActiveTabId(null);
     setStatus({ state: "idle", message, checkedAt: null, metadata: file.metadata });
   }
 
@@ -1197,6 +1312,7 @@ function App() {
     setFileEntries([]);
     setError(null);
     setActiveSessionId(null);
+    setActiveTabId(null);
     setStatus({ state: "idle", message, checkedAt: null, metadata: null });
   }
 
@@ -1256,15 +1372,38 @@ function App() {
   async function refreshSidebarTree() {
     if (treeLoading || hasSourceOpening()) return;
 
-    if (connected) {
-      const refreshed = await loadDirectory(currentDirectory);
-      if (refreshed) showTreeRefreshNotice("tree refreshed");
-      return;
-    }
-
-    if (localWorkspaceDirectory) {
-      const refreshed = await loadLocalDirectory(currentDirectory);
-      if (refreshed) showTreeRefreshNotice("tree refreshed");
+    if (connected || localWorkspaceDirectory) {
+      // Refresh in place: re-list the current browse root and any expanded
+      // folders WITHOUT moving the source identity (localWorkspaceDirectory), so
+      // open tabs survive a refresh even after drilling into a subfolder.
+      const listDir = (dir) => (connected ? remoteApi.listDirectory(dir) : remoteApi.listLocalDirectory(dir));
+      setTreeLoading(true);
+      setError(null);
+      try {
+        const rootResponse = await listDir(currentDirectory);
+        if (!rootResponse.ok) {
+          if (connected && isConnectionLostError(rootResponse.error)) {
+            handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+          } else {
+            setError(rootResponse.error);
+            setStatus((current) => ({ ...current, state: "error", message: rootResponse.error.message }));
+          }
+          return;
+        }
+        setFileEntries(rootResponse.entries);
+        const expanded = [...expandedDirs];
+        if (expanded.length) {
+          const updates = {};
+          for (const dir of expanded) {
+            const childResponse = await listDir(dir);
+            if (childResponse.ok) updates[dir] = childResponse.entries;
+          }
+          setChildrenByDir((prev) => ({ ...prev, ...updates }));
+        }
+        showTreeRefreshNotice("tree refreshed");
+      } finally {
+        setTreeLoading(false);
+      }
       return;
     }
 
@@ -1342,10 +1481,9 @@ function App() {
 
         setLocalWorkspaceDirectory(directory);
         setLocalFile({ path: fileResponse.file.path });
-        setSelectedPath(fileResponse.file.path);
         setCurrentDirectory(directory);
         setFileEntries(entriesResponse.ok ? entriesResponse.entries : []);
-        applyFreshFile(fileResponse.file);
+        adoptFileIntoTab({ sourceKey: localSourceKey(directory), kind: "local", path: fileResponse.file.path, label: basename(fileResponse.file.path), file: fileResponse.file });
         rememberSourceSession(buildLocalFileSourceSession(fileResponse.file.path, directory, session.id));
         setStatus({ state: "idle", message: "Restored local file", checkedAt: null, metadata: fileResponse.file.metadata });
         return;
@@ -1370,8 +1508,7 @@ function App() {
 
       if (fileResponse?.ok) {
         setLocalFile({ path: fileResponse.file.path });
-        setSelectedPath(fileResponse.file.path);
-        applyFreshFile(fileResponse.file);
+        adoptFileIntoTab({ sourceKey: localSourceKey(directory), kind: "local", path: fileResponse.file.path, label: basename(fileResponse.file.path), file: fileResponse.file });
         setStatus({ state: "idle", message: "Restored local folder", checkedAt: null, metadata: fileResponse.file.metadata });
         rememberSourceSession(buildLocalFolderSourceSession(session.rootPath || directory, directory, fileResponse.file.path, session.id));
         return;
@@ -1379,6 +1516,7 @@ function App() {
 
       setLocalFile(null);
       setSelectedPath("");
+      setActiveTabId(null);
       dispatchDocument({ type: "SET_TEXT", text: chooseLocalFileMarkdown });
       setError(fileResponse?.error || null);
       setStatus({ state: "idle", message: "Restored local folder", checkedAt: null, metadata: null });
@@ -1727,6 +1865,9 @@ function App() {
               currentDirectory={currentDirectory}
               documentSource={documentSource}
               entries={fileEntries}
+              expandedDirs={expandedDirs}
+              childrenByDir={childrenByDir}
+              loadingDirs={loadingDirs}
               sampleSourceOpen={sampleSourceOpen}
               localFile={localFile}
               rootLabel={rootLabel}
@@ -1736,6 +1877,8 @@ function App() {
               sourceLoadingTitle={sourceOpening?.title}
               treeLoading={treeLoading}
               onOpenEntry={connected ? openEntry : openLocalEntry}
+              onToggleDir={toggleDir}
+              onEnterDir={enterDirectory}
               onRefresh={refreshSidebarTree}
               onLoadSample={openLocalSample}
             />
@@ -1867,6 +2010,16 @@ function App() {
           </header>
         )}
 
+        {!zenMode && sourceTabs.length > 0 && (
+          <TabStrip
+            tabs={sourceTabs}
+            activeTabId={activeTabId}
+            activeDirty={dirty}
+            onSelect={switchToTab}
+            onClose={closeTab}
+          />
+        )}
+
         {conflict && !zenMode && (
           <div className="conflict-banner">
             <AlertTriangle size={14} />
@@ -1986,6 +2139,35 @@ function App() {
   );
 }
 
+
+function TabStrip({ tabs, activeTabId, activeDirty, onSelect, onClose }) {
+  if (tabs.length === 0) return null;
+  return (
+    <div className="tab-strip" role="tablist" aria-label="Open documents">
+      {tabs.map((tab) => {
+        const active = tab.id === activeTabId;
+        const dirty = active ? activeDirty : Boolean(tab.doc && tab.doc.dirty);
+        return (
+          <div key={tab.id} className={`tab ${active ? "active" : ""}`} role="tab" aria-selected={active}>
+            <button className="tab-label" type="button" title={tab.path} onClick={() => onSelect(tab.id)}>
+              {dirty && <span className="tab-dirty" aria-hidden="true" />}
+              <span>{tab.label}</span>
+            </button>
+            <button
+              className="tab-close"
+              type="button"
+              aria-label={`Close ${tab.label}`}
+              title="Close tab"
+              onClick={() => onClose(tab.id)}
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function ContentEmptyState({ onConnect, onOpenLocalFolder }) {
   return (
@@ -2483,6 +2665,35 @@ function getRemoteSourceSessionId(connection) {
   const port = normalizeStoredNumber(connection.port, defaultConnection.port);
   if (!host) return "";
   return `remote:${username}@${host}:${port}`;
+}
+
+// A stable key that groups open tabs by source (survives reconnects).
+function remoteSourceKey(connection) {
+  return getRemoteSourceSessionId(connection) || "remote";
+}
+
+function localSourceKey(directory) {
+  return `local:${directory || "local"}`;
+}
+
+function sourceKeyFor(documentSource, connection, localWorkspaceDirectory, localFile) {
+  if (documentSource === "remote") return remoteSourceKey(connection);
+  if (documentSource === "local") {
+    return localSourceKey(localWorkspaceDirectory || (localFile ? localDirname(localFile.path) : ""));
+  }
+  if (documentSource === "sample") return "sample";
+  return "none";
+}
+
+function docFromFile(file) {
+  return {
+    content: file.content,
+    editorContent: file.content,
+    fileVersion: file.version,
+    dirty: false,
+    conflict: false,
+    remoteShadow: null
+  };
 }
 
 function normalizeStoredNumber(value, fallback) {

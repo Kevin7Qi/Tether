@@ -88,6 +88,12 @@ export function documentReducer(state, action) {
       return { ...state, remoteShadow: action.shadow, conflict: true };
     }
 
+    case "RESTORE": {
+      // Make a previously-open tab live again: adopt its full saved cluster
+      // (content, unsaved edits, version, dirty/conflict) verbatim.
+      return action.doc ? { ...action.doc } : state;
+    }
+
     default:
       return state;
   }

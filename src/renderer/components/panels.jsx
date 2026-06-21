@@ -1,7 +1,70 @@
-import { File, FileText, Folder, FolderOpen, RefreshCw, Settings } from "lucide-react";
+import { Fragment } from "react";
+import { ArrowRight, ChevronRight, File, FileText, Folder, FolderOpen, RefreshCw, Settings } from "lucide-react";
 import { canGoUp, formatSidebarDirectoryPath, localCanGoUp, localParentPath, parentRemotePath } from "../lib/paths.js";
 import { statusTextForLoading } from "../lib/format.js";
 import { hotkey } from "../lib/constants.js";
+
+function FileTreeRows({ entries, depth, expandedDirs, childrenByDir, loadingDirs, selectedPath, onToggle, onOpen, onEnter }) {
+  return entries.map((entry) => {
+    const isDir = entry.type === "directory";
+    const expanded = isDir && expandedDirs.has(entry.path);
+    const children = childrenByDir[entry.path];
+    const indent = 6 + depth * 13;
+    return (
+      <Fragment key={entry.path}>
+        <button
+          className={`file-row tree-row ${entry.path === selectedPath ? "active" : ""} ${entry.name.startsWith(".") ? "muted" : ""}`}
+          style={{ paddingLeft: `${indent}px` }}
+          disabled={!isDir && !entry.isMarkdown}
+          onClick={() => (isDir ? onToggle(entry) : onOpen(entry))}
+          title={entry.path}
+          aria-expanded={isDir ? expanded : undefined}
+        >
+          <span className="tree-twist" aria-hidden="true">
+            {isDir ? <ChevronRight size={13} className={`tree-chevron ${expanded ? "open" : ""}`} /> : null}
+          </span>
+          {isDir ? <Folder size={15} /> : <File size={15} />}
+          <span>{entry.name}</span>
+          {isDir && loadingDirs.has(entry.path) ? (
+            <RefreshCw size={12} className="tree-spin" />
+          ) : isDir ? (
+            <span
+              className="tree-enter"
+              role="button"
+              tabIndex={-1}
+              title="Open this folder as the root"
+              aria-label={`Open ${entry.name} as the root folder`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onEnter(entry);
+              }}
+            >
+              <ArrowRight size={13} />
+            </span>
+          ) : null}
+        </button>
+        {expanded && children && children.length > 0 && (
+          <FileTreeRows
+            entries={children}
+            depth={depth + 1}
+            expandedDirs={expandedDirs}
+            childrenByDir={childrenByDir}
+            loadingDirs={loadingDirs}
+            selectedPath={selectedPath}
+            onToggle={onToggle}
+            onOpen={onOpen}
+            onEnter={onEnter}
+          />
+        )}
+        {expanded && children && children.length === 0 && (
+          <div className="tree-empty" style={{ paddingLeft: `${indent + 14}px` }}>
+            empty
+          </div>
+        )}
+      </Fragment>
+    );
+  });
+}
 
 export function TetherGlyph({ dashed = false, pingKey = null }) {
   return (
@@ -263,6 +326,9 @@ export function FilesPanel({
   currentDirectory,
   documentSource,
   entries,
+  expandedDirs,
+  childrenByDir,
+  loadingDirs,
   sampleSourceOpen,
   localFile,
   rootLabel,
@@ -272,6 +338,8 @@ export function FilesPanel({
   sourceLoadingTitle,
   treeLoading,
   onOpenEntry,
+  onToggleDir,
+  onEnterDir,
   onRefresh,
   onLoadSample
 }) {
@@ -290,6 +358,19 @@ export function FilesPanel({
       {directoryPath && !sourceLoading && (
         <div className="sidebar-path" title={directoryPath.full} aria-label={`Current folder: ${directoryPath.full}`}>
           <span>{directoryPath.display}</span>
+          {canRefreshTree && (
+            <button
+              className={`path-refresh ${treeLoading ? "loading" : ""}`}
+              type="button"
+              disabled={treeLoading}
+              aria-busy={treeLoading}
+              title="Refresh tree"
+              aria-label="Refresh tree"
+              onClick={onRefresh}
+            >
+              <RefreshCw size={11} />
+            </button>
+          )}
         </div>
       )}
 
@@ -315,25 +396,28 @@ export function FilesPanel({
 
         {!showSourceLoading && connected && canGoUp(currentDirectory) && (
           <button
-            className="file-row"
+            className="file-row tree-row"
+            style={{ paddingLeft: "6px" }}
             onClick={() =>
-              onOpenEntry({
+              onEnterDir({
                 name: "..",
                 path: parentRemotePath(currentDirectory),
                 type: "directory"
               })
             }
           >
-            <FolderOpen size={16} />
+            <span className="tree-twist" aria-hidden="true" />
+            <FolderOpen size={15} />
             <span>..</span>
           </button>
         )}
 
         {!showSourceLoading && showLocalTree && localCanGoUp(currentDirectory) && (
           <button
-            className="file-row"
+            className="file-row tree-row"
+            style={{ paddingLeft: "6px" }}
             onClick={() =>
-              onOpenEntry({
+              onEnterDir({
                 name: "..",
                 path: localParentPath(currentDirectory),
                 type: "directory",
@@ -341,7 +425,8 @@ export function FilesPanel({
               })
             }
           >
-            <FolderOpen size={16} />
+            <span className="tree-twist" aria-hidden="true" />
+            <FolderOpen size={15} />
             <span>..</span>
           </button>
         )}
@@ -350,35 +435,20 @@ export function FilesPanel({
           <div className="empty-state">{treeLoading ? "loading…" : "no files in this folder"}</div>
         )}
 
-        {!showSourceLoading &&
-          (connected || showLocalTree) &&
-          entries.map((entry) => (
-            <button
-              key={entry.path}
-              className={`file-row ${entry.path === selectedPath ? "active" : ""} ${
-                entry.name.startsWith(".") ? "muted" : ""
-              }`}
-              disabled={entry.type === "file" && !entry.isMarkdown}
-              onClick={() => onOpenEntry(entry)}
-              title={entry.path}
-            >
-              {entry.type === "directory" ? <FolderOpen size={16} /> : <File size={16} />}
-              <span>{entry.name}</span>
-            </button>
-          ))}
+        {!showSourceLoading && (connected || showLocalTree) && (
+          <FileTreeRows
+            entries={entries}
+            depth={0}
+            expandedDirs={expandedDirs}
+            childrenByDir={childrenByDir}
+            loadingDirs={loadingDirs}
+            selectedPath={selectedPath}
+            onToggle={onToggleDir}
+            onOpen={onOpenEntry}
+            onEnter={onEnterDir}
+          />
+        )}
       </div>
-      {canRefreshTree && (
-        <button
-          className={`file-refresh ${treeLoading ? "loading" : ""}`}
-          type="button"
-          disabled={treeLoading}
-          aria-busy={treeLoading}
-          onClick={onRefresh}
-        >
-          <RefreshCw size={12} />
-          {treeLoading ? "refreshing" : "refresh tree"}
-        </button>
-      )}
     </section>
   );
 }
