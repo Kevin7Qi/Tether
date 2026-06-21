@@ -60,6 +60,7 @@ import {
 import { createDocumentState, documentReducer } from "./lib/documentState.js";
 import { PAGE_WIDTH_DEFAULT, clampPageWidth, hotkey } from "./lib/constants.js";
 import { parseOutline } from "./lib/outline.js";
+import { isConnectionLostError, connectionLostMessage } from "./lib/connection.js";
 import { DocumentSurfaceFallback, FilesPanel, OutlinePanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
 import { ConnectionPalette, SettingsPanel, StatusBar, ThemeSwitch } from "./components/dialogs.jsx";
 
@@ -419,11 +420,19 @@ function App() {
 
   useEffect(() => {
     const removeStatus = remoteApi.onStatus((payload) => {
+      if (payload.state === "disconnected" && payload.unexpected) {
+        handleRemoteConnectionLoss(payload.message);
+        return;
+      }
       setStatus((current) => ({ ...current, ...payload }));
       if (payload.metadata) setFileMetadata(payload.metadata);
     });
 
     const removeError = remoteApi.onError((payload) => {
+      if (isConnectionLostError(payload)) {
+        handleRemoteConnectionLoss(payload.message || connectionLostMessage());
+        return;
+      }
       setError(payload);
     });
 
@@ -684,6 +693,21 @@ function App() {
     setError(null);
   }
 
+  // Recover gracefully when the remote connection drops — whether detected
+  // mid-operation or via a background disconnect event. Stop watching, mark the
+  // session detached, drop the now-stale file tree, and surface a clear,
+  // actionable message. The open document and any unsaved edits are kept, and the
+  // remembered source becomes clickable again so the user can reconnect.
+  function handleRemoteConnectionLoss(message) {
+    const text = message || connectionLostMessage();
+    setWatching(false);
+    setConnected(false);
+    setActiveSessionId(null);
+    setFileEntries([]);
+    setError({ code: "CONNECTION_LOST", message: text });
+    setStatus({ state: "error", message: text, checkedAt: null, metadata: null });
+  }
+
   function updateConnection(field, value) {
     setConnection((current) => ({ ...current, [field]: value }));
   }
@@ -832,8 +856,12 @@ function App() {
       const response = await remoteApi.listDirectory(directory);
 
       if (!response.ok) {
-        setError(response.error);
-        setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
+        if (isConnectionLostError(response.error)) {
+          handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        } else {
+          setError(response.error);
+          setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
+        }
         return false;
       }
 
@@ -904,7 +932,11 @@ function App() {
     setBusy(false);
 
     if (!response.ok) {
-      setError(response.error);
+      if (isConnectionLostError(response.error)) {
+        handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+      } else {
+        setError(response.error);
+      }
       return;
     }
 
@@ -1069,8 +1101,12 @@ function App() {
       const response = await remoteApi.openFile(selectedPath);
 
       if (!response.ok) {
-        setError(response.error);
-        setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
+        if (isConnectionLostError(response.error)) {
+          handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        } else {
+          setError(response.error);
+          setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
+        }
         return;
       }
 
@@ -1450,6 +1486,10 @@ function App() {
     setBusy(false);
 
     if (!response.ok) {
+      if (isConnectionLostError(response.error)) {
+        handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        return;
+      }
       setError(response.error);
       if (response.error.code === "REMOTE_CONFLICT") {
         const latest = selectedPath ? await remoteApi.openFile(selectedPath) : null;

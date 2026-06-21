@@ -87,10 +87,38 @@ class RemoteFileProvider extends EventEmitter {
 
     await this.connectWithAttempts(attempts, resolvedConnection);
     this.connected = true;
+    this.attachConnectionListeners();
     this.emit("status", {
       state: "connected",
       message: `Connected to ${config.username}@${config.host}:${config.port}`
     });
+  }
+
+  attachConnectionListeners() {
+    if (!this.client || typeof this.client.on !== "function") return;
+    const onLoss = (error) => this.handleUnexpectedDisconnect(error);
+    this.client.on("error", onLoss);
+    this.client.on("end", () => this.handleUnexpectedDisconnect());
+    this.client.on("close", () => this.handleUnexpectedDisconnect());
+  }
+
+  // Fires when the SSH/SFTP socket drops on its own (network loss, server
+  // closing the session). Mark the provider disconnected, stop polling, and tell
+  // the renderer so it can recover instead of issuing doomed file operations.
+  handleUnexpectedDisconnect(error) {
+    if (this.disconnecting || !this.connected) return;
+    this.connected = false;
+    this.client = null;
+    this.lastVersion = null;
+    if (this.watchTimer) {
+      clearInterval(this.watchTimer);
+      this.watchTimer = null;
+    }
+    this.watchPath = null;
+    this.polling = false;
+    const message = `Lost connection to the remote host${error && error.message ? `: ${error.message}` : "."}`;
+    this.emit("status", { state: "disconnected", message, unexpected: true });
+    this.emit("error", userError("CONNECTION_LOST", message));
   }
 
   async connectWithAttempts(attempts, resolvedConnection) {
@@ -313,6 +341,12 @@ class RemoteFileProvider extends EventEmitter {
     } catch (error) {
       // Suppress errors caused by an intentional disconnect or watch change.
       if (this.disconnecting || this.watchPath !== target) return;
+      // A dropped connection ends the watch and triggers recovery; a transient
+      // error keeps the watch alive with the last rendered content visible.
+      if (isConnectionLossError(error)) {
+        this.handleUnexpectedDisconnect(error);
+        return;
+      }
       this.emit("error", error);
       this.emit("status", {
         state: "watching",
@@ -731,11 +765,37 @@ function userError(code, message) {
   return error;
 }
 
+const CONNECTION_LOSS_CODES = new Set([
+  "CONNECTION_LOST",
+  "NOT_CONNECTED",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "EHOSTDOWN",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "EPIPE",
+  "ENOTCONN"
+]);
+
+const CONNECTION_LOSS_MESSAGE =
+  /econnreset|econnrefused|econnaborted|etimedout|ehostunreach|enetunreach|epipe|enotconn|not connected|no sftp connection|connection (lost|closed|reset|ended|aborted|timed out|refused)|socket (closed|hang ?up)|channel open failure|server unexpectedly closed|keepalive timeout/;
+
+function isConnectionLossError(error) {
+  if (!error) return false;
+  const code = String(error.code || "").toUpperCase();
+  if (CONNECTION_LOSS_CODES.has(code)) return true;
+  return CONNECTION_LOSS_MESSAGE.test(String(error.message || "").toLowerCase());
+}
+
 module.exports = {
   RemoteFileProvider,
   getConnectionProfile,
   getDefaultPrivateKeyPath,
   getSshConfigForHost,
+  isConnectionLossError,
   isRemoteMarkdownPath,
   parseSshConfig,
   resolveConnection,
