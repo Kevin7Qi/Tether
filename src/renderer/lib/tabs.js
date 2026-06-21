@@ -40,6 +40,16 @@ export function removeTab(tabs, id) {
   return tabs.filter((tab) => tab.id !== id);
 }
 
+// Re-key every tab from one source to another, preserving order and per-tab
+// state. Used when a browsed folder is promoted to the source root and the
+// source's directory-derived key changes, so open tabs aren't orphaned.
+export function rekeyTabsForSource(tabs, oldKey, newKey) {
+  if (oldKey === newKey) return tabs;
+  return tabs.map((tab) =>
+    tab.sourceKey === oldKey ? { ...tab, sourceKey: newKey, id: tabId(newKey, tab.path) } : tab
+  );
+}
+
 // Which tab should become active after `closedId` is closed: the one to its
 // left within the same source, else the new leftmost, else null (none left).
 export function selectNeighborTab(tabs, sourceKey, closedId) {

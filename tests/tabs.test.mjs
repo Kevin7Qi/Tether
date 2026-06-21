@@ -7,6 +7,7 @@ import {
   upsertTab,
   patchTab,
   removeTab,
+  rekeyTabsForSource,
   selectNeighborTab
 } from "../src/renderer/lib/tabs.js";
 
@@ -44,6 +45,23 @@ test("patchTab updates only the targeted tab", () => {
   const tabs = [makeTab({ sourceKey: "s", kind: "remote", path: "/a.md", label: "a", doc, metadata: null })];
   const patched = patchTab(tabs, "s::/a.md", { metadata: { size: 10 } });
   assert.deepEqual(patched[0].metadata, { size: 10 });
+});
+
+test("rekeyTabsForSource moves a source's tabs to a new key, leaving others alone", () => {
+  const tabs = [
+    makeTab({ sourceKey: "local:/root", kind: "local", path: "/root/a.md", label: "a", doc }),
+    makeTab({ sourceKey: "remote:x", kind: "remote", path: "/b.md", label: "b", doc }),
+    makeTab({ sourceKey: "local:/root", kind: "local", path: "/root/sub/c.md", label: "c", doc })
+  ];
+  const moved = rekeyTabsForSource(tabs, "local:/root", "local:/root/sub");
+  assert.deepEqual(
+    moved.map((t) => t.id),
+    ["local:/root/sub::/root/a.md", "remote:x::/b.md", "local:/root/sub::/root/sub/c.md"]
+  );
+  assert.equal(moved[0].sourceKey, "local:/root/sub");
+  assert.equal(moved[1].sourceKey, "remote:x");
+  // No-op when keys match
+  assert.equal(rekeyTabsForSource(tabs, "k", "k"), tabs);
 });
 
 test("selectNeighborTab activates the left tab, then the new leftmost, then null", () => {

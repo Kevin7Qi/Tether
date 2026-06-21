@@ -95,6 +95,9 @@ test("applyConnectionTarget parses user@host:path into updates", () => {
     hostOnly[field] = value;
   });
   assert.equal(hostOnly.host, "just-a-host");
+  // No ":path" → the path is explicitly cleared (empty path browses from home),
+  // not left holding a stale previous path.
+  assert.equal(hostOnly.remotePath, "");
 });
 
 test("formatSourcePathDetail returns display path or empty", () => {

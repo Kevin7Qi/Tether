@@ -61,7 +61,7 @@ import { createDocumentState, documentReducer } from "./lib/documentState.js";
 import { PAGE_WIDTH_DEFAULT, clampPageWidth, hotkey } from "./lib/constants.js";
 import { parseOutline } from "./lib/outline.js";
 import { isConnectionLostError, connectionLostMessage } from "./lib/connection.js";
-import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, selectNeighborTab } from "./lib/tabs.js";
+import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, rekeyTabsForSource, selectNeighborTab } from "./lib/tabs.js";
 import { DocumentSurfaceFallback, FilesPanel, OutlinePanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
 import { ConnectionPalette, SettingsPanel, StatusBar, ThemeSwitch } from "./components/dialogs.jsx";
 
@@ -816,7 +816,14 @@ function App() {
   }
 
   function updateConnection(field, value) {
-    setConnection((current) => ({ ...current, [field]: value }));
+    setConnection((current) => {
+      const next = { ...current, [field]: value };
+      // remoteDirectory is a runtime browse hint set at connect time; clear it
+      // when the path is edited so the next connect re-derives it (dirname of the
+      // path, or home when empty) instead of reusing the prior connection's dir.
+      if (field === "remotePath") next.remoteDirectory = "";
+      return next;
+    });
   }
 
   function rememberSourceSession(session) {
@@ -920,7 +927,9 @@ function App() {
       setWatching(false);
       setLocalWorkspaceDirectory(null);
       setLocalFile(null);
-      setSelectedPath(openedPath);
+      // Only a file becomes the selected document; a folder target just browses,
+      // so leave selectedPath empty (else file-refresh/watch would act on a dir).
+      setSelectedPath(response.file ? openedPath : "");
       setCurrentDirectory(directory);
       setFileEntries(response.entries || []);
       if (response.file) {
@@ -1412,6 +1421,42 @@ function App() {
     if (refreshed) showTreeRefreshNotice("sample reloaded");
   }
 
+  // Promote the folder currently shown in the tree to be the source root, so it
+  // is remembered, displayed in Sources, and restored next time. Remote sources
+  // are keyed by connection (tabs unaffected); local sources are keyed by their
+  // directory, so re-key any open tabs onto the new root to keep them.
+  function setCurrentDirectoryAsSource() {
+    if (!currentDirectory) return;
+
+    if (connected) {
+      setConnection((current) => ({ ...current, remoteDirectory: currentDirectory }));
+      const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
+      rememberSourceSession(
+        buildRemoteSourceSession(connection, currentDirectory, "", activeSession?.kind === "remote" ? activeSession.id : "")
+      );
+      showTreeRefreshNotice("source root set");
+      return;
+    }
+
+    if (localWorkspaceDirectory) {
+      const oldKey = localSourceKey(localWorkspaceDirectory);
+      const newKey = localSourceKey(currentDirectory);
+      if (oldKey !== newKey) {
+        const activeTab = tabs.find((tab) => tab.id === activeTabId);
+        setTabs((prev) => rekeyTabsForSource(prev, oldKey, newKey));
+        if (activeTab && activeTab.sourceKey === oldKey) {
+          setActiveTabId(tabId(newKey, activeTab.path));
+        }
+      }
+      setLocalWorkspaceDirectory(currentDirectory);
+      const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
+      rememberSourceSession(
+        buildLocalFolderSourceSession(currentDirectory, currentDirectory, "", activeSession?.kind === "local-folder" ? activeSession.id : "")
+      );
+      showTreeRefreshNotice("source root set");
+    }
+  }
+
   function isSourceSessionOpen(session) {
     if (!session || session.id !== activeSessionId) return false;
 
@@ -1879,6 +1924,7 @@ function App() {
               onOpenEntry={connected ? openEntry : openLocalEntry}
               onToggleDir={toggleDir}
               onEnterDir={enterDirectory}
+              onSetSource={setCurrentDirectoryAsSource}
               onRefresh={refreshSidebarTree}
               onLoadSample={openLocalSample}
             />
@@ -2108,6 +2154,7 @@ function App() {
         connected={connected}
         connection={connection}
         connectionProfile={connectionProfile}
+        currentDirectory={currentDirectory}
         defaultPrivateKeyPath={defaultPrivateKeyPath}
         error={error}
         open={connectionPaletteOpen}

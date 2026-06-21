@@ -194,12 +194,19 @@ class RemoteFileProvider extends EventEmitter {
 
     const stat = await this.client.stat(remotePath);
     const mtimeMs = normalizeMtime(stat);
+    const isDirectory =
+      typeof stat.isDirectory === "function"
+        ? stat.isDirectory()
+        : typeof stat.isDirectory === "boolean"
+          ? stat.isDirectory
+          : (Number(stat.mode) & 0o170000) === 0o040000;
     return {
       path: remotePath,
       size: Number(stat.size || 0),
       mtimeMs,
       mtime: mtimeMs ? new Date(mtimeMs).toISOString() : null,
-      mode: stat.mode
+      mode: stat.mode,
+      isDirectory
     };
   }
 

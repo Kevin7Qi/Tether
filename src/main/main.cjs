@@ -411,6 +411,12 @@ ipcMain.handle("remote:connectAndOpen", async (_event, connection) => {
     const remotePath = connection.remotePath?.trim();
 
     if (remotePath) {
+      // A path may point at a folder (browse it) or a Markdown file (open it).
+      const stat = await provider.statFile(remotePath);
+      if (stat.isDirectory) {
+        const entries = await provider.listDirectory(remotePath);
+        return { ok: true, file: null, directory: remotePath, entries };
+      }
       const file = await provider.readFile(remotePath);
       const directory = path.posix.dirname(remotePath.replace(/\\/g, "/")) || ".";
       const entries = await provider.listDirectory(directory);

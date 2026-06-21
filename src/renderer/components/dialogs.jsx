@@ -9,6 +9,7 @@ export function ConnectionPalette({
   connected,
   connection,
   connectionProfile,
+  currentDirectory,
   defaultPrivateKeyPath,
   error,
   open,
@@ -45,15 +46,23 @@ export function ConnectionPalette({
 
         <div className="target-input">
           <span>❯</span>
+          {/* Uncontrolled: typing (e.g. the ":" before a path) is never eaten by
+              the canonical re-format. It reseeds from defaultValue each time the
+              palette opens, since the input remounts when `open` flips. When
+              connected with no explicit path, seed with the folder being browsed
+              so the line shows where you are, not just the host. */}
           <input
-            value={formatConnectionTarget(connection)}
+            defaultValue={formatConnectionTarget({
+              ...connection,
+              remotePath: connection.remotePath || (connected ? currentDirectory || "" : "")
+            })}
             onChange={(event) => applyConnectionTarget(event.target.value, onUpdate)}
             onKeyDown={(event) => {
               if (event.key !== "Enter" || event.shiftKey || busy) return;
               event.preventDefault();
               onConnect();
             }}
-            placeholder="user@host:/path/to/doc.md — or use local actions below"
+            placeholder="user@host:/folder or /file.md — empty browses home"
             spellCheck="false"
           />
         </div>
@@ -244,12 +253,12 @@ export function ConnectionPanel({
         </>
       )}
 
-      <Field label="Remote Markdown Path">
+      <Field label="Remote Path (folder or file)">
         <input
           value={connection.remotePath}
           autoComplete="off"
           onChange={(event) => onUpdate("remotePath", event.target.value)}
-          placeholder="Optional: /srv/docs/readme.md"
+          placeholder="Optional: /srv/docs  or  /srv/docs/readme.md"
         />
       </Field>
         </div>

@@ -87,7 +87,9 @@ export function applyConnectionTarget(value, onUpdate) {
   if (!match?.groups) return;
   onUpdate("host", match.groups.host || "");
   if (match.groups.username !== undefined) onUpdate("username", match.groups.username);
-  if (match.groups.remotePath !== undefined) onUpdate("remotePath", match.groups.remotePath);
+  // Always reflect the path portion, so deleting ":path" from the target clears
+  // it (empty path browses from home) rather than silently keeping the old path.
+  onUpdate("remotePath", match.groups.remotePath || "");
 }
 
 export function formatSourcePathDetail(value) {

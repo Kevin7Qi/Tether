@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { ArrowRight, ChevronRight, File, FileText, Folder, FolderOpen, RefreshCw, Settings } from "lucide-react";
+import { ArrowRight, ChevronRight, File, FileText, Folder, FolderOpen, Pin, RefreshCw, Settings } from "lucide-react";
 import { canGoUp, formatSidebarDirectoryPath, localCanGoUp, localParentPath, parentRemotePath } from "../lib/paths.js";
 import { statusTextForLoading } from "../lib/format.js";
 import { hotkey } from "../lib/constants.js";
@@ -340,6 +340,7 @@ export function FilesPanel({
   onOpenEntry,
   onToggleDir,
   onEnterDir,
+  onSetSource,
   onRefresh,
   onLoadSample
 }) {
@@ -358,9 +359,20 @@ export function FilesPanel({
       {directoryPath && !sourceLoading && (
         <div className="sidebar-path" title={directoryPath.full} aria-label={`Current folder: ${directoryPath.full}`}>
           <span>{directoryPath.display}</span>
+          {(connected || showLocalTree) && (
+            <button
+              className="path-action"
+              type="button"
+              title="Set this folder as the source root"
+              aria-label="Set this folder as the source root"
+              onClick={onSetSource}
+            >
+              <Pin size={11} />
+            </button>
+          )}
           {canRefreshTree && (
             <button
-              className={`path-refresh ${treeLoading ? "loading" : ""}`}
+              className={`path-action path-refresh ${treeLoading ? "loading" : ""}`}
               type="button"
               disabled={treeLoading}
               aria-busy={treeLoading}
