@@ -407,6 +407,7 @@ ipcMain.handle("state:saveUiState", async (_event, patch = {}) => {
 
 ipcMain.handle("remote:connectAndOpen", async (_event, connection) => {
   try {
+    assertObject(connection, "Connection");
     await provider.connect(connection);
     const remotePath = connection.remotePath?.trim();
 
@@ -574,6 +575,7 @@ ipcMain.handle("remote:disconnect", async () => {
 
 ipcMain.handle("remote:openFile", async (_event, remotePath) => {
   try {
+    assertString(remotePath, "Remote path");
     const file = await provider.readFile(remotePath);
     return { ok: true, file };
   } catch (error) {
@@ -583,6 +585,7 @@ ipcMain.handle("remote:openFile", async (_event, remotePath) => {
 
 ipcMain.handle("remote:listDirectory", async (_event, remotePath) => {
   try {
+    assertString(remotePath, "Remote path");
     const entries = await provider.listDirectory(remotePath);
     return { ok: true, entries };
   } catch (error) {

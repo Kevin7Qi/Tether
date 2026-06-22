@@ -305,6 +305,10 @@ function App() {
   const resolvedTheme = preferences.theme === "system" ? systemTheme : preferences.theme;
   const previewRef = useRef(null);
   const scrollRatioRef = useRef(0);
+  // Mirror `dirty` into a ref so the remote-update listeners (subscribed once)
+  // can read the latest value without re-subscribing on every keystroke.
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
   const pingTimerRef = useRef(null);
   const pingRequestRef = useRef(0);
   const documentRefreshTimerRef = useRef(null);
@@ -376,7 +380,6 @@ function App() {
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
-    const root = document.documentElement;
     let canceled = false;
 
     function showBootOverlay() {
@@ -452,7 +455,9 @@ function App() {
       removeError();
       removeUpdate();
     };
-  }, [dirty]);
+    // Subscribe once: the handlers read live state through refs/stable setters,
+    // so they never need to re-bind (previously re-ran on every `dirty` toggle).
+  }, []);
 
   useEffect(() => {
     restoreScrollRatio(previewRef, scrollRatioRef);
@@ -707,8 +712,9 @@ function App() {
     setLastRefresh(file.refreshedAt);
     setError(null);
     // Metadata only updates when adopting the file; during a conflict the open
-    // file's metadata is preserved (matching the pre-reducer behavior).
-    if (!dirty) setFileMetadata(file.metadata);
+    // file's metadata is preserved (matching the pre-reducer behavior). Read the
+    // ref so this stays correct when invoked from the once-subscribed listener.
+    if (!dirtyRef.current) setFileMetadata(file.metadata);
     dispatchDocument({ type: "REMOTE_UPDATE", file });
   }
 
@@ -743,10 +749,17 @@ function App() {
   // active tab's live edits, upsert the new tab, and make it the live document.
   function adoptFileIntoTab({ sourceKey, kind, path, label, file }) {
     const id = tabId(sourceKey, path);
+    captureScrollRatio(previewRef, scrollRatioRef);
+    const outgoingScrollRatio = scrollRatioRef.current;
     setTabs((prev) => {
       const snapshotted =
         activeTabId && activeTabId !== id
-          ? patchTab(prev, activeTabId, { doc: documentState, metadata: fileMetadata, refreshedAt: lastRefresh })
+          ? patchTab(prev, activeTabId, {
+              doc: documentState,
+              metadata: fileMetadata,
+              refreshedAt: lastRefresh,
+              scrollRatio: outgoingScrollRatio
+            })
           : prev;
       return upsertTab(
         snapshotted,
@@ -758,9 +771,11 @@ function App() {
     setSelectedPath(path);
   }
 
-  // Make a stored tab live again (tab switch / close-to-neighbor).
+  // Make a stored tab live again (tab switch / close-to-neighbor). Seed the
+  // scroll ref with the tab's saved ratio; the restore-scroll effect applies it
+  // on the next frame once the restored content has rendered.
   function restoreTab(tab) {
-    scrollRatioRef.current = 0;
+    scrollRatioRef.current = tab.scrollRatio || 0;
     dispatchDocument({ type: "RESTORE", doc: tab.doc });
     setSelectedPath(tab.path);
     setFileMetadata(tab.metadata);
@@ -775,12 +790,21 @@ function App() {
     if (id === activeTabId) return;
     const target = tabs.find((tab) => tab.id === id);
     if (!target) return;
+    captureScrollRatio(previewRef, scrollRatioRef);
+    const outgoingScrollRatio = scrollRatioRef.current;
     if (watching) {
       remoteApi.stopWatching();
       setWatching(false);
     }
     if (activeTabId) {
-      setTabs((prev) => patchTab(prev, activeTabId, { doc: documentState, metadata: fileMetadata, refreshedAt: lastRefresh }));
+      setTabs((prev) =>
+        patchTab(prev, activeTabId, {
+          doc: documentState,
+          metadata: fileMetadata,
+          refreshedAt: lastRefresh,
+          scrollRatio: outgoingScrollRatio
+        })
+      );
     }
     restoreTab(target);
   }
