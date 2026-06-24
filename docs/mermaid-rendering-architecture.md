@@ -1,0 +1,410 @@
+# Mermaid Rendering Architecture Spec
+
+- Goal contract reference
+  - Source: user request on 2026-06-21: pull `https://github.com/Kevin7Qi/Tether/tree/tether-mac-and-polish`, then clarify requirements and architecture before implementation review.
+  - Target branch: `tether-mac-and-polish`, now checked out locally and tracking `origin/tether-mac-and-polish`.
+  - Primary feature goal: Tether should render Mermaid diagrams from Markdown instead of showing `mermaid` fenced blocks as plain code.
+  - Current review boundary: produce requirements and architecture only. Do not implement Mermaid rendering until the spec is reviewed.
+  - Key constraint from the existing product: Tether opens local and remote Markdown, so diagram rendering must treat document content as untrusted renderer input.
+
+- Detected artifact type and routing decision
+  - Artifact type: code/product architecture spec for a React/Electron Markdown preview feature.
+  - Selected route: code/product route with architecture, dependency feasibility, UX/design, test strategy, and critic review.
+  - Attached support perspectives:
+    - `architect`: map the feature into existing renderer boundaries and avoid unnecessary main/preload IPC.
+    - `dependency-expert`: check Mermaid package feasibility and API shape.
+    - `designer`: define how diagram blocks should look and fail inside the current reading surface.
+    - `test-engineer`: define build, unit, and manual visual checks.
+    - `critic`: identify security, performance, and maintenance failure modes.
+  - Routes not selected:
+    - Document/report route is insufficient because the deliverable is an implementation-ready product spec.
+    - PPT/deck route is irrelevant because no slide or presentation artifact is requested.
+    - Full RAF implementation route is premature because the user asked to review architecture before code changes.
+
+- Current system observations
+  - `src/renderer/DocumentSurface.jsx` is the Markdown rendering boundary.
+    - It uses `react-markdown`, `remark-gfm`, `remark-math`, and `rehype-katex`.
+    - Fenced code blocks are intercepted through the `code` component and rendered by `CodeRenderer` and `CodeBlock`.
+    - The current code path normalizes languages, labels blocks, highlights selected languages, and supports copy.
+  - `src/renderer/App.jsx` owns app state, source/session workflows, theme resolution, and passes content into the lazy `DocumentSurface`.
+  - `src/renderer/styles.css` owns Markdown typography, code block styling, theme variables, and responsive layout.
+  - `src/main/main.cjs` and `src/main/preload.cjs` already maintain a narrow security boundary.
+    - BrowserWindow has `contextIsolation: true`, `sandbox: true`, and `nodeIntegration: false`.
+    - External navigation is intercepted and opened through `shell.openExternal` only for allowed protocols.
+  - `package.json` currently has no Mermaid dependency.
+    - `npm view mermaid version dist-tags.latest --json` returned `11.15.0` on 2026-06-21.
+    - Mermaid official usage docs describe a browser API based on initialization plus explicit rendering or running, and recommend disabling automatic page-load scanning for controlled integrations: https://mermaid.js.org/config/usage.html
+
+- Requirements
+  - Functional requirements
+    - Render Markdown fenced code blocks whose language normalizes to `mermaid`.
+    - Treat these examples as Mermaid diagrams:
+      - ````markdown
+        ```mermaid
+        flowchart TD
+          A[Open Markdown] --> B[Render Preview]
+        ```
+        ````
+      - ````markdown
+        ```Mermaid
+        sequenceDiagram
+          Alice->>Bob: Ping
+        ```
+        ````
+    - Render diagrams in preview, split, and zen preview modes.
+    - Keep source mode unchanged; users still edit Mermaid as normal Markdown text.
+    - Preserve the existing copy affordance for diagram source.
+    - Preserve all existing behavior for non-Mermaid code blocks.
+    - Show a non-fatal inline error state when a diagram cannot be parsed or rendered.
+    - Keep the original Mermaid source reachable in the error state so users can fix or copy it.
+    - Re-render diagrams when the app theme changes between dark and light.
+    - Support common Mermaid diagram types handled by the installed Mermaid package, without adding custom syntax transforms in Tether.
+  - Security requirements
+    - Do not enable raw Markdown HTML rendering.
+    - Do not add `rehype-raw` or broad HTML injection to the Markdown pipeline.
+    - Do not add new main-process or preload IPC APIs for Mermaid.
+    - Do not allow Markdown-authored Mermaid config to relax security settings.
+    - Initialize Mermaid with `startOnLoad: false`.
+    - Use Mermaid `securityLevel: "strict"` for the first implementation.
+    - Do not call Mermaid `bindFunctions` in the first implementation, so diagram-authored click actions do not become app interactions.
+    - Prefer SVG generated by Mermaid only; do not execute script, remote fetches, or arbitrary callbacks from Markdown content.
+  - UX requirements
+    - A rendered diagram should feel like a first-class Markdown block, not a raw code block.
+    - The block should have a compact toolbar consistent with existing code blocks.
+    - The toolbar should identify the block as `Mermaid` and expose source copy.
+    - Large diagrams should scroll horizontally inside the Markdown page instead of breaking page width.
+    - Diagrams should remain readable in both dark and light themes.
+    - Loading should be quiet and localized to the diagram block.
+    - Error copy should be concise, actionable, and avoid dumping long stack traces into the reading surface.
+  - Performance requirements
+    - Mermaid should be dynamically imported only when a Mermaid block exists.
+    - DocumentSurface should not statically include Mermaid in the initial renderer chunk.
+    - Multiple diagrams in one document should not race into stale output during fast edits.
+    - Rendering should be cancel-safe from React's perspective: late results from old source/theme values must be ignored.
+  - Non-goals for the first pass
+    - No visual Mermaid editor.
+    - No image export, SVG download, or copy-as-image.
+    - No user preference panel for Mermaid configuration.
+    - No support for arbitrary Markdown HTML.
+    - No remote/server-side rendering.
+    - No cross-document render cache.
+    - No custom Mermaid theme builder beyond mapping Tether dark/light to Mermaid config.
+
+- Perspective map
+  - User perspective
+    - The user wants Markdown docs that already contain Mermaid diagrams to look correct inside Tether.
+    - It would feel wrong if diagrams appear as source code, crash the document, flicker during editing, or become unreadable in dark mode.
+    - It would also feel wrong if a bad diagram blocks the rest of the document from rendering.
+  - Audience or consumer perspective
+    - The final reader needs diagrams to be legible, visually integrated, and trustworthy.
+    - They should not need to know Mermaid internals to understand why a diagram failed.
+    - They need source copy because diagram source is often part of technical documentation review.
+  - Implementer perspective
+    - The existing renderer already has the correct extension point: `CodeRenderer`.
+    - The feature can be implemented entirely in the renderer layer.
+    - The main implementation risks are asynchronous rendering, sanitized SVG insertion, theme synchronization, and bundle size.
+  - Reviewer perspective
+    - Rejection triggers would include broad HTML enabling, main/preload surface expansion, unbounded security config from Markdown, unhandled parse errors, or static Mermaid import that hurts startup.
+    - Review should also reject an implementation that regresses normal code block rendering or copy behavior.
+  - Maintainer perspective
+    - Mermaid integration should be isolated enough that future dependency/API changes are localized.
+    - Pure helpers should be testable without a browser DOM where possible.
+    - The component should expose clear states: idle/loading/rendered/error/stale ignored.
+
+- Champion variant
+  - Shape
+    - Add Mermaid as a renderer-only dependency.
+    - Add a small renderer helper module for Mermaid import/config/render orchestration.
+    - Extend `CodeRenderer` in `DocumentSurface.jsx` so normalized `language === "mermaid"` returns a dedicated `MermaidBlock`.
+    - `MermaidBlock` dynamically imports Mermaid, renders SVG for the block, and displays the SVG in a styled wrapper.
+    - `App.jsx` passes the resolved theme into `DocumentSurface`, and `DocumentSurface` passes it to `MermaidBlock`.
+  - Why it best satisfies the goal
+    - It uses the existing Markdown component override rather than altering file access, document state, or Electron IPC.
+    - It is narrow, easy to review, and keeps Mermaid behavior attached to the only language that needs it.
+    - It preserves the current source editor and non-Mermaid code rendering.
+    - It enables graceful diagram-level error states.
+  - Assumptions
+    - Mermaid browser rendering works in Electron's sandboxed renderer without Node APIs.
+    - Mermaid strict security mode is acceptable for documentation diagrams in the first pass.
+    - Users mainly need preview rendering, not export or custom configuration.
+  - Likely failure modes
+    - SVG injection concerns require additional sanitization or iframe isolation.
+    - Mermaid bundle size may be more noticeable than expected.
+    - Some diagrams may rely on clickable links or HTML labels that strict mode disables.
+    - Dynamic edits may produce late render results unless stale requests are guarded.
+
+- Challenger variant
+  - Shape
+    - Use a Markdown/rehype plugin to transform Mermaid fences during the Markdown pipeline.
+    - The plugin would emit raw HTML/SVG nodes into the Markdown render tree.
+  - What it optimizes differently
+    - It keeps the diagram transform conceptually inside Markdown parsing rather than inside a code-block component.
+    - It may be appealing if many Markdown extensions later need AST-level treatment.
+  - Why it is not selected for the first pass
+    - It risks pushing raw HTML handling into the Markdown pipeline.
+    - It makes per-diagram loading and error states harder to own.
+    - It is a larger architectural move than this feature needs.
+  - Condition under which it would beat the champion
+    - If Tether later standardizes on a full Markdown AST extension system with explicit sanitization, plugin registration, and unified render metadata, an AST-based Mermaid plugin could become cleaner.
+
+- Falsifier
+  - Cheapest rejection test for the champion
+    - Add one valid flowchart, one sequence diagram, and one invalid Mermaid block to `samples/sample.md` in a throwaway branch.
+    - Render in preview and split modes under both dark and light themes.
+    - Edit the diagram rapidly and confirm stale render results do not replace newer output.
+    - Confirm bad Mermaid shows an inline error and does not break surrounding Markdown.
+    - Build the renderer and inspect that Mermaid is split into an async chunk rather than statically imported into `DocumentSurface`.
+  - Evidence that should trigger backprop rather than local fixes
+    - Mermaid cannot render reliably in Electron's sandboxed renderer.
+    - Strict mode cannot satisfy common documentation diagrams the user needs.
+    - SVG insertion is deemed unacceptable without an isolation strategy.
+    - Bundle size or render latency is unacceptable for normal docs.
+
+- Selected approach and rationale
+  - Select the champion variant.
+  - Keep the integration inside the renderer because Mermaid is a presentation concern over already-loaded Markdown content.
+  - Do not touch `src/main` or `src/main/preload.cjs`.
+  - Do not add raw HTML support to `react-markdown`.
+  - Add one direct dependency:
+    - `mermaid` using the repo's existing caret dependency style, for example `^11.15.0` if implementation happens against the version checked on 2026-06-21.
+  - Use dynamic import:
+    - The helper should call `await import("mermaid")` only from Mermaid code paths.
+    - The default export should be normalized because package interop can vary across bundlers.
+  - Use controlled config:
+    - `startOnLoad: false`
+    - `securityLevel: "strict"`
+    - `theme: "dark"` for dark UI and a light-compatible Mermaid theme for light UI.
+    - Prefer `flowchart: { htmlLabels: false }` in the first pass if visual output remains acceptable, because Tether does not need arbitrary HTML labels from remote docs.
+  - Render strategy:
+    - Generate a stable DOM-safe ID per block render request.
+    - Call Mermaid's render API with the ID and source.
+    - Ignore late results if the source or theme changed while rendering.
+    - Insert the returned SVG into a diagram body owned by `MermaidBlock`.
+    - Do not call Mermaid event binding in the first pass.
+  - Error strategy:
+    - Catch render and parse errors at the block level.
+    - Show a compact message such as `Unable to render Mermaid diagram`.
+    - Include the first useful error line when available.
+    - Keep a source copy button available.
+    - Do not throw errors out to the entire Markdown renderer.
+
+- Implementation spec with acceptance checks
+  - Dependency update
+    - Change `package.json` and `package-lock.json` by installing Mermaid.
+    - Acceptance checks:
+      - `npm install mermaid` completes.
+      - `package-lock.json` records a deterministic Mermaid version.
+      - `npm run build` resolves the package in Vite/Electron renderer code.
+  - Renderer helper
+    - Add a helper under `src/renderer/lib/`, for example `mermaidRenderer.js`.
+    - Responsibilities:
+      - Lazy-load Mermaid.
+      - Build a Mermaid config from Tether theme.
+      - Initialize Mermaid with strict controlled config.
+      - Render source to SVG.
+      - Normalize thrown errors into displayable messages.
+    - Acceptance checks:
+      - Pure config helpers are covered by Node tests.
+      - Helper does not import Electron, Node, or app IPC.
+      - Helper never accepts Markdown-provided config.
+  - DocumentSurface component changes
+    - Add a `theme` or `resolvedTheme` prop to `DocumentSurface`.
+    - Pass the prop from `App.jsx`.
+    - Extend `CodeRenderer` so normalized Mermaid blocks use `MermaidBlock`.
+    - Keep normal `CodeBlock` path unchanged for every other language.
+    - Acceptance checks:
+      - A `mermaid` fence renders as a diagram block.
+      - A `js` fence still renders as the existing code block.
+      - Inline code containing the word `mermaid` remains inline code.
+      - Copy source still works through the existing `copyText` bridge.
+  - MermaidBlock component
+    - States:
+      - loading while the dynamic import/render promise is in flight.
+      - rendered with SVG.
+      - error with fallback details and source copy.
+    - Behavior:
+      - Re-render on source change.
+      - Re-render on theme change.
+      - Ignore stale async results.
+      - Unmount cleanly without setting state after unmount.
+    - Acceptance checks:
+      - Invalid Mermaid does not crash the app.
+      - Fast edits do not show old diagrams after newer source is present.
+      - Multiple Mermaid blocks render independently.
+      - Diagram source can be copied in loading, rendered, and error states.
+  - Styling
+    - Add Mermaid block CSS near existing code block styles in `src/renderer/styles.css`.
+    - Required styling:
+      - Compact toolbar aligned with code block visual language.
+      - Diagram body with horizontal overflow.
+      - `svg { max-width: 100%; height: auto; }` where possible.
+      - Theme-aware background and border.
+      - Error tone using existing warning variables.
+    - Acceptance checks:
+      - Wide diagrams do not overflow the page.
+      - Dark and light themes remain legible.
+      - Mobile/narrow widths do not overlap toolbar controls or diagram content.
+  - Sample and README updates
+    - Add one Mermaid example to `samples/sample.md` after the implementation is reviewed and accepted.
+    - Update README highlights to include Mermaid diagrams.
+    - Acceptance checks:
+      - Sample document demonstrates a real diagram.
+      - README accurately describes the supported behavior and does not overpromise editing/export.
+  - Tests and verification hooks
+    - Add Node tests for pure helper logic such as theme-to-config mapping and error normalization.
+    - Use `npm run test` for existing tests and new helper tests.
+    - Use `npm run build` as the renderer integration check.
+    - Manual visual check remains required because current test setup has no DOM renderer test harness.
+
+- Implementation backlog
+  - `must`: Add Mermaid dependency.
+    - Expected value: gives the renderer a maintained Mermaid parser and SVG generator.
+    - Risk: bundle size and transitive dependency footprint.
+    - Dependencies: npm registry access.
+    - Required agents: dependency-expert, implementer.
+    - Verification evidence: lockfile diff and successful `npm run build`.
+    - Stop/continue criteria: stop if Vite cannot bundle Mermaid in the sandboxed renderer.
+  - `must`: Add renderer helper for Mermaid config and rendering.
+    - Expected value: isolates Mermaid API churn and keeps `DocumentSurface` smaller.
+    - Risk: API differences between Mermaid versions.
+    - Dependencies: Mermaid package.
+    - Required agents: architect, implementer, test-engineer.
+    - Verification evidence: helper tests plus build.
+    - Stop/continue criteria: continue if helper can render with strict config; backprop if it requires unsafe config.
+  - `must`: Add `MermaidBlock` and wire `language-mermaid` in `CodeRenderer`.
+    - Expected value: converts Mermaid fences into diagrams without disrupting Markdown parsing.
+    - Risk: stale async renders, React state after unmount, SVG insertion review.
+    - Dependencies: helper module.
+    - Required agents: implementer, critic.
+    - Verification evidence: manual preview with valid, invalid, and multiple diagrams.
+    - Stop/continue criteria: continue if non-Mermaid code blocks are unchanged and errors are block-local.
+  - `must`: Add theme-aware and responsive Mermaid CSS.
+    - Expected value: diagrams feel native to Tether and remain readable.
+    - Risk: Mermaid SVG internal styles can fight app CSS.
+    - Dependencies: block markup.
+    - Required agents: designer, implementer.
+    - Verification evidence: screenshots or manual checks in dark/light and narrow layout.
+    - Stop/continue criteria: continue if diagrams are legible without page overflow.
+  - `must`: Update tests, sample, and README after implementation.
+    - Expected value: locks expected behavior and makes the feature discoverable.
+    - Risk: sample may become noisy if too large.
+    - Dependencies: working renderer.
+    - Required agents: test-engineer, writer.
+    - Verification evidence: `npm run test`, `npm run build`, sample preview.
+    - Stop/continue criteria: continue if docs match implemented scope.
+  - `should`: Add a small source toggle or expandable source fallback for rendered diagrams.
+    - Expected value: easier diagram review without switching to source/split mode.
+    - Risk: extra UI state and more toolbar complexity.
+    - Dependencies: accepted first-pass block design.
+    - Required agents: designer, implementer.
+    - Verification evidence: copy/source UI does not crowd small widths.
+    - Stop/continue criteria: defer if copy-only is enough for the first release.
+  - `should`: Add visual verification using the app/browser once implementation exists.
+    - Expected value: catches blank SVG, overflow, and theme regressions.
+    - Risk: requires local dev server/app automation setup.
+    - Dependencies: implemented feature.
+    - Required agents: test-engineer.
+    - Verification evidence: desktop and compact viewport screenshots.
+    - Stop/continue criteria: continue if screenshots show nonblank diagrams and no overlap.
+  - `could`: Add copy-as-SVG or save-as-SVG.
+    - Expected value: useful for documentation workflows.
+    - Risk: expands scope into export permissions and filename handling.
+    - Dependencies: stable SVG render output.
+    - Required agents: architect, designer, implementer.
+    - Verification evidence: exported SVG opens outside Tether.
+    - Stop/continue criteria: defer until preview rendering is stable.
+  - `could`: Add user preferences for Mermaid theme or security-compatible options.
+    - Expected value: advanced docs can tune appearance.
+    - Risk: user config can weaken the security boundary if not carefully constrained.
+    - Dependencies: product decision on config surface.
+    - Required agents: architect, designer, critic.
+    - Verification evidence: preference persistence and safety tests.
+    - Stop/continue criteria: defer unless real documents require it.
+  - `defer`: Interactive Mermaid click callbacks.
+    - Expected value: supports Mermaid documents that use click actions.
+    - Risk: opens a new trusted interaction surface from remote Markdown.
+    - Dependencies: explicit security design for allowed link protocols and event binding.
+    - Required agents: security reviewer, architect.
+    - Verification evidence: malicious diagram tests.
+    - Stop/continue criteria: require a separate review before implementation.
+  - `defer`: Server-side or remote rendering.
+    - Expected value: could isolate SVG generation.
+    - Risk: requires services, networking, caching, and privacy decisions.
+    - Dependencies: product-level architecture change.
+    - Required agents: architect, security reviewer.
+    - Verification evidence: threat model and latency profile.
+    - Stop/continue criteria: not needed for the current desktop preview goal.
+
+- Verification plan
+  - Local setup commands after implementation:
+    - `npm install`
+    - `npm run test`
+    - `npm run build`
+  - Manual app verification after implementation:
+    - `npm run dev`
+    - Open the sample document.
+    - Confirm a valid flowchart renders.
+    - Confirm a valid sequence diagram renders.
+    - Confirm an invalid Mermaid block shows an inline error only.
+    - Toggle dark/light/system theme and confirm diagrams update.
+    - Switch preview/split/source modes and confirm expected behavior.
+    - Edit Mermaid source rapidly in split mode and confirm latest source wins.
+    - Check a narrow window width for toolbar and overflow behavior.
+  - Security inspection after implementation:
+    - Confirm no `rehype-raw` or raw Markdown HTML support was added.
+    - Confirm no new preload or main-process API was added.
+    - Confirm Mermaid is initialized with strict security config.
+    - Confirm diagram click callbacks are not bound.
+    - Confirm external navigation policy in `main.cjs` remains unchanged.
+  - Bundle inspection after implementation:
+    - Confirm Mermaid is dynamically imported and separated from the initial renderer path.
+    - Confirm normal documents without Mermaid still load through existing lazy `DocumentSurface` behavior.
+
+- Supervision plan
+  - Main Codex supervisor responsibilities:
+    - Own final review of security boundary changes.
+    - Verify that implementation remains scoped to renderer/doc/sample/package files unless new evidence requires otherwise.
+    - Run and report tests/build.
+    - Inspect diffs for accidental broad refactors.
+  - Delegatable checks:
+    - Dependency feasibility and current package API notes.
+    - Visual QA screenshots after implementation.
+    - Unit test expansion for helper functions.
+  - Non-delegatable approval gates:
+    - User approval of this architecture before implementation.
+    - Any decision to relax Mermaid security settings.
+    - Any decision to support raw Markdown HTML or interactive Mermaid callbacks.
+    - Any decision to add main/preload IPC.
+  - RAF runtime mapping:
+    - `raf-dispatch`: implement dependency/helper/component/style/docs/tests in the order listed in the backlog.
+    - `raf-verify`: run tests/build and complete manual visual/security checks.
+    - `raf-backprop`: return to this spec if implementation evidence contradicts assumptions.
+  - Parallelism notes:
+    - Dependency/helper work must precede component wiring.
+    - CSS and README/sample updates can proceed after block markup stabilizes.
+    - Security review must happen after final diff, not only during design.
+
+- Backprop rules
+  - Return to goal-setting if:
+    - The user wants a broader product goal such as Mermaid editing, export, diagram search, or interactive callbacks.
+    - The user wants to treat Mermaid as part of a larger Markdown extension platform.
+  - Return to architecture-spec if:
+    - Mermaid strict mode blocks required diagrams.
+    - SVG insertion is rejected and an iframe or worker-based isolation design is needed.
+    - Bundle or runtime costs require a different loading strategy.
+  - Stay inside implementation if:
+    - The issue is a local component bug, stale render race, styling issue, parse error display bug, or missing helper test.
+
+- Recommended next stage
+  - Review this document first.
+  - If approved, proceed to implementation against these files:
+    - `package.json`
+    - `package-lock.json`
+    - `src/renderer/lib/mermaidRenderer.js`
+    - `src/renderer/DocumentSurface.jsx`
+    - `src/renderer/App.jsx`
+    - `src/renderer/styles.css`
+    - `samples/sample.md`
+    - `README.md`
+    - `tests/*.test.mjs`
+  - Implementation should consume this spec as the source of truth and avoid relying on chat memory.

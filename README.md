@@ -8,7 +8,7 @@ The app is built for working with notes, project docs, and reference material wi
 
 - Open Markdown files from local disk, local folders, or SSH/SFTP.
 - Browse remote and local folders from a persistent source sidebar.
-- Render GitHub-flavored Markdown, tables, task lists, fenced code blocks, and LaTeX math.
+- Render GitHub-flavored Markdown, tables, task lists, fenced code blocks, Mermaid diagrams, and LaTeX math.
 - Switch between Read, Split, and Source views.
 - Edit Markdown with line-numbered source view and save back to local disk or SFTP.
 - Watch remote files with SFTP polling and keep the last good render visible if refresh fails.
@@ -106,7 +106,7 @@ Tether keeps file access in the Electron main process and exposes a narrow IPC b
 - `src/main/preload.cjs`: renderer-safe API bridge.
 - `src/main/remoteFileProvider.cjs`: SSH/SFTP connection, directory listing, stat, read, write, polling, SSH config resolution, and host key checks.
 - `src/renderer/App.jsx`: React app shell, source/session state, sidebar, toolbar, settings, local/remote workflow, and editor state.
-- `src/renderer/DocumentSurface.jsx`: lazy-loaded Markdown renderer, source editor, code blocks, copy actions, highlighting, and math support.
+- `src/renderer/DocumentSurface.jsx`: lazy-loaded Markdown renderer, source editor, code blocks, Mermaid diagrams, copy actions, highlighting, and math support.
 - `src/renderer/styles.css`: application layout, themes, Markdown typography, editor styling, and responsive behavior.
 
 ## Security Model

@@ -1398,6 +1398,107 @@ textarea:focus-visible,
   line-height: 1.66;
 }
 
+.markdown-document .mermaid-block {
+  margin: 2px 0 28px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--surface) 82%, var(--code));
+  color: var(--ink);
+}
+
+.markdown-document .mermaid-block.has-error {
+  border-color: color-mix(in srgb, var(--warn) 46%, var(--line));
+}
+
+.mermaid-block-toolbar {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: color-mix(in srgb, var(--code) 46%, transparent);
+  padding: 6px 8px 5px 14px;
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.mermaid-block-body {
+  min-width: 0;
+  overflow-x: auto;
+  padding: 18px;
+}
+
+.mermaid-rendered {
+  display: grid;
+  justify-items: center;
+  background: color-mix(in srgb, var(--surface) 92%, var(--bg));
+}
+
+.mermaid-rendered svg {
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.mermaid-block-message {
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.mermaid-error {
+  display: grid;
+  gap: 10px;
+  background: var(--warn-bg);
+  color: var(--ink2);
+  font-family: var(--ui);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.mermaid-error strong {
+  color: var(--warn);
+  font-family: var(--ui);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mermaid-error span {
+  overflow-wrap: anywhere;
+}
+
+.mermaid-error details {
+  min-width: 0;
+  font-family: var(--mono);
+}
+
+.mermaid-error summary {
+  width: max-content;
+  max-width: 100%;
+  color: var(--ink3);
+  cursor: pointer;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.markdown-document .mermaid-error pre {
+  margin: 10px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  border-color: color-mix(in srgb, var(--warn) 28%, var(--line));
+  background: color-mix(in srgb, var(--code) 86%, transparent);
+}
+
 .code-block-toolbar {
   min-height: 30px;
   display: flex;

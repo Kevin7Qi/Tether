@@ -1744,6 +1744,7 @@ function App() {
             loadingTitle={sourceOpening?.title}
             onEditorChange={onEditorChange}
             previewRef={previewRef}
+            theme={resolvedTheme}
             sourceLabel={sourceLabel}
             viewMode={zenMode ? "preview" : viewMode}
           />

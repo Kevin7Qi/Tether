@@ -16,6 +16,7 @@ Inline code such as `remotePath`, `~/.ssh/config`, and `provider.readFile()` sho
 - [x] Tables
 - [x] Fenced code blocks
 - [x] Inline and block math
+- [x] Mermaid diagrams
 - [x] Your remote documentationx
 
 ## Table
@@ -36,6 +37,16 @@ async function refreshRemoteFile(provider, path) {
   const document = await provider.readFile(path);
   return { metadata, content: document.content };
 }
+```
+
+## Mermaid
+
+```mermaid
+flowchart LR
+  Local[Local file] --> Preview[Rendered preview]
+  Remote[SSH/SFTP source] --> Preview
+  Preview --> Edit[Source editing]
+  Edit --> Save[Save back]
 ```
 
 ## Math

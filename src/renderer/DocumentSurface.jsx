@@ -5,6 +5,11 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { Check, Copy } from "lucide-react";
 import "katex/dist/katex.min.css";
+import {
+  normalizeMermaidError,
+  normalizeMermaidSource,
+  renderMermaidDiagram
+} from "./lib/mermaidRenderer.js";
 
 function DocumentSurface({
   content,
@@ -19,6 +24,7 @@ function DocumentSurface({
   onEditorChange,
   previewRef,
   sourceLabel,
+  theme,
   viewMode
 }) {
   const gutterRef = useRef(null);
@@ -122,7 +128,7 @@ function DocumentSurface({
               components={{
                 a: LinkRenderer,
                 pre: PreRenderer,
-                code: (props) => <CodeRenderer {...props} copyText={copyText} />
+                code: (props) => <CodeRenderer {...props} copyText={copyText} theme={theme} />
               }}
             >
               {content}
@@ -158,20 +164,139 @@ function PreRenderer({ children }) {
   return <>{children}</>;
 }
 
-function CodeRenderer({ inline, className = "", children, copyText, node, ...props }) {
+function CodeRenderer({ inline, className = "", children, copyText, node, theme, ...props }) {
   const rawCode = String(children ?? "");
   const languageMatch = /language-([\w-]+)/i.exec(className);
   const language = normalizeCodeLanguage(languageMatch?.[1] || "");
   const isBlock = !inline && (languageMatch || rawCode.includes("\n"));
 
   if (isBlock) {
-    return <CodeBlock code={rawCode.replace(/\n$/, "")} copyText={copyText} language={language} />;
+    const code = rawCode.replace(/\n$/, "");
+    if (language === "mermaid") {
+      return <MermaidBlock code={code} copyText={copyText} theme={theme} />;
+    }
+    return <CodeBlock code={code} copyText={copyText} language={language} />;
   }
 
   return (
     <code className={className} {...props}>
       {children}
     </code>
+  );
+}
+
+let mermaidBlockCounter = 0;
+
+function MermaidBlock({ code, copyText, theme }) {
+  const [copyStatus, setCopyStatus] = useState("idle");
+  const [renderState, setRenderState] = useState({
+    status: "loading",
+    svg: "",
+    error: ""
+  });
+  const blockIdRef = useRef("");
+  const copyTimerRef = useRef(null);
+  const renderRequestRef = useRef(0);
+  const normalizedCode = useMemo(() => normalizeMermaidSource(code), [code]);
+  const copied = copyStatus === "copied";
+  const copyFailed = copyStatus === "failed";
+  const hasError = renderState.status === "error";
+
+  if (!blockIdRef.current) {
+    mermaidBlockCounter += 1;
+    blockIdRef.current = `tether-mermaid-${mermaidBlockCounter}`;
+  }
+
+  useEffect(() => {
+    let active = true;
+    renderRequestRef.current += 1;
+    const requestId = renderRequestRef.current;
+    const renderId = `${blockIdRef.current}-${requestId}`;
+
+    setRenderState({ status: "loading", svg: "", error: "" });
+
+    renderMermaidDiagram({
+      id: renderId,
+      source: normalizedCode,
+      theme
+    }).then(
+      ({ svg }) => {
+        if (!active || requestId !== renderRequestRef.current) return;
+        setRenderState({ status: "rendered", svg, error: "" });
+      },
+      (error) => {
+        if (!active || requestId !== renderRequestRef.current) return;
+        setRenderState({
+          status: "error",
+          svg: "",
+          error: normalizeMermaidError(error)
+        });
+      }
+    );
+
+    return () => {
+      active = false;
+    };
+  }, [normalizedCode, theme]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  async function copySource() {
+    const ok = await copyText?.(normalizedCode);
+    if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+    setCopyStatus(ok ? "copied" : "failed");
+    copyTimerRef.current = window.setTimeout(() => {
+      setCopyStatus("idle");
+      copyTimerRef.current = null;
+    }, 1600);
+  }
+
+  return (
+    <div className={`mermaid-block ${hasError ? "has-error" : ""}`}>
+      <div className="mermaid-block-toolbar">
+        <span>{hasError ? "Mermaid error" : "Mermaid"}</span>
+        <button
+          className={`code-copy-button ${copied ? "copied" : ""} ${copyFailed ? "failed" : ""}`}
+          type="button"
+          onClick={copySource}
+          aria-label={copied ? "Diagram source copied" : copyFailed ? "Copy failed" : "Copy Mermaid source"}
+          title={copied ? "Copied" : copyFailed ? "Copy failed" : "Copy Mermaid source"}
+        >
+          {copied ? <Check size={13} /> : <Copy size={13} />}
+          <span>{copied ? "copied" : copyFailed ? "failed" : "copy"}</span>
+        </button>
+      </div>
+
+      {renderState.status === "loading" && (
+        <div className="mermaid-block-body mermaid-block-message" role="status" aria-live="polite">
+          rendering diagram
+        </div>
+      )}
+
+      {renderState.status === "rendered" && (
+        <div
+          className="mermaid-block-body mermaid-rendered"
+          dangerouslySetInnerHTML={{ __html: renderState.svg }}
+        />
+      )}
+
+      {hasError && (
+        <div className="mermaid-block-body mermaid-error" role="alert">
+          <strong>Unable to render Mermaid diagram</strong>
+          <span>{renderState.error}</span>
+          <details>
+            <summary>source</summary>
+            <pre>
+              <code>{normalizedCode}</code>
+            </pre>
+          </details>
+        </div>
+      )}
+    </div>
   );
 }
 
