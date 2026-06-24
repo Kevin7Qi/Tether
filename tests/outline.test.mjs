@@ -37,3 +37,21 @@ test("cleanHeadingText unwraps inline code, emphasis, links, and math", () => {
   assert.equal(cleanHeadingText("See [the runbook](https://x.y)"), "See the runbook");
   assert.equal(cleanHeadingText("Energy $E = mc^2$ budget"), "Energy E = mc^2 budget");
 });
+
+test("cleanHeadingText keeps comparison operators but drops real HTML tags", () => {
+  // A bare `<`/`>` used as a comparison must survive (regression: the old
+  // `<[^>]+>` rule deleted everything between them).
+  assert.equal(cleanHeadingText("If a < b and c > d"), "If a < b and c > d");
+  assert.equal(cleanHeadingText("Loop while i <= 5"), "Loop while i <= 5");
+  // Tag-shaped spans are removed, matching what react-markdown renders.
+  assert.equal(cleanHeadingText("Wrap <span>text</span> here"), "Wrap text here");
+  assert.equal(cleanHeadingText("Generic List<T>"), "Generic List");
+});
+
+test("parseOutline preserves comparison operators in heading labels", () => {
+  const md = ["# When a < b", "", "## Budget > 0"].join("\n");
+  assert.deepEqual(
+    parseOutline(md).map((h) => h.text),
+    ["When a < b", "Budget > 0"]
+  );
+});

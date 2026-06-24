@@ -51,7 +51,10 @@ export function cleanHeadingText(raw) {
     .replace(/__([^_]+)__/g, "$1")
     .replace(/\b_([^_]+)_\b/g, "$1")
     .replace(/\$([^$]+)\$/g, "$1")
-    .replace(/<[^>]+>/g, "")
+    // Strip only things that look like real HTML tags (`<tag…>` / `</tag>`), the
+    // same spans react-markdown drops when rendering. A bare `<` followed by a
+    // space or non-letter — e.g. `a < b`, `i <= 5` — is left as literal text.
+    .replace(/<\/?[a-zA-Z][^>]*>/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
