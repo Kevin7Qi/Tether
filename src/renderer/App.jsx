@@ -485,6 +485,19 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // Cmd/Ctrl+Shift+O reaches us on key-down in the normal case, but may only
+    // arrive on key-up in two situations: macOS suppresses key-up for letter
+    // keys while Cmd is held, and a global hotkey can swallow the key-down on
+    // Windows/Linux. Listen on both and coalesce so one press opens the picker
+    // exactly once regardless of platform or key-release order.
+    let lastFolderShortcutAt = 0;
+    function openFolderFromShortcut() {
+      const now = Date.now();
+      if (now - lastFolderShortcutAt < 700) return;
+      lastFolderShortcutAt = now;
+      openFolderActionRef.current?.();
+    }
+
     function onKeyDown(event) {
       if (event.isComposing) return;
       const key = event.key ? event.key.toLowerCase() : "";
@@ -501,9 +514,14 @@ function App() {
         return;
       }
 
-      // Open file on Ctrl/Cmd+O. The folder shortcut (adds Shift) is handled on
-      // key-UP below: a global OS/app hotkey can swallow the Ctrl+Shift+O key-down
-      // before the app sees it, but the key-up still arrives.
+      // Open folder on Ctrl/Cmd+Shift+O (must be checked before the no-Shift
+      // open-file branch below).
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && (key === "o" || event.code === "KeyO")) {
+        event.preventDefault();
+        openFolderFromShortcut();
+        return;
+      }
+
       if ((event.ctrlKey || event.metaKey) && !event.shiftKey && (key === "o" || event.code === "KeyO")) {
         event.preventDefault();
         openFileActionRef.current?.();
@@ -518,10 +536,12 @@ function App() {
       }
     }
 
+    // Fallback for platforms where the key-down above is intercepted before it
+    // reaches the app; coalesced with the key-down path so it never double-fires.
     function onKeyUp(event) {
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.code === "KeyO") {
         event.preventDefault();
-        openFolderActionRef.current?.();
+        openFolderFromShortcut();
       }
     }
 
@@ -749,6 +769,21 @@ function App() {
   // active tab's live edits, upsert the new tab, and make it the live document.
   function adoptFileIntoTab({ sourceKey, kind, path, label, file }) {
     const id = tabId(sourceKey, path);
+
+    // The file is already open in another tab: focus it instead of overwriting,
+    // so that tab's unsaved edits are never silently replaced with the freshly
+    // read copy. (Centralizes the guard the file-tree open paths apply too, so
+    // the native picker / connect / session-restore callers are safe as well.)
+    if (id !== activeTabId && tabExistsFor(sourceKey, path)) {
+      switchToTab(id);
+      return;
+    }
+    // Re-opening the file that is already the live document: keep any in-progress
+    // edits rather than discarding them for the re-read copy.
+    if (id === activeTabId && dirty) {
+      return;
+    }
+
     captureScrollRatio(previewRef, scrollRatioRef);
     const outgoingScrollRatio = scrollRatioRef.current;
     setTabs((prev) => {
