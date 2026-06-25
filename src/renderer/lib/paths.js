@@ -10,7 +10,10 @@ export function dirname(remotePath) {
   const parts = normalized.split("/");
   parts.pop();
   const directory = parts.join("/");
-  return directory || "/";
+  // A bare relative name ("README.md") has no parent segment: report "." so it
+  // matches the working directory the SFTP layer records, not the filesystem
+  // root. Absolute paths ("/README.md") still resolve their parent to "/".
+  return directory || (normalized.startsWith("/") ? "/" : ".");
 }
 
 export function localDirname(filePath) {

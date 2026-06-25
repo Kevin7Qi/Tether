@@ -867,6 +867,9 @@ function App() {
     } else {
       setActiveTabId(null);
       setSelectedPath("");
+      // Drop the reference to the now-closed file so Save can't write the
+      // placeholder back over it (canSave keys off localFile?.path).
+      setLocalFile(null);
       dispatchDocument({ type: "SET_TEXT", text: tab.kind === "remote" ? chooseRemoteFileMarkdown : chooseLocalFileMarkdown });
       setFileMetadata(null);
       setLastRefresh(null);
@@ -1139,6 +1142,11 @@ function App() {
   }
 
   async function openLocalFile() {
+    // The live document is only safe from being discarded when it is backed by a
+    // tab (adoptFileIntoTab snapshots the outgoing tab's edits). The sample has
+    // no tab, so confirm before replacing tab-less unsaved edits — matching the
+    // guard connect/open-folder already apply.
+    if (!activeTabId && !confirmDiscardEdits("open a file")) return;
     setBusy(true);
     setError(null);
     const response = await remoteApi.openLocalFile();

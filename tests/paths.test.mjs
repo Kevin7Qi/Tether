@@ -27,8 +27,14 @@ test("basename returns the final path segment, with fallbacks", () => {
 test("dirname strips the final segment and normalizes separators", () => {
   assert.equal(dirname("a/b/c.md"), "a/b");
   assert.equal(dirname("/a/b"), "/a");
-  assert.equal(dirname("c.md"), "/");
   assert.equal(dirname("a\\b\\c.md"), "a/b");
+});
+
+test("dirname reports '.' for a bare relative name and '/' at the root", () => {
+  // A bare relative file lives in the working directory ("."), matching how the
+  // SFTP layer records it; only absolute files at the root resolve to "/".
+  assert.equal(dirname("README.md"), ".");
+  assert.equal(dirname("/README.md"), "/");
 });
 
 test("localDirname handles posix, root, and windows drive paths", () => {
