@@ -8,18 +8,24 @@ export function parseOutline(markdown) {
   const headings = [];
   let inFence = false;
   let fenceMarker = "";
+  let fenceLength = 0;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     const fence = line.match(/^\s{0,3}(`{3,}|~{3,})/);
     if (fence) {
-      const marker = fence[1][0];
+      const run = fence[1];
+      const marker = run[0];
       if (!inFence) {
         inFence = true;
         fenceMarker = marker;
-      } else if (marker === fenceMarker) {
+        fenceLength = run.length;
+      } else if (marker === fenceMarker && run.length >= fenceLength) {
+        // CommonMark: the closing fence must use the same character and be at
+        // least as long as the opener, so a ``` line can't close a ```` block.
         inFence = false;
         fenceMarker = "";
+        fenceLength = 0;
       }
       continue;
     }

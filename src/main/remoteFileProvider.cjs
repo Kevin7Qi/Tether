@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const SftpClient = require("ssh2-sftp-client");
+const { isConnectionLossError } = require("./connectionLoss.cjs");
 
 const MIN_POLL_MS = 750;
 const REMOTE_MARKDOWN_PATTERN = /\.(md|mdx|markdown|mdown|mkd|txt)$/i;
@@ -770,31 +771,6 @@ function userError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
-}
-
-const CONNECTION_LOSS_CODES = new Set([
-  "CONNECTION_LOST",
-  "NOT_CONNECTED",
-  "ECONNRESET",
-  "ECONNREFUSED",
-  "ECONNABORTED",
-  "ETIMEDOUT",
-  "EHOSTUNREACH",
-  "EHOSTDOWN",
-  "ENETUNREACH",
-  "ENETDOWN",
-  "EPIPE",
-  "ENOTCONN"
-]);
-
-const CONNECTION_LOSS_MESSAGE =
-  /econnreset|econnrefused|econnaborted|etimedout|ehostunreach|enetunreach|epipe|enotconn|not connected|no sftp connection|connection (lost|closed|reset|ended|aborted|timed out|refused)|socket (closed|hang ?up)|channel open failure|server unexpectedly closed|keepalive timeout/;
-
-function isConnectionLossError(error) {
-  if (!error) return false;
-  const code = String(error.code || "").toUpperCase();
-  if (CONNECTION_LOSS_CODES.has(code)) return true;
-  return CONNECTION_LOSS_MESSAGE.test(String(error.message || "").toLowerCase());
 }
 
 module.exports = {

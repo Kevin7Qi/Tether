@@ -86,9 +86,10 @@ export function applyConnectionTarget(value, onUpdate) {
   const match = value.match(/^(?:(?<username>[^@:]+)@)?(?<host>[^:]*)(?::(?<remotePath>.*))?$/);
   if (!match?.groups) return;
   onUpdate("host", match.groups.host || "");
-  if (match.groups.username !== undefined) onUpdate("username", match.groups.username);
-  // Always reflect the path portion, so deleting ":path" from the target clears
-  // it (empty path browses from home) rather than silently keeping the old path.
+  // Always reflect each portion, so deleting "user@" or ":path" from the target
+  // clears it (empty username falls back to the ssh-config default; empty path
+  // browses from home) rather than silently keeping the previous value.
+  onUpdate("username", match.groups.username || "");
   onUpdate("remotePath", match.groups.remotePath || "");
 }
 

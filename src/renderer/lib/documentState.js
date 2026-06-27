@@ -44,6 +44,13 @@ export function documentReducer(state, action) {
       // flight, stash it as a conflict shadow; otherwise adopt it in place.
       const { file } = action;
       if (state.dirty) {
+        // A re-fetch (e.g. the manual Refresh button) whose server copy is
+        // byte-identical to our current base is not a real conflict — keep the
+        // in-flight edits. Adopt any bumped version token so a later save still
+        // targets the latest revision.
+        if (file.content === state.content) {
+          return { ...state, fileVersion: file.version, remoteShadow: null, conflict: false };
+        }
         return { ...state, remoteShadow: file, conflict: true };
       }
       return {

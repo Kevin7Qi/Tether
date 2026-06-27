@@ -524,9 +524,12 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
 export function StatusBar({ detached, lineCount, statusLabel, syncLabel, tone, wordCount }) {
   const showDot = tone === "watching" || tone === "conflict" || tone === "error";
   const metrics = [`${wordCount}w`, `${lineCount}L`, "utf-8", syncLabel].filter(Boolean);
+  // The metrics span is aria-hidden (its glyphs read poorly), so fold the metrics
+  // into the footer's label to keep them available to assistive technology.
+  const ariaLabel = detached ? `Status: ${statusLabel}` : `Status: ${[statusLabel, ...metrics].join("; ")}`;
 
   return (
-    <footer className="status-bar" aria-label={`Status: ${statusLabel}`} aria-live="polite">
+    <footer className="status-bar" aria-label={ariaLabel} aria-live="polite">
       <span className="status-cluster">
         {showDot && <span className={`status-dot ${tone === "watching" ? "pulse" : ""} ${tone}`} />}
         <span className="status-primary">{statusLabel}</span>

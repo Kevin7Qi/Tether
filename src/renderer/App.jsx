@@ -305,10 +305,13 @@ function App() {
   const resolvedTheme = preferences.theme === "system" ? systemTheme : preferences.theme;
   const previewRef = useRef(null);
   const scrollRatioRef = useRef(0);
-  // Mirror `dirty` into a ref so the remote-update listeners (subscribed once)
-  // can read the latest value without re-subscribing on every keystroke.
+  // Mirror `dirty`/`selectedPath` into refs so the remote-update listeners
+  // (subscribed once) can read the latest values without re-subscribing on every
+  // keystroke or tab switch.
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
+  const selectedPathRef = useRef(selectedPath);
+  selectedPathRef.current = selectedPath;
   const pingTimerRef = useRef(null);
   const pingRequestRef = useRef(0);
   const documentRefreshTimerRef = useRef(null);
@@ -446,6 +449,13 @@ function App() {
     });
 
     const removeUpdate = remoteApi.onUpdate((file) => {
+      // Ignore a watch update for a file that is no longer the active document:
+      // after a tab switch, a poll for the previously-watched file can still be
+      // in flight, and applying it would overwrite the now-active tab's content.
+      // (The watch target is the active file's path, so a legit update always
+      // matches; metadata.path carries the path, not a top-level file.path.)
+      const updatedPath = file.metadata?.path;
+      if (updatedPath && updatedPath !== selectedPathRef.current) return;
       captureScrollRatio(previewRef, scrollRatioRef);
       applyRemoteFile(file);
     });
@@ -614,9 +624,19 @@ function App() {
       if (raf) window.cancelAnimationFrame(raf);
     };
   }, [outlineOpen, deferredPreviewContent, viewMode, zenMode]);
+  const activeTab = activeTabId ? tabs.find((tab) => tab.id === activeTabId) : null;
   const hasLocalDocument = Boolean(localFile || localWorkspaceDirectory);
-  const documentSource = connected ? "remote" : hasLocalDocument ? "local" : sampleSourceOpen ? "sample" : "none";
-  const currentSourceKey = sourceKeyFor(documentSource, connection, localWorkspaceDirectory, localFile);
+  const connectionSource = connected ? "remote" : hasLocalDocument ? "local" : sampleSourceOpen ? "sample" : "none";
+  // Classify the open document by the tab that owns it, not the live `connected`
+  // flag: when an SSH session drops, the still-open remote document (and its tab)
+  // must stay "remote" rather than being reclassified as the local sample — which
+  // would hide its tab, switch the panel to the sample, and lose the user's place.
+  // Falls back to the connection-derived source when no tab is live (the
+  // "choose a file" placeholders and the tab-less sample).
+  const documentSource = activeTab ? activeTab.kind : connectionSource;
+  const currentSourceKey = activeTab
+    ? activeTab.sourceKey
+    : sourceKeyFor(connectionSource, connection, localWorkspaceDirectory, localFile);
   const sourceTabs = useMemo(() => tabsForSource(tabs, currentSourceKey), [tabs, currentSourceKey]);
 
   // The lazily-loaded directory tree is rooted at the current source's directory;
@@ -626,27 +646,32 @@ function App() {
     setChildrenByDir({});
     setLoadingDirs(new Set());
   }, [currentSourceKey, currentDirectory]);
-  const documentTitle = connected
-    ? selectedPath
+  // Driven by documentSource (the active tab's kind) and selectedPath rather than
+  // `connected`, so a dropped remote session keeps showing the open file's name.
+  const documentTitle =
+    selectedPath && documentSource !== "none"
       ? basename(selectedPath)
-      : "Choose a Markdown file"
-    : localFile?.path
-      ? basename(localFile.path)
-      : localWorkspaceDirectory
-        ? "Choose a Markdown file"
-      : documentSource === "sample"
-        ? "sample.md"
-        : "No document open";
+      : documentSource === "none"
+        ? "No document open"
+        : "Choose a Markdown file";
   const documentEyebrow =
-    connected ? selectedPath : documentSource === "local" ? "Local file" : documentSource === "sample" ? "Local sample" : "No source";
+    documentSource === "remote"
+      ? selectedPath || "Remote source"
+      : documentSource === "local"
+        ? "Local file"
+        : documentSource === "sample"
+          ? "Local sample"
+          : "No source";
   const sidebarVisible = !zenMode;
   const canSave =
     dirty &&
     !conflict &&
     ((documentSource === "sample" && selectedPath === sampleEntry.path) ||
       (documentSource === "local" && localFile?.path) ||
-      (documentSource === "remote" && selectedPath));
-  const canRefreshDocument = documentSource === "remote" && selectedPath;
+      // A remote save needs a live connection; while disconnected the document
+      // stays "remote" (so its tab/place are kept) but saving waits for reconnect.
+      (documentSource === "remote" && selectedPath && connected));
+  const canRefreshDocument = documentSource === "remote" && selectedPath && connected;
   const sourceLabel = connected
     ? `${connection.username || "user"}@${connection.host || "host"}`
     : documentSource === "local" && localWorkspaceDirectory
@@ -751,6 +776,12 @@ function App() {
   // session detached, drop the now-stale file tree, and surface a clear,
   // actionable message. The open document and any unsaved edits are kept, and the
   // remembered source becomes clickable again so the user can reconnect.
+  //
+  // MUST stay idempotent: a single background drop fires both a status(unexpected)
+  // and an error(CONNECTION_LOST) event (see remoteFileProvider.handleUnexpectedDisconnect),
+  // so this runs twice per drop — and it can also race with an op-path call. Keep
+  // every step here a plain reset; do not add non-idempotent work (auto-reconnect,
+  // a toast, analytics) without guarding it against re-entry.
   function handleRemoteConnectionLoss(message) {
     const text = message || connectionLostMessage();
     setWatching(false);
@@ -1029,6 +1060,10 @@ function App() {
   }
 
   async function loadChildren(dirPath) {
+    // Don't issue a second listing for a directory whose first load is still in
+    // flight (rapid expand/collapse/expand, double-click) — that fires duplicate
+    // concurrent SFTP/readdir calls for the same path.
+    if (loadingDirs.has(dirPath)) return;
     setLoadingDirs((prev) => new Set(prev).add(dirPath));
     try {
       const response = connected
@@ -1061,7 +1096,7 @@ function App() {
       else next.add(dirPath);
       return next;
     });
-    if (willExpand && !childrenByDir[dirPath]) loadChildren(dirPath);
+    if (willExpand && !childrenByDir[dirPath] && !loadingDirs.has(dirPath)) loadChildren(dirPath);
   }
 
   // Re-root the tree at a folder (drill down) or its parent (".." goes up). Only
@@ -1104,6 +1139,11 @@ function App() {
       return;
     }
 
+    // Edits typed into the tab-less "choose a file" placeholder can't be
+    // snapshotted (no active tab), so confirm before discarding them. With a live
+    // tab, adoptFileIntoTab/switchToTab snapshot the outgoing edits safely.
+    if (!activeTabId && !confirmDiscardEdits("open a file")) return;
+
     if (tabExistsFor(remoteSourceKey(connection), entry.path)) {
       switchToTab(tabId(remoteSourceKey(connection), entry.path));
       return;
@@ -1142,11 +1182,11 @@ function App() {
   }
 
   async function openLocalFile() {
-    // The live document is only safe from being discarded when it is backed by a
-    // tab (adoptFileIntoTab snapshots the outgoing tab's edits). The sample has
-    // no tab, so confirm before replacing tab-less unsaved edits — matching the
-    // guard connect/open-folder already apply.
-    if (!activeTabId && !confirmDiscardEdits("open a file")) return;
+    // Opening via the native picker disconnects any remote session and switches
+    // the workspace, which hides the current document's tab — so even a snapshotted
+    // outgoing tab becomes unreachable. Confirm whenever there are unsaved edits,
+    // regardless of whether a tab backs them.
+    if (!confirmDiscardEdits("open a file")) return;
     setBusy(true);
     setError(null);
     const response = await remoteApi.openLocalFile();
@@ -1232,6 +1272,10 @@ function App() {
 
     if (!entry.isMarkdown) return;
 
+    // Edits typed into the tab-less "choose a file" placeholder can't be
+    // snapshotted (no active tab), so confirm before discarding them.
+    if (!activeTabId && !confirmDiscardEdits("open a file")) return;
+
     // The source identity stays the originally opened folder, not the drilled-in
     // browse root — so drilling never fragments the open tabs.
     const sourceRoot = localWorkspaceDirectory || currentDirectory;
@@ -1312,14 +1356,19 @@ function App() {
       }
 
       captureScrollRatio(previewRef, scrollRatioRef);
+      // A conflict only arises when we have unsaved edits AND the server copy
+      // actually differs from our base. An unchanged re-fetch keeps the edits (the
+      // reducer treats byte-identical content as a no-op), so it must not claim a
+      // newer file was found or leave Save stuck behind a phantom conflict.
+      const raisedConflict = wasDirty && response.file.content !== content;
       applyRemoteFile(response.file);
       setStatus((current) => ({
         ...current,
         state: watching ? "watching" : "connected",
-        message: wasDirty ? "Remote refresh found a newer file; review the conflict." : "Remote file refreshed",
+        message: raisedConflict ? "Remote refresh found a newer file; review the conflict." : "Remote file refreshed",
         metadata: response.file.metadata
       }));
-      showDocumentRefreshNotice(wasDirty ? "newer file found" : "file refreshed");
+      showDocumentRefreshNotice(raisedConflict ? "newer file found" : "file refreshed");
     } finally {
       setBusy(false);
       setDocumentRefreshing(false);
@@ -1472,7 +1521,15 @@ function App() {
           const updates = {};
           for (const dir of expanded) {
             const childResponse = await listDir(dir);
-            if (childResponse.ok) updates[dir] = childResponse.entries;
+            if (childResponse.ok) {
+              updates[dir] = childResponse.entries;
+            } else if (connected && isConnectionLostError(childResponse.error)) {
+              // A drop while re-listing an expanded subfolder must trigger recovery,
+              // not be silently swallowed (leaving a stale, dead tree with no prompt).
+              handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+              return;
+            }
+            // A non-fatal single-folder error keeps the previously-cached children.
           }
           setChildrenByDir((prev) => ({ ...prev, ...updates }));
         }
@@ -1674,6 +1731,13 @@ function App() {
     setBusy(false);
 
     if (!response?.ok) {
+      // A drop mid-overwrite must tear down the session like saveCurrentFile does,
+      // rather than leaving a raw error with the conflict banner stuck and the UI
+      // still believing it is connected.
+      if (documentSource === "remote" && isConnectionLostError(response?.error)) {
+        handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        return;
+      }
       const nextError = response?.error || { message: "Unable to overwrite the changed file." };
       setError(nextError);
       setStatus((current) => ({ ...current, state: "error", message: nextError.message }));
