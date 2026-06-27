@@ -25,7 +25,25 @@ const localGrants = new Set();
 app.setName("Tether");
 app.commandLine.appendSwitch("force-color-profile", "srgb");
 if (process.platform === "win32") app.setAppUserModelId("app.tether.markdown");
-Menu.setApplicationMenu(null);
+
+function installApplicationMenu() {
+  // Windows/Linux keep a menu-less window by design. macOS requires an
+  // application menu for the standard Cmd+C/V/X/A/Z/Q and window shortcuts;
+  // the built-in editMenu roles wire up cut/copy/paste/undo/redo/select-all.
+  if (process.platform !== "darwin") {
+    Menu.setApplicationMenu(null);
+    return;
+  }
+
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      { role: "appMenu" },
+      { role: "editMenu" },
+      { label: "View", submenu: [{ role: "togglefullscreen" }] },
+      { role: "windowMenu" }
+    ])
+  );
+}
 
 function isLocalMarkdownPath(filePath) {
   return localMarkdownExtensions.has(path.extname(filePath).toLowerCase());
@@ -128,6 +146,23 @@ function persistLocalGrants() {
   }
 }
 
+function resolveRealPath(targetPath) {
+  const normalized = normalizeLocalPathForGrant(targetPath);
+  if (!normalized) return "";
+  try {
+    return fsSync.realpathSync(normalized);
+  } catch {
+    // The path may not exist yet (e.g. a brand-new file): resolve the real
+    // parent directory and re-join the basename so a symlinked parent is
+    // still resolved before the grant check.
+    try {
+      return path.join(fsSync.realpathSync(path.dirname(normalized)), path.basename(normalized));
+    } catch {
+      return normalized;
+    }
+  }
+}
+
 function assertLocalPathGranted(targetPath, options = {}) {
   const normalized = normalizeLocalPathForGrant(targetPath);
   if (!normalized) throw userError("LOCAL_PATH_INVALID", "The local path is invalid.");
@@ -136,7 +171,10 @@ function assertLocalPathGranted(targetPath, options = {}) {
     throw userError("LOCAL_FILE_TYPE", "Only Markdown and text files can be opened or saved.");
   }
 
-  const granted = [...localGrants].some((root) => localPathContains(root, normalized));
+  // Resolve symlinks before the containment check so a link inside a granted
+  // folder cannot redirect the real read/write target outside the sandbox.
+  const realTarget = resolveRealPath(normalized);
+  const granted = [...localGrants].some((root) => localPathContains(resolveRealPath(root), realTarget));
   if (!granted) {
     throw userError(
       "LOCAL_PATH_NOT_GRANTED",
@@ -217,7 +255,7 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
       nodeIntegration: false
     }
   });
@@ -369,10 +407,17 @@ ipcMain.handle("state:saveUiState", async (_event, patch = {}) => {
 
 ipcMain.handle("remote:connectAndOpen", async (_event, connection) => {
   try {
+    assertObject(connection, "Connection");
     await provider.connect(connection);
     const remotePath = connection.remotePath?.trim();
 
     if (remotePath) {
+      // A path may point at a folder (browse it) or a Markdown file (open it).
+      const stat = await provider.statFile(remotePath);
+      if (stat.isDirectory) {
+        const entries = await provider.listDirectory(remotePath);
+        return { ok: true, file: null, directory: remotePath, entries };
+      }
       const file = await provider.readFile(remotePath);
       const directory = path.posix.dirname(remotePath.replace(/\\/g, "/")) || ".";
       const entries = await provider.listDirectory(directory);
@@ -530,6 +575,7 @@ ipcMain.handle("remote:disconnect", async () => {
 
 ipcMain.handle("remote:openFile", async (_event, remotePath) => {
   try {
+    assertString(remotePath, "Remote path");
     const file = await provider.readFile(remotePath);
     return { ok: true, file };
   } catch (error) {
@@ -539,6 +585,7 @@ ipcMain.handle("remote:openFile", async (_event, remotePath) => {
 
 ipcMain.handle("remote:listDirectory", async (_event, remotePath) => {
   try {
+    assertString(remotePath, "Remote path");
     const entries = await provider.listDirectory(remotePath);
     return { ok: true, entries };
   } catch (error) {
@@ -548,6 +595,8 @@ ipcMain.handle("remote:listDirectory", async (_event, remotePath) => {
 
 ipcMain.handle("remote:startWatching", async (_event, options) => {
   try {
+    assertObject(options, "Watch");
+    assertString(options.remotePath, "Remote path");
     provider.startWatching(options.remotePath, options.intervalMs);
     return { ok: true };
   } catch (error) {
@@ -562,6 +611,9 @@ ipcMain.handle("remote:stopWatching", async () => {
 
 ipcMain.handle("remote:saveFile", async (_event, payload) => {
   try {
+    assertObject(payload, "Save");
+    assertString(payload.remotePath, "Remote path");
+    assertString(payload.content, "Content");
     const file = await provider.writeFile(
       payload.remotePath,
       payload.content,
@@ -669,6 +721,9 @@ ipcMain.handle("local:listDirectory", async (_event, directory) => {
 
 ipcMain.handle("local:saveFile", async (_event, payload) => {
   try {
+    assertObject(payload, "Save");
+    assertString(payload.path, "File path");
+    assertString(payload.content, "Content");
     const grantedPath = assertLocalPathGranted(payload.path, { markdownFile: true });
     const currentMetadata = await fs.stat(grantedPath);
     const currentVersion = localFileVersion(currentMetadata);
@@ -693,14 +748,34 @@ function userError(code, message) {
   return error;
 }
 
+function assertObject(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw userError("BAD_REQUEST", `${label} request is malformed.`);
+  }
+}
+
+function assertString(value, label) {
+  if (typeof value !== "string") {
+    throw userError("BAD_REQUEST", `${label} must be text.`);
+  }
+}
+
 app.whenReady().then(() => {
+  installApplicationMenu();
   provider.setKnownHostsPath(getTrustedHostsPath());
   loadLocalGrants();
   createWindow();
 });
 
+let quitCleanupStarted = false;
+app.on("before-quit", () => {
+  if (quitCleanupStarted) return;
+  quitCleanupStarted = true;
+  provider.disconnect().catch(() => {});
+});
+
 app.on("window-all-closed", () => {
-  provider.disconnect();
+  provider.disconnect().catch(() => {});
   if (process.platform !== "darwin") app.quit();
 });
 

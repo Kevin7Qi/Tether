@@ -6,7 +6,7 @@ import rehypeKatex from "rehype-katex";
 import { Check, Copy } from "lucide-react";
 import "katex/dist/katex.min.css";
 
-export default function DocumentSurface({
+function DocumentSurface({
   content,
   copyText,
   dirty,
@@ -23,6 +23,7 @@ export default function DocumentSurface({
 }) {
   const gutterRef = useRef(null);
   const textareaRef = useRef(null);
+  const scrollSyncRef = useRef(false);
   const showEditor = viewMode === "source" || viewMode === "split";
   const showPreview = viewMode === "preview" || viewMode === "split";
   const showEyebrow = documentEyebrow && documentEyebrow !== "No source";
@@ -33,12 +34,33 @@ export default function DocumentSurface({
 
   useEffect(() => {
     if (!showEditor || !gutterRef.current || !textareaRef.current) return;
-    gutterRef.current.scrollTop = textareaRef.current.scrollTop;
+    // Track the textarea via transform, not scrollTop: long lines give the
+    // textarea a horizontal scrollbar that shortens its scroll range, so a
+    // scrollTop-synced gutter would clamp early and drift near the bottom.
+    gutterRef.current.style.transform = `translateY(${-textareaRef.current.scrollTop}px)`;
   }, [editorContent, showEditor]);
 
+  function syncScrollRatio(source, target) {
+    if (!source || !target || scrollSyncRef.current) return;
+    const sourceMax = source.scrollHeight - source.clientHeight;
+    if (sourceMax <= 0) return;
+    const targetMax = target.scrollHeight - target.clientHeight;
+    scrollSyncRef.current = true;
+    target.scrollTop = (source.scrollTop / sourceMax) * targetMax;
+    window.requestAnimationFrame(() => {
+      scrollSyncRef.current = false;
+    });
+  }
+
   function syncLineNumberScroll(event) {
-    if (!gutterRef.current) return;
-    gutterRef.current.scrollTop = event.currentTarget.scrollTop;
+    if (gutterRef.current) {
+      gutterRef.current.style.transform = `translateY(${-event.currentTarget.scrollTop}px)`;
+    }
+    if (viewMode === "split") syncScrollRatio(event.currentTarget, previewRef?.current);
+  }
+
+  function syncPreviewScroll(event) {
+    if (viewMode === "split") syncScrollRatio(event.currentTarget, textareaRef.current);
   }
 
   if (loading) {
@@ -61,9 +83,11 @@ export default function DocumentSurface({
             {dirty && <strong>Unsaved</strong>}
           </div>
           <div className="source-editor">
-            <pre ref={gutterRef} className="line-gutter" aria-hidden="true">
-              {lineNumbers}
-            </pre>
+            <div className="line-gutter" aria-hidden="true">
+              <pre ref={gutterRef} className="line-gutter-track">
+                {lineNumbers}
+              </pre>
+            </div>
             <textarea
               ref={textareaRef}
               spellCheck="false"
@@ -78,8 +102,13 @@ export default function DocumentSurface({
       )}
 
       {showPreview && (
-        <section ref={previewRef} className="preview-pane" aria-label="Rendered Markdown preview">
-          <article className="markdown-document">
+        <section
+          ref={previewRef}
+          className="preview-pane"
+          aria-label="Rendered Markdown preview"
+          onScroll={syncPreviewScroll}
+        >
+          <article className="markdown-document" lang="en">
             {showEyebrow && (
               <div className="markdown-eyebrow">
                 <span>{documentEyebrow}</span>
@@ -93,7 +122,13 @@ export default function DocumentSurface({
               components={{
                 a: LinkRenderer,
                 pre: PreRenderer,
-                code: (props) => <CodeRenderer {...props} copyText={copyText} />
+                code: (props) => <CodeRenderer {...props} copyText={copyText} />,
+                h1: HeadingRenderer,
+                h2: HeadingRenderer,
+                h3: HeadingRenderer,
+                h4: HeadingRenderer,
+                h5: HeadingRenderer,
+                h6: HeadingRenderer
               }}
             >
               {content}
@@ -125,6 +160,19 @@ function LinkRenderer(props) {
   return <a {...props} target="_blank" rel="noopener noreferrer" />;
 }
 
+// Tag headings with a stable anchor keyed on their source line so the outline
+// panel can scroll to them. The line matches lib/outline.js parseOutline().
+function HeadingRenderer({ node, children, ...props }) {
+  const level = Math.min(Math.max(Number(String(node?.tagName || "h1").slice(1)) || 1, 1), 6);
+  const line = node?.position?.start?.line;
+  const Tag = `h${level}`;
+  return (
+    <Tag id={line ? `tether-h-${line}` : undefined} {...props}>
+      {children}
+    </Tag>
+  );
+}
+
 function PreRenderer({ children }) {
   return <>{children}</>;
 }
@@ -151,6 +199,10 @@ function CodeBlock({ code, copyText, language }) {
   const copyTimerRef = useRef(null);
   const normalizedCode = useMemo(() => code.replace(/\r\n/g, "\n").replace(/\r/g, "\n"), [code]);
   const lines = useMemo(() => splitCodeLines(normalizedCode), [normalizedCode]);
+  const tokenizedLines = useMemo(
+    () => lines.map((line) => highlightCodeLine(line, language)),
+    [lines, language]
+  );
   const languageLabel = getCodeLanguageLabel(language);
   const copied = copyStatus === "copied";
   const copyFailed = copyStatus === "failed";
@@ -196,9 +248,9 @@ function CodeBlock({ code, copyText, language }) {
         </pre>
         <pre className="code-block-pre">
           <code>
-            {lines.map((line, lineIndex) => (
+            {tokenizedLines.map((tokens, lineIndex) => (
               <span className="code-line" key={`code-line-${lineIndex}`}>
-                {highlightCodeLine(line, language).map((token, tokenIndex) => renderCodeToken(token, tokenIndex))}
+                {tokens.map((token, tokenIndex) => renderCodeToken(token, tokenIndex))}
               </span>
             ))}
           </code>
@@ -487,13 +539,24 @@ function highlightCssLine(line) {
   );
 }
 
+const GENERIC_PATTERN_CACHE = new Map();
+
+function getGenericPattern(group) {
+  let pattern = GENERIC_PATTERN_CACHE.get(group);
+  if (!pattern) {
+    const commentSource = getCommentPatternSource(group);
+    pattern = new RegExp(
+      `(${commentSource}|"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|\`(?:\\\\.|[^\`\\\\])*\`|\\b\\d+(?:\\.\\d+)?\\b|\\b[A-Za-z_$][\\w$]*\\b|[{}()[\\].,;:+\\-*/%=!<>|&?~^@]+)`,
+      "g"
+    );
+    GENERIC_PATTERN_CACHE.set(group, pattern);
+  }
+  return pattern;
+}
+
 function highlightGenericCodeLine(line, group) {
   const keywords = getKeywordSet(group);
-  const commentSource = getCommentPatternSource(group);
-  const pattern = new RegExp(
-    `(${commentSource}|"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|\`(?:\\\\.|[^\`\\\\])*\`|\\b\\d+(?:\\.\\d+)?\\b|\\b[A-Za-z_$][\\w$]*\\b|[{}()[\\].,;:+\\-*/%=!<>|&?~^@]+)`,
-    "g"
-  );
+  const pattern = getGenericPattern(group);
 
   return tokenizeWithPattern(line, pattern, (match, index) => {
     if (isCommentToken(match, group)) return "comment";
@@ -544,6 +607,7 @@ function tokenizeWithPattern(line, pattern, classify) {
   let lastIndex = 0;
   let match;
 
+  pattern.lastIndex = 0;
   while ((match = pattern.exec(line))) {
     if (match.index > lastIndex) {
       tokens.push({ text: line.slice(lastIndex, match.index), type: "" });
@@ -570,3 +634,5 @@ function previousNonSpace(line, index) {
   }
   return "";
 }
+
+export default React.memo(DocumentSurface);

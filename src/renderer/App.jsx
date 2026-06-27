@@ -1,18 +1,17 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  AlertCircle,
+  AlertTriangle,
   File,
   FileText,
   Folder,
   FolderOpen,
-  GripVertical,
+  List,
   Maximize2,
   Monitor,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
-  Plus,
   RefreshCw,
   Save,
   Settings,
@@ -29,6 +28,42 @@ import "@fontsource/newsreader/latin-400.css";
 import "@fontsource/newsreader/latin-600.css";
 import "./styles.css";
 import sampleMarkdown from "../../samples/sample.md?raw";
+import {
+  basename,
+  canGoUp,
+  compactPath,
+  compactPathStart,
+  dirname,
+  formatSidebarDirectoryPath,
+  localCanGoUp,
+  localDirname,
+  localParentPath,
+  normalizeLocalComparisonPath,
+  parentRemotePath,
+  pathsReferToSameLocalFile
+} from "./lib/paths.js";
+import {
+  applyConnectionTarget,
+  countLines,
+  countWords,
+  formatConnectionTarget,
+  formatFileModifiedLabel,
+  formatFileTimestamp,
+  formatLatency,
+  formatPoll,
+  formatSourcePathDetail,
+  healthCheckErrorMessage,
+  healthCheckPendingMessage,
+  healthCheckSuccessMessage,
+  statusTextForLoading
+} from "./lib/format.js";
+import { createDocumentState, documentReducer } from "./lib/documentState.js";
+import { PAGE_WIDTH_DEFAULT, clampPageWidth, hotkey } from "./lib/constants.js";
+import { parseOutline } from "./lib/outline.js";
+import { isConnectionLostError, connectionLostMessage } from "./lib/connection.js";
+import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, rekeyTabsForSource, selectNeighborTab } from "./lib/tabs.js";
+import { DocumentSurfaceFallback, FilesPanel, OutlinePanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
+import { ConnectionPalette, SettingsPanel, StatusBar, ThemeSwitch } from "./components/dialogs.jsx";
 
 const LazyDocumentSurface = React.lazy(() => import("./DocumentSurface.jsx"));
 const BOOT_PREFERENCES_KEY = "remoteMarkdownPreview.preferences";
@@ -57,10 +92,6 @@ const SOURCE_SESSION_LIMIT = 8;
 const SIDEBAR_MIN_WIDTH = 208;
 const SIDEBAR_MAX_WIDTH = 520;
 const SIDEBAR_DEFAULT_WIDTH = 256;
-const PAGE_WIDTH_MIN = 560;
-const PAGE_WIDTH_MAX = 1320;
-const PAGE_WIDTH_DEFAULT = 980;
-const PAGE_WIDTH_STEP = 20;
 const THEME_OPTIONS = ["system", "dark", "light"];
 const defaultPreferences = {
   theme: "system",
@@ -231,17 +262,15 @@ function App() {
   const [localSampleContent, setLocalSampleContent] = useState(initialSampleMarkdown);
   const [localWorkspaceDirectory, setLocalWorkspaceDirectory] = useState(null);
   const [localFile, setLocalFile] = useState(null);
-  const [content, setContent] = useState(initialSampleMarkdown);
-  const [editorContent, setEditorContent] = useState(initialSampleMarkdown);
-  const [remoteShadow, setRemoteShadow] = useState(null);
-  const [fileVersion, setFileVersion] = useState(null);
+  const [documentState, dispatchDocument] = useReducer(documentReducer, undefined, () =>
+    createDocumentState(initialSampleMarkdown)
+  );
+  const { content, editorContent, remoteShadow, fileVersion, dirty, conflict } = documentState;
   const [fileMetadata, setFileMetadata] = useState(null);
   const [lastRefresh, setLastRefresh] = useState(null);
   const [connected, setConnected] = useState(false);
   const [watching, setWatching] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const [conflict, setConflict] = useState(false);
   const [preferences, setPreferences] = useState(initialPreferences);
   const [fontsReady, setFontsReady] = useState(initialFontsReady);
   const [systemTheme, setSystemTheme] = useState(getSystemTheme);
@@ -249,6 +278,10 @@ function App() {
   const [zenMode, setZenMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialPreferences.sidebarCollapsed);
   const [sidebarPeeking, setSidebarPeeking] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [activeHeadingId, setActiveHeadingId] = useState(null);
+  const [tabs, setTabs] = useState([]);
+  const [activeTabId, setActiveTabId] = useState(null);
   const [compactLayout, setCompactLayout] = useState(() => getIsCompactLayout());
   const [connectionPaletteOpen, setConnectionPaletteOpen] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
@@ -264,16 +297,29 @@ function App() {
   const [documentRefreshNotice, setDocumentRefreshNotice] = useState(null);
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeRefreshNotice, setTreeRefreshNotice] = useState(null);
+  const [expandedDirs, setExpandedDirs] = useState(() => new Set());
+  const [childrenByDir, setChildrenByDir] = useState({});
+  const [loadingDirs, setLoadingDirs] = useState(() => new Set());
   const [defaultPrivateKeyPath, setDefaultPrivateKeyPath] = useState("");
   const [connectionProfile, setConnectionProfile] = useState(null);
   const resolvedTheme = preferences.theme === "system" ? systemTheme : preferences.theme;
   const previewRef = useRef(null);
   const scrollRatioRef = useRef(0);
+  // Mirror `dirty`/`selectedPath` into refs so the remote-update listeners
+  // (subscribed once) can read the latest values without re-subscribing on every
+  // keystroke or tab switch.
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  const selectedPathRef = useRef(selectedPath);
+  selectedPathRef.current = selectedPath;
   const pingTimerRef = useRef(null);
   const pingRequestRef = useRef(0);
   const documentRefreshTimerRef = useRef(null);
   const treeRefreshTimerRef = useRef(null);
   const sourceOpeningRef = useRef(null);
+  const saveActionRef = useRef(null);
+  const openFileActionRef = useRef(null);
+  const openFolderActionRef = useRef(null);
 
   useEffect(() => {
     remoteApi.getDefaultPrivateKeyPath().then((response) => {
@@ -337,7 +383,6 @@ function App() {
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
-    const root = document.documentElement;
     let canceled = false;
 
     function showBootOverlay() {
@@ -387,15 +432,30 @@ function App() {
 
   useEffect(() => {
     const removeStatus = remoteApi.onStatus((payload) => {
+      if (payload.state === "disconnected" && payload.unexpected) {
+        handleRemoteConnectionLoss(payload.message);
+        return;
+      }
       setStatus((current) => ({ ...current, ...payload }));
       if (payload.metadata) setFileMetadata(payload.metadata);
     });
 
     const removeError = remoteApi.onError((payload) => {
+      if (isConnectionLostError(payload)) {
+        handleRemoteConnectionLoss(payload.message || connectionLostMessage());
+        return;
+      }
       setError(payload);
     });
 
     const removeUpdate = remoteApi.onUpdate((file) => {
+      // Ignore a watch update for a file that is no longer the active document:
+      // after a tab switch, a poll for the previously-watched file can still be
+      // in flight, and applying it would overwrite the now-active tab's content.
+      // (The watch target is the active file's path, so a legit update always
+      // matches; metadata.path carries the path, not a top-level file.path.)
+      const updatedPath = file.metadata?.path;
+      if (updatedPath && updatedPath !== selectedPathRef.current) return;
       captureScrollRatio(previewRef, scrollRatioRef);
       applyRemoteFile(file);
     });
@@ -405,7 +465,9 @@ function App() {
       removeError();
       removeUpdate();
     };
-  }, [dirty]);
+    // Subscribe once: the handlers read live state through refs/stable setters,
+    // so they never need to re-bind (previously re-ran on every `dirty` toggle).
+  }, []);
 
   useEffect(() => {
     restoreScrollRatio(previewRef, scrollRatioRef);
@@ -433,10 +495,47 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // Cmd/Ctrl+Shift+O reaches us on key-down in the normal case, but may only
+    // arrive on key-up in two situations: macOS suppresses key-up for letter
+    // keys while Cmd is held, and a global hotkey can swallow the key-down on
+    // Windows/Linux. Listen on both and coalesce so one press opens the picker
+    // exactly once regardless of platform or key-release order.
+    let lastFolderShortcutAt = 0;
+    function openFolderFromShortcut() {
+      const now = Date.now();
+      if (now - lastFolderShortcutAt < 700) return;
+      lastFolderShortcutAt = now;
+      openFolderActionRef.current?.();
+    }
+
     function onKeyDown(event) {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      if (event.isComposing) return;
+      const key = event.key ? event.key.toLowerCase() : "";
+
+      if ((event.ctrlKey || event.metaKey) && key === "k") {
         event.preventDefault();
         setConnectionPaletteOpen((open) => !open);
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && key === "s") {
+        event.preventDefault();
+        saveActionRef.current?.();
+        return;
+      }
+
+      // Open folder on Ctrl/Cmd+Shift+O (must be checked before the no-Shift
+      // open-file branch below).
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && (key === "o" || event.code === "KeyO")) {
+        event.preventDefault();
+        openFolderFromShortcut();
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && (key === "o" || event.code === "KeyO")) {
+        event.preventDefault();
+        openFileActionRef.current?.();
+        return;
       }
 
       if (event.key === "Escape") {
@@ -447,9 +546,20 @@ function App() {
       }
     }
 
+    // Fallback for platforms where the key-down above is intercepted before it
+    // reaches the app; coalesced with the key-down path so it never double-fires.
+    function onKeyUp(event) {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.code === "KeyO") {
+        event.preventDefault();
+        openFolderFromShortcut();
+      }
+    }
+
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
     };
   }, [connectionPaletteOpen, settingsPanelOpen, sidebarPeeking, zenMode]);
 
@@ -480,29 +590,88 @@ function App() {
   }, [resizingSidebar]);
 
   const previewContent = dirty ? editorContent : content;
+  // Defer the rendered-preview content so typing in the textarea stays responsive
+  // while the heavy Markdown re-render runs at lower priority.
+  const deferredPreviewContent = useDeferredValue(previewContent);
+  const outline = useMemo(() => parseOutline(deferredPreviewContent), [deferredPreviewContent]);
+
+  // Scroll-spy: while the outline is visible, highlight the heading the reader is in.
+  useEffect(() => {
+    if (!outlineOpen) return undefined;
+    const pane = previewRef.current;
+    if (!pane) return undefined;
+
+    let raf = 0;
+    function compute() {
+      raf = 0;
+      const headings = pane.querySelectorAll("h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]");
+      const threshold = pane.getBoundingClientRect().top + 28;
+      let active = null;
+      for (const heading of headings) {
+        if (heading.getBoundingClientRect().top <= threshold) active = heading.id;
+        else break;
+      }
+      setActiveHeadingId(active);
+    }
+    function onScroll() {
+      if (!raf) raf = window.requestAnimationFrame(compute);
+    }
+
+    pane.addEventListener("scroll", onScroll, { passive: true });
+    compute();
+    return () => {
+      pane.removeEventListener("scroll", onScroll);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, [outlineOpen, deferredPreviewContent, viewMode, zenMode]);
+  const activeTab = activeTabId ? tabs.find((tab) => tab.id === activeTabId) : null;
   const hasLocalDocument = Boolean(localFile || localWorkspaceDirectory);
-  const documentSource = connected ? "remote" : hasLocalDocument ? "local" : sampleSourceOpen ? "sample" : "none";
-  const documentTitle = connected
-    ? selectedPath
+  const connectionSource = connected ? "remote" : hasLocalDocument ? "local" : sampleSourceOpen ? "sample" : "none";
+  // Classify the open document by the tab that owns it, not the live `connected`
+  // flag: when an SSH session drops, the still-open remote document (and its tab)
+  // must stay "remote" rather than being reclassified as the local sample — which
+  // would hide its tab, switch the panel to the sample, and lose the user's place.
+  // Falls back to the connection-derived source when no tab is live (the
+  // "choose a file" placeholders and the tab-less sample).
+  const documentSource = activeTab ? activeTab.kind : connectionSource;
+  const currentSourceKey = activeTab
+    ? activeTab.sourceKey
+    : sourceKeyFor(connectionSource, connection, localWorkspaceDirectory, localFile);
+  const sourceTabs = useMemo(() => tabsForSource(tabs, currentSourceKey), [tabs, currentSourceKey]);
+
+  // The lazily-loaded directory tree is rooted at the current source's directory;
+  // reset its expansion + child cache when the source or its root changes.
+  useEffect(() => {
+    setExpandedDirs(new Set());
+    setChildrenByDir({});
+    setLoadingDirs(new Set());
+  }, [currentSourceKey, currentDirectory]);
+  // Driven by documentSource (the active tab's kind) and selectedPath rather than
+  // `connected`, so a dropped remote session keeps showing the open file's name.
+  const documentTitle =
+    selectedPath && documentSource !== "none"
       ? basename(selectedPath)
-      : "Choose a Markdown file"
-    : localFile?.path
-      ? basename(localFile.path)
-      : localWorkspaceDirectory
-        ? "Choose a Markdown file"
-      : documentSource === "sample"
-        ? "sample.md"
-        : "No document open";
+      : documentSource === "none"
+        ? "No document open"
+        : "Choose a Markdown file";
   const documentEyebrow =
-    connected ? selectedPath : documentSource === "local" ? "Local file" : documentSource === "sample" ? "Local sample" : "No source";
+    documentSource === "remote"
+      ? selectedPath || "Remote source"
+      : documentSource === "local"
+        ? "Local file"
+        : documentSource === "sample"
+          ? "Local sample"
+          : "No source";
   const sidebarVisible = !zenMode;
   const canSave =
     dirty &&
     !conflict &&
     ((documentSource === "sample" && selectedPath === sampleEntry.path) ||
       (documentSource === "local" && localFile?.path) ||
-      (documentSource === "remote" && selectedPath));
-  const canRefreshDocument = documentSource === "remote" && selectedPath;
+      // A remote save needs a live connection; while disconnected the document
+      // stays "remote" (so its tab/place are kept) but saving waits for reconnect.
+      (documentSource === "remote" && selectedPath && connected));
+  const canRefreshDocument = documentSource === "remote" && selectedPath && connected;
   const sourceLabel = connected
     ? `${connection.username || "user"}@${connection.host || "host"}`
     : documentSource === "local" && localWorkspaceDirectory
@@ -512,7 +681,7 @@ function App() {
         : "no source";
   const rootLabel = connected || (documentSource === "local" && localWorkspaceDirectory) ? currentDirectory : documentSource === "sample" ? "samples" : "";
   const toolbarDocumentLabel =
-    sourceOpening?.title || (documentSource === "none" ? documentTitle : selectedPath ? compactPath(selectedPath) : documentTitle);
+    sourceOpening?.title || (documentSource === "none" ? "no source" : selectedPath ? compactPath(selectedPath) : documentTitle);
   const toolbarDocumentTitle = sourceOpening?.message || selectedPath || documentTitle;
   const fileModifiedLabel = formatFileModifiedLabel(fileMetadata?.mtime || status.metadata?.mtime);
   const statusLabel = sourceOpening
@@ -526,12 +695,12 @@ function App() {
           : treeRefreshNotice
             ? treeRefreshNotice
             : conflict
-              ? "conflict - resolve to save"
+              ? "conflict · resolve to save"
               : error
                 ? status.message || "error"
                 : dirty
                   ? fileModifiedLabel
-                    ? `unsaved - ${fileModifiedLabel}`
+                    ? `unsaved · ${fileModifiedLabel}`
                     : "unsaved edits"
                   : documentSource === "remote"
                     ? selectedPath
@@ -543,7 +712,7 @@ function App() {
                         : "choose a Markdown file"
                       : documentSource === "sample"
                         ? fileModifiedLabel || "local sample"
-                        : "no document open";
+                        : `no source · ${hotkey("k")} to connect`;
   const sourceTone = sourceOpening || documentRefreshing || treeLoading ? "idle" : conflict ? "conflict" : error ? "error" : watching ? "watching" : connected ? "connected" : "idle";
   const syncLabel =
     sourceOpening
@@ -555,8 +724,8 @@ function App() {
         : documentSource === "sample"
           ? "sample"
           : "idle";
-  const wordCount = countWords(previewContent);
-  const lineCount = countLines(editorContent);
+  const wordCount = useMemo(() => countWords(deferredPreviewContent), [deferredPreviewContent]);
+  const lineCount = useMemo(() => countLines(editorContent), [editorContent]);
   const sidebarRailMode = sidebarCollapsed || compactLayout;
   const showLocalSource = sampleSourceOpen;
   const expandedSidebarWidth = Math.max(sidebarWidth, SIDEBAR_MIN_WIDTH);
@@ -567,9 +736,7 @@ function App() {
     remoteApi.readLocalSample().then((response) => {
       if (canceled || !response?.ok || !response.file) return;
       setLocalSampleContent(response.file.content);
-      setContent(response.file.content);
-      setEditorContent(response.file.content);
-      setFileVersion(response.file.version);
+      dispatchDocument({ type: "LOAD_FRESH", file: response.file });
       setFileMetadata(response.file.metadata);
       setLastRefresh(response.file.refreshedAt);
       setFileEntries([
@@ -589,34 +756,167 @@ function App() {
   function applyRemoteFile(file) {
     setLastRefresh(file.refreshedAt);
     setError(null);
-
-    if (dirty) {
-      setRemoteShadow(file);
-      setConflict(true);
-      return;
-    }
-
-    setContent(file.content);
-    setEditorContent(file.content);
-    setFileVersion(file.version);
-    setFileMetadata(file.metadata);
-    setRemoteShadow(null);
-    setConflict(false);
+    // Metadata only updates when adopting the file; during a conflict the open
+    // file's metadata is preserved (matching the pre-reducer behavior). Read the
+    // ref so this stays correct when invoked from the once-subscribed listener.
+    if (!dirtyRef.current) setFileMetadata(file.metadata);
+    dispatchDocument({ type: "REMOTE_UPDATE", file });
   }
 
   function applyFreshFile(file) {
     captureScrollRatio(previewRef, scrollRatioRef);
-    setContent(file.content);
-    setEditorContent(file.content);
-    setFileVersion(file.version);
+    dispatchDocument({ type: "LOAD_FRESH", file });
     setFileMetadata(file.metadata);
     setLastRefresh(file.refreshedAt);
-    setRemoteShadow(null);
     setError(null);
   }
 
+  // Recover gracefully when the remote connection drops — whether detected
+  // mid-operation or via a background disconnect event. Stop watching, mark the
+  // session detached, drop the now-stale file tree, and surface a clear,
+  // actionable message. The open document and any unsaved edits are kept, and the
+  // remembered source becomes clickable again so the user can reconnect.
+  //
+  // MUST stay idempotent: a single background drop fires both a status(unexpected)
+  // and an error(CONNECTION_LOST) event (see remoteFileProvider.handleUnexpectedDisconnect),
+  // so this runs twice per drop — and it can also race with an op-path call. Keep
+  // every step here a plain reset; do not add non-idempotent work (auto-reconnect,
+  // a toast, analytics) without guarding it against re-entry.
+  function handleRemoteConnectionLoss(message) {
+    const text = message || connectionLostMessage();
+    setWatching(false);
+    setConnected(false);
+    setActiveSessionId(null);
+    setFileEntries([]);
+    setError({ code: "CONNECTION_LOST", message: text });
+    setStatus({ state: "error", message: text, checkedAt: null, metadata: null });
+  }
+
+  function tabExistsFor(sourceKey, path) {
+    return tabs.some((tab) => tab.id === tabId(sourceKey, path));
+  }
+
+  // Open a file as a tab (or focus the existing one): snapshot the outgoing
+  // active tab's live edits, upsert the new tab, and make it the live document.
+  function adoptFileIntoTab({ sourceKey, kind, path, label, file }) {
+    const id = tabId(sourceKey, path);
+
+    // The file is already open in another tab: focus it instead of overwriting,
+    // so that tab's unsaved edits are never silently replaced with the freshly
+    // read copy. (Centralizes the guard the file-tree open paths apply too, so
+    // the native picker / connect / session-restore callers are safe as well.)
+    if (id !== activeTabId && tabExistsFor(sourceKey, path)) {
+      switchToTab(id);
+      return;
+    }
+    // Re-opening the file that is already the live document: keep any in-progress
+    // edits rather than discarding them for the re-read copy.
+    if (id === activeTabId && dirty) {
+      return;
+    }
+
+    captureScrollRatio(previewRef, scrollRatioRef);
+    const outgoingScrollRatio = scrollRatioRef.current;
+    setTabs((prev) => {
+      const snapshotted =
+        activeTabId && activeTabId !== id
+          ? patchTab(prev, activeTabId, {
+              doc: documentState,
+              metadata: fileMetadata,
+              refreshedAt: lastRefresh,
+              scrollRatio: outgoingScrollRatio
+            })
+          : prev;
+      return upsertTab(
+        snapshotted,
+        makeTab({ sourceKey, kind, path, label, doc: docFromFile(file), metadata: file.metadata, refreshedAt: file.refreshedAt })
+      );
+    });
+    setActiveTabId(id);
+    applyFreshFile(file);
+    setSelectedPath(path);
+  }
+
+  // Make a stored tab live again (tab switch / close-to-neighbor). Seed the
+  // scroll ref with the tab's saved ratio; the restore-scroll effect applies it
+  // on the next frame once the restored content has rendered.
+  function restoreTab(tab) {
+    scrollRatioRef.current = tab.scrollRatio || 0;
+    dispatchDocument({ type: "RESTORE", doc: tab.doc });
+    setSelectedPath(tab.path);
+    setFileMetadata(tab.metadata);
+    setLastRefresh(tab.refreshedAt);
+    setActiveTabId(tab.id);
+    setError(null);
+    if (tab.kind === "remote") setConnection((current) => ({ ...current, remotePath: tab.path }));
+    if (tab.kind === "local") setLocalFile({ path: tab.path });
+  }
+
+  function switchToTab(id) {
+    if (id === activeTabId) return;
+    const target = tabs.find((tab) => tab.id === id);
+    if (!target) return;
+    captureScrollRatio(previewRef, scrollRatioRef);
+    const outgoingScrollRatio = scrollRatioRef.current;
+    if (watching) {
+      remoteApi.stopWatching();
+      setWatching(false);
+    }
+    if (activeTabId) {
+      setTabs((prev) =>
+        patchTab(prev, activeTabId, {
+          doc: documentState,
+          metadata: fileMetadata,
+          refreshedAt: lastRefresh,
+          scrollRatio: outgoingScrollRatio
+        })
+      );
+    }
+    restoreTab(target);
+  }
+
+  function closeTab(id) {
+    const tab = tabs.find((existing) => existing.id === id);
+    if (!tab) return;
+    const isActive = id === activeTabId;
+    const tabDirty = isActive ? dirty : Boolean(tab.doc && tab.doc.dirty);
+    if (tabDirty && !window.confirm("Discard unsaved edits and close this tab?")) return;
+
+    if (!isActive) {
+      setTabs((prev) => removeTab(prev, id));
+      return;
+    }
+
+    if (watching) {
+      remoteApi.stopWatching();
+      setWatching(false);
+    }
+    const nextId = selectNeighborTab(tabs, tab.sourceKey, id);
+    setTabs((prev) => removeTab(prev, id));
+    if (nextId) {
+      restoreTab(tabs.find((existing) => existing.id === nextId));
+    } else {
+      setActiveTabId(null);
+      setSelectedPath("");
+      // Drop the reference to the now-closed file so Save can't write the
+      // placeholder back over it (canSave keys off localFile?.path).
+      setLocalFile(null);
+      dispatchDocument({ type: "SET_TEXT", text: tab.kind === "remote" ? chooseRemoteFileMarkdown : chooseLocalFileMarkdown });
+      setFileMetadata(null);
+      setLastRefresh(null);
+      setError(null);
+    }
+  }
+
   function updateConnection(field, value) {
-    setConnection((current) => ({ ...current, [field]: value }));
+    setConnection((current) => {
+      const next = { ...current, [field]: value };
+      // remoteDirectory is a runtime browse hint set at connect time; clear it
+      // when the path is edited so the next connect re-derives it (dirname of the
+      // path, or home when empty) instead of reusing the prior connection's dir.
+      if (field === "remotePath") next.remoteDirectory = "";
+      return next;
+    });
   }
 
   function rememberSourceSession(session) {
@@ -720,18 +1020,17 @@ function App() {
       setWatching(false);
       setLocalWorkspaceDirectory(null);
       setLocalFile(null);
-      setDirty(false);
-      setConflict(false);
-      setSelectedPath(openedPath);
+      // Only a file becomes the selected document; a folder target just browses,
+      // so leave selectedPath empty (else file-refresh/watch would act on a dir).
+      setSelectedPath(response.file ? openedPath : "");
       setCurrentDirectory(directory);
       setFileEntries(response.entries || []);
       if (response.file) {
-        applyFreshFile(response.file);
+        adoptFileIntoTab({ sourceKey: remoteSourceKey(nextConnection), kind: "remote", path: openedPath, label: basename(openedPath), file: response.file });
         setStatus((current) => ({ ...current, state: "connected", message: "Remote file opened" }));
       } else {
-        setContent(chooseRemoteFileMarkdown);
-        setEditorContent(chooseRemoteFileMarkdown);
-        setFileVersion(null);
+        setActiveTabId(null);
+        dispatchDocument({ type: "SET_TEXT", text: chooseRemoteFileMarkdown });
         setFileMetadata(null);
         setLastRefresh(null);
         setStatus((current) => ({
@@ -760,55 +1059,68 @@ function App() {
     return true;
   }
 
-  async function loadDirectory(directory = currentDirectory) {
-    setTreeLoading(true);
-    setError(null);
+  async function loadChildren(dirPath) {
+    // Don't issue a second listing for a directory whose first load is still in
+    // flight (rapid expand/collapse/expand, double-click) — that fires duplicate
+    // concurrent SFTP/readdir calls for the same path.
+    if (loadingDirs.has(dirPath)) return;
+    setLoadingDirs((prev) => new Set(prev).add(dirPath));
     try {
-      const response = await remoteApi.listDirectory(directory);
-
+      const response = connected
+        ? await remoteApi.listDirectory(dirPath)
+        : await remoteApi.listLocalDirectory(dirPath);
       if (!response.ok) {
-        setError(response.error);
-        setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
-        return false;
+        if (connected && isConnectionLostError(response.error)) {
+          handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        } else {
+          setError(response.error);
+        }
+        return;
       }
-
-      setCurrentDirectory(directory);
-      setFileEntries(response.entries);
-      const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
-      rememberSourceSession(
-        buildRemoteSourceSession(
-          connection,
-          directory,
-          selectedPath && dirname(selectedPath) === directory ? selectedPath : "",
-          activeSession?.kind === "remote" ? activeSession.id : ""
-        )
-      );
-      return true;
+      setChildrenByDir((prev) => ({ ...prev, [dirPath]: response.entries }));
     } finally {
-      setTreeLoading(false);
+      setLoadingDirs((prev) => {
+        const next = new Set(prev);
+        next.delete(dirPath);
+        return next;
+      });
     }
   }
 
-  async function loadLocalDirectory(directory = currentDirectory) {
+  function toggleDir(entry) {
+    const dirPath = entry.path;
+    const willExpand = !expandedDirs.has(dirPath);
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(dirPath)) next.delete(dirPath);
+      else next.add(dirPath);
+      return next;
+    });
+    if (willExpand && !childrenByDir[dirPath] && !loadingDirs.has(dirPath)) loadChildren(dirPath);
+  }
+
+  // Re-root the tree at a folder (drill down) or its parent (".." goes up). Only
+  // the browse root (currentDirectory) moves; the source identity and open tabs
+  // are untouched. The reset effect rebuilds the tree at the new root.
+  async function enterDirectory(entry) {
+    if (!entry || entry.type !== "directory" || entry.path === currentDirectory) return;
     setTreeLoading(true);
     setError(null);
     try {
-      const response = await remoteApi.listLocalDirectory(directory);
-
+      const response = connected
+        ? await remoteApi.listDirectory(entry.path)
+        : await remoteApi.listLocalDirectory(entry.path);
       if (!response.ok) {
-        setError(response.error);
-        setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
-        return false;
+        if (connected && isConnectionLostError(response.error)) {
+          handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        } else {
+          setError(response.error);
+          setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
+        }
+        return;
       }
-
-      setLocalWorkspaceDirectory(directory);
-      setCurrentDirectory(directory);
+      setCurrentDirectory(entry.path);
       setFileEntries(response.entries);
-      const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
-      if (activeSession?.kind === "local-folder") {
-        rememberSourceSession(buildLocalFolderSourceSession(activeSession.rootPath || directory, directory, "", activeSession.id));
-      }
-      return true;
     } finally {
       setTreeLoading(false);
     }
@@ -816,15 +1128,24 @@ function App() {
 
   async function openEntry(entry) {
     if (entry.type === "directory") {
-      await loadDirectory(entry.path);
+      await enterDirectory(entry);
       return;
     }
 
     if (!entry.isMarkdown) return;
-    if (dirty && !window.confirm("Discard unsaved local edits and open another file?")) return;
 
     if (!connected) {
       await loadSample();
+      return;
+    }
+
+    // Edits typed into the tab-less "choose a file" placeholder can't be
+    // snapshotted (no active tab), so confirm before discarding them. With a live
+    // tab, adoptFileIntoTab/switchToTab snapshot the outgoing edits safely.
+    if (!activeTabId && !confirmDiscardEdits("open a file")) return;
+
+    if (tabExistsFor(remoteSourceKey(connection), entry.path)) {
+      switchToTab(tabId(remoteSourceKey(connection), entry.path));
       return;
     }
 
@@ -839,15 +1160,16 @@ function App() {
     setBusy(false);
 
     if (!response.ok) {
-      setError(response.error);
+      if (isConnectionLostError(response.error)) {
+        handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+      } else {
+        setError(response.error);
+      }
       return;
     }
 
-    setSelectedPath(entry.path);
     setConnection((current) => ({ ...current, remotePath: entry.path }));
-    setDirty(false);
-    setConflict(false);
-    applyFreshFile(response.file);
+    adoptFileIntoTab({ sourceKey: remoteSourceKey(connection), kind: "remote", path: entry.path, label: entry.name, file: response.file });
     const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
     rememberSourceSession(
       buildRemoteSourceSession(connection, dirname(entry.path), entry.path, activeSession?.kind === "remote" ? activeSession.id : "")
@@ -860,8 +1182,11 @@ function App() {
   }
 
   async function openLocalFile() {
-    if (dirty && !window.confirm("Discard unsaved local edits and open another file?")) return;
-
+    // Opening via the native picker disconnects any remote session and switches
+    // the workspace, which hides the current document's tab — so even a snapshotted
+    // outgoing tab becomes unreachable. Confirm whenever there are unsaved edits,
+    // regardless of whether a tab backs them.
+    if (!confirmDiscardEdits("open a file")) return;
     setBusy(true);
     setError(null);
     const response = await remoteApi.openLocalFile();
@@ -886,14 +1211,16 @@ function App() {
     }
 
     setLocalFile({ path: response.file.path });
-    setSelectedPath(response.file.path);
     setLocalWorkspaceDirectory(response.directory || localDirname(response.file.path));
     setCurrentDirectory(response.directory || localDirname(response.file.path));
     setFileEntries(response.entries || []);
-    setDirty(false);
-    setConflict(false);
-    setRemoteShadow(null);
-    applyFreshFile(response.file);
+    adoptFileIntoTab({
+      sourceKey: localSourceKey(response.directory || localDirname(response.file.path)),
+      kind: "local",
+      path: response.file.path,
+      label: basename(response.file.path),
+      file: response.file
+    });
     rememberSourceSession(buildLocalFileSourceSession(response.file.path, response.directory || localDirname(response.file.path)));
     setStatus({ state: "idle", message: "Opened local file", checkedAt: null, metadata: response.file.metadata });
   }
@@ -927,14 +1254,10 @@ function App() {
     setLocalWorkspaceDirectory(response.directory);
     setLocalFile(null);
     setSelectedPath("");
+    setActiveTabId(null);
     setCurrentDirectory(response.directory);
     setFileEntries(response.entries || []);
-    setContent(chooseLocalFileMarkdown);
-    setEditorContent(chooseLocalFileMarkdown);
-    setDirty(false);
-    setConflict(false);
-    setRemoteShadow(null);
-    setFileVersion(null);
+    dispatchDocument({ type: "SET_TEXT", text: chooseLocalFileMarkdown });
     setFileMetadata(null);
     setLastRefresh(null);
     rememberSourceSession(buildLocalFolderSourceSession(response.directory, response.directory, ""));
@@ -943,12 +1266,23 @@ function App() {
 
   async function openLocalEntry(entry) {
     if (entry.type === "directory") {
-      await loadLocalDirectory(entry.path);
+      await enterDirectory(entry);
       return;
     }
 
     if (!entry.isMarkdown) return;
-    if (dirty && !window.confirm("Discard unsaved local edits and open another file?")) return;
+
+    // Edits typed into the tab-less "choose a file" placeholder can't be
+    // snapshotted (no active tab), so confirm before discarding them.
+    if (!activeTabId && !confirmDiscardEdits("open a file")) return;
+
+    // The source identity stays the originally opened folder, not the drilled-in
+    // browse root — so drilling never fragments the open tabs.
+    const sourceRoot = localWorkspaceDirectory || currentDirectory;
+    if (tabExistsFor(localSourceKey(sourceRoot), entry.path)) {
+      switchToTab(tabId(localSourceKey(sourceRoot), entry.path));
+      return;
+    }
 
     setBusy(true);
     setError(null);
@@ -961,13 +1295,8 @@ function App() {
       return;
     }
 
-    setLocalWorkspaceDirectory(currentDirectory);
     setLocalFile({ path: response.file.path });
-    setSelectedPath(response.file.path);
-    setDirty(false);
-    setConflict(false);
-    setRemoteShadow(null);
-    applyFreshFile(response.file);
+    adoptFileIntoTab({ sourceKey: localSourceKey(sourceRoot), kind: "local", path: response.file.path, label: basename(response.file.path), file: response.file });
     const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
     if (activeSession?.kind === "local-folder") {
       rememberSourceSession(buildLocalFolderSourceSession(activeSession.rootPath || currentDirectory, currentDirectory, response.file.path, activeSession.id));
@@ -1017,20 +1346,29 @@ function App() {
       const response = await remoteApi.openFile(selectedPath);
 
       if (!response.ok) {
-        setError(response.error);
-        setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
+        if (isConnectionLostError(response.error)) {
+          handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        } else {
+          setError(response.error);
+          setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
+        }
         return;
       }
 
       captureScrollRatio(previewRef, scrollRatioRef);
+      // A conflict only arises when we have unsaved edits AND the server copy
+      // actually differs from our base. An unchanged re-fetch keeps the edits (the
+      // reducer treats byte-identical content as a no-op), so it must not claim a
+      // newer file was found or leave Save stuck behind a phantom conflict.
+      const raisedConflict = wasDirty && response.file.content !== content;
       applyRemoteFile(response.file);
       setStatus((current) => ({
         ...current,
         state: watching ? "watching" : "connected",
-        message: wasDirty ? "Remote refresh found a newer file; review the conflict." : "Remote file refreshed",
+        message: raisedConflict ? "Remote refresh found a newer file; review the conflict." : "Remote file refreshed",
         metadata: response.file.metadata
       }));
-      showDocumentRefreshNotice(wasDirty ? "newer file found" : "file refreshed");
+      showDocumentRefreshNotice(raisedConflict ? "newer file found" : "file refreshed");
     } finally {
       setBusy(false);
       setDocumentRefreshing(false);
@@ -1048,12 +1386,7 @@ function App() {
     setLocalWorkspaceDirectory(null);
     setLocalFile(null);
     setLocalSampleContent(file.content);
-    setContent(file.content);
-    setEditorContent(file.content);
-    setDirty(false);
-    setConflict(false);
-    setRemoteShadow(null);
-    setFileVersion(file.version);
+    dispatchDocument({ type: "LOAD_FRESH", file });
     setFileMetadata(file.metadata);
     setLastRefresh(file.refreshedAt);
     setSelectedPath(file.path || sampleEntry.path);
@@ -1061,6 +1394,7 @@ function App() {
     setFileEntries([nextEntry]);
     setError(null);
     setActiveSessionId(null);
+    setActiveTabId(null);
     setStatus({ state: "idle", message, checkedAt: null, metadata: file.metadata });
   }
 
@@ -1095,12 +1429,7 @@ function App() {
     captureScrollRatio(previewRef, scrollRatioRef);
     setLocalWorkspaceDirectory(null);
     setLocalFile(null);
-    setContent("");
-    setEditorContent("");
-    setDirty(false);
-    setConflict(false);
-    setRemoteShadow(null);
-    setFileVersion(null);
+    dispatchDocument({ type: "SET_TEXT", text: "" });
     setFileMetadata(null);
     setLastRefresh(null);
     setSelectedPath("");
@@ -1108,6 +1437,7 @@ function App() {
     setFileEntries([]);
     setError(null);
     setActiveSessionId(null);
+    setActiveTabId(null);
     setStatus({ state: "idle", message, checkedAt: null, metadata: null });
   }
 
@@ -1167,21 +1497,88 @@ function App() {
   async function refreshSidebarTree() {
     if (treeLoading || hasSourceOpening()) return;
 
-    if (connected) {
-      const refreshed = await loadDirectory(currentDirectory);
-      if (refreshed) showTreeRefreshNotice("tree refreshed");
-      return;
-    }
-
-    if (localWorkspaceDirectory) {
-      const refreshed = await loadLocalDirectory(currentDirectory);
-      if (refreshed) showTreeRefreshNotice("tree refreshed");
+    if (connected || localWorkspaceDirectory) {
+      // Refresh in place: re-list the current browse root and any expanded
+      // folders WITHOUT moving the source identity (localWorkspaceDirectory), so
+      // open tabs survive a refresh even after drilling into a subfolder.
+      const listDir = (dir) => (connected ? remoteApi.listDirectory(dir) : remoteApi.listLocalDirectory(dir));
+      setTreeLoading(true);
+      setError(null);
+      try {
+        const rootResponse = await listDir(currentDirectory);
+        if (!rootResponse.ok) {
+          if (connected && isConnectionLostError(rootResponse.error)) {
+            handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+          } else {
+            setError(rootResponse.error);
+            setStatus((current) => ({ ...current, state: "error", message: rootResponse.error.message }));
+          }
+          return;
+        }
+        setFileEntries(rootResponse.entries);
+        const expanded = [...expandedDirs];
+        if (expanded.length) {
+          const updates = {};
+          for (const dir of expanded) {
+            const childResponse = await listDir(dir);
+            if (childResponse.ok) {
+              updates[dir] = childResponse.entries;
+            } else if (connected && isConnectionLostError(childResponse.error)) {
+              // A drop while re-listing an expanded subfolder must trigger recovery,
+              // not be silently swallowed (leaving a stale, dead tree with no prompt).
+              handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+              return;
+            }
+            // A non-fatal single-folder error keeps the previously-cached children.
+          }
+          setChildrenByDir((prev) => ({ ...prev, ...updates }));
+        }
+        showTreeRefreshNotice("tree refreshed");
+      } finally {
+        setTreeLoading(false);
+      }
       return;
     }
 
     if (!confirmDiscardEdits("reload the local sample")) return;
     const refreshed = await refreshLocalSample();
     if (refreshed) showTreeRefreshNotice("sample reloaded");
+  }
+
+  // Promote the folder currently shown in the tree to be the source root, so it
+  // is remembered, displayed in Sources, and restored next time. Remote sources
+  // are keyed by connection (tabs unaffected); local sources are keyed by their
+  // directory, so re-key any open tabs onto the new root to keep them.
+  function setCurrentDirectoryAsSource() {
+    if (!currentDirectory) return;
+
+    if (connected) {
+      setConnection((current) => ({ ...current, remoteDirectory: currentDirectory }));
+      const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
+      rememberSourceSession(
+        buildRemoteSourceSession(connection, currentDirectory, "", activeSession?.kind === "remote" ? activeSession.id : "")
+      );
+      showTreeRefreshNotice("source root set");
+      return;
+    }
+
+    if (localWorkspaceDirectory) {
+      const oldKey = localSourceKey(localWorkspaceDirectory);
+      const newKey = localSourceKey(currentDirectory);
+      if (oldKey !== newKey) {
+        const activeTab = tabs.find((tab) => tab.id === activeTabId);
+        setTabs((prev) => rekeyTabsForSource(prev, oldKey, newKey));
+        if (activeTab && activeTab.sourceKey === oldKey) {
+          setActiveTabId(tabId(newKey, activeTab.path));
+        }
+      }
+      setLocalWorkspaceDirectory(currentDirectory);
+      const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
+      rememberSourceSession(
+        buildLocalFolderSourceSession(currentDirectory, currentDirectory, "", activeSession?.kind === "local-folder" ? activeSession.id : "")
+      );
+      showTreeRefreshNotice("source root set");
+    }
   }
 
   function isSourceSessionOpen(session) {
@@ -1253,13 +1650,9 @@ function App() {
 
         setLocalWorkspaceDirectory(directory);
         setLocalFile({ path: fileResponse.file.path });
-        setSelectedPath(fileResponse.file.path);
         setCurrentDirectory(directory);
         setFileEntries(entriesResponse.ok ? entriesResponse.entries : []);
-        setDirty(false);
-        setConflict(false);
-        setRemoteShadow(null);
-        applyFreshFile(fileResponse.file);
+        adoptFileIntoTab({ sourceKey: localSourceKey(directory), kind: "local", path: fileResponse.file.path, label: basename(fileResponse.file.path), file: fileResponse.file });
         rememberSourceSession(buildLocalFileSourceSession(fileResponse.file.path, directory, session.id));
         setStatus({ state: "idle", message: "Restored local file", checkedAt: null, metadata: fileResponse.file.metadata });
         return;
@@ -1279,17 +1672,12 @@ function App() {
       setLocalWorkspaceDirectory(directory);
       setCurrentDirectory(directory);
       setFileEntries(entriesResponse.entries);
-      setDirty(false);
-      setConflict(false);
-      setRemoteShadow(null);
-      setFileVersion(null);
       setFileMetadata(null);
       setLastRefresh(null);
 
       if (fileResponse?.ok) {
         setLocalFile({ path: fileResponse.file.path });
-        setSelectedPath(fileResponse.file.path);
-        applyFreshFile(fileResponse.file);
+        adoptFileIntoTab({ sourceKey: localSourceKey(directory), kind: "local", path: fileResponse.file.path, label: basename(fileResponse.file.path), file: fileResponse.file });
         setStatus({ state: "idle", message: "Restored local folder", checkedAt: null, metadata: fileResponse.file.metadata });
         rememberSourceSession(buildLocalFolderSourceSession(session.rootPath || directory, directory, fileResponse.file.path, session.id));
         return;
@@ -1297,8 +1685,8 @@ function App() {
 
       setLocalFile(null);
       setSelectedPath("");
-      setContent(chooseLocalFileMarkdown);
-      setEditorContent(chooseLocalFileMarkdown);
+      setActiveTabId(null);
+      dispatchDocument({ type: "SET_TEXT", text: chooseLocalFileMarkdown });
       setError(fileResponse?.error || null);
       setStatus({ state: "idle", message: "Restored local folder", checkedAt: null, metadata: null });
       rememberSourceSession(buildLocalFolderSourceSession(session.rootPath || directory, directory, "", session.id));
@@ -1308,16 +1696,15 @@ function App() {
     }
   }
 
-  function onEditorChange(event) {
-    setEditorContent(event.target.value);
-    setDirty(event.target.value !== content);
-  }
+  // The reducer derives dirty from the value vs. the base and clears a stuck
+  // conflict when edits are reverted, so this stays stable (no deps needed).
+  const onEditorChange = useCallback((event) => {
+    dispatchDocument({ type: "EDIT", value: event.target.value });
+  }, []);
 
   function useLatestRemote() {
     if (!remoteShadow) return;
     applyFreshFile(remoteShadow);
-    setDirty(false);
-    setConflict(false);
   }
 
   async function keepLocalEditsAndOverwrite() {
@@ -1344,6 +1731,13 @@ function App() {
     setBusy(false);
 
     if (!response?.ok) {
+      // A drop mid-overwrite must tear down the session like saveCurrentFile does,
+      // rather than leaving a raw error with the conflict banner stuck and the UI
+      // still believing it is connected.
+      if (documentSource === "remote" && isConnectionLostError(response?.error)) {
+        handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        return;
+      }
       const nextError = response?.error || { message: "Unable to overwrite the changed file." };
       setError(nextError);
       setStatus((current) => ({ ...current, state: "error", message: nextError.message }));
@@ -1352,8 +1746,6 @@ function App() {
 
     if (documentSource === "local") setLocalFile({ path: response.file.path });
     applyFreshFile(response.file);
-    setDirty(false);
-    setConflict(false);
     setStatus((current) => ({
       ...current,
       state: documentSource === "remote" ? "connected" : "idle",
@@ -1379,8 +1771,6 @@ function App() {
 
       setLocalSampleContent(editorContent);
       applyFreshFile(response.file);
-      setDirty(false);
-      setConflict(false);
       setStatus({ state: "idle", message: "Saved local sample", checkedAt: null, metadata: response.file.metadata });
       return;
     }
@@ -1397,8 +1787,10 @@ function App() {
         setError(response.error);
         if (response.error.code === "LOCAL_CONFLICT") {
           const latest = localFile?.path ? await remoteApi.readLocalFile(localFile.path) : null;
-          if (latest?.ok && latest.file) setRemoteShadow(latest.file);
-          setConflict(true);
+          dispatchDocument({
+            type: "CONFLICT_DETECTED",
+            shadow: latest?.ok && latest.file ? latest.file : remoteShadow
+          });
         }
         setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
         return;
@@ -1406,8 +1798,6 @@ function App() {
 
       setLocalFile({ path: response.file.path });
       applyFreshFile(response.file);
-      setDirty(false);
-      setConflict(false);
       setStatus({ state: "idle", message: "Saved local file", checkedAt: null, metadata: response.file.metadata });
       return;
     }
@@ -1421,18 +1811,22 @@ function App() {
     setBusy(false);
 
     if (!response.ok) {
+      if (isConnectionLostError(response.error)) {
+        handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        return;
+      }
       setError(response.error);
       if (response.error.code === "REMOTE_CONFLICT") {
         const latest = selectedPath ? await remoteApi.openFile(selectedPath) : null;
-        if (latest?.ok && latest.file) setRemoteShadow(latest.file);
-        setConflict(true);
+        dispatchDocument({
+          type: "CONFLICT_DETECTED",
+          shadow: latest?.ok && latest.file ? latest.file : remoteShadow
+        });
       }
       return;
     }
 
     applyFreshFile(response.file);
-    setDirty(false);
-    setConflict(false);
     setStatus((current) => ({ ...current, message: "Saved remote file" }));
   }
 
@@ -1505,6 +1899,33 @@ function App() {
     }, 2200);
   }
 
+  function jumpToHeading(heading, index) {
+    if (!heading) return;
+
+    function performScroll() {
+      const pane = previewRef.current;
+      if (!pane) return;
+      let target = pane.querySelector(`#tether-h-${heading.line}`);
+      // Fallback: headings render in document order, so the Nth outline entry maps
+      // to the Nth rendered heading even if a line anchor is unavailable.
+      if (!target && Number.isInteger(index)) {
+        target = pane.querySelectorAll("h1,h2,h3,h4,h5,h6")[index] || null;
+      }
+      if (!target) return;
+      const top = target.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop - 16;
+      pane.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+      setActiveHeadingId(heading.id);
+    }
+
+    if (viewMode === "source") {
+      // The preview must be mounted to scroll it; split keeps the editor visible too.
+      setViewMode("split");
+      window.requestAnimationFrame(() => window.requestAnimationFrame(performScroll));
+    } else {
+      performScroll();
+    }
+  }
+
   function openSidebarFromRail() {
     if (compactLayout) {
       setSidebarPeeking(true);
@@ -1514,6 +1935,12 @@ function App() {
   }
 
   function toggleSidebarFromHeader() {
+    // While peeking, the header button pins the flyout open (expands flush).
+    if (sidebarPeeking) {
+      setSidebarPeeking(false);
+      if (!compactLayout) setSidebarCollapsedPreference(false);
+      return;
+    }
     if (compactLayout) {
       setSidebarPeeking(false);
       return;
@@ -1523,6 +1950,24 @@ function App() {
 
   const railToggleTitle = compactLayout ? "Show sidebar" : "Open sidebar";
   const headerToggleTitle = compactLayout ? "Close sidebar" : "Collapse sidebar";
+
+  // Keep the latest save action in a ref so the global Cmd/Ctrl+S handler can
+  // invoke the current closure without re-subscribing the keydown listener.
+  saveActionRef.current = () => {
+    if (canSave && !busy) saveCurrentFile();
+  };
+  openFileActionRef.current = () => {
+    if (busy) return;
+    setConnectionPaletteOpen(false);
+    setSettingsPanelOpen(false);
+    openLocalFile();
+  };
+  openFolderActionRef.current = () => {
+    if (busy) return;
+    setConnectionPaletteOpen(false);
+    setSettingsPanelOpen(false);
+    openLocalDirectory();
+  };
 
   return (
     <div
@@ -1541,20 +1986,35 @@ function App() {
         <aside
           className="navigation-panel"
           aria-label="Documentation sidebar"
+          onMouseEnter={() => {
+            if (sidebarRailMode) setSidebarPeeking(true);
+          }}
+          onMouseLeave={() => setSidebarPeeking(false)}
         >
           <div className="sidebar-expanded">
             <div className="brand-row">
-              <div className="brand-lockup" onClick={triggerTetherPing}>
+              <div
+                className="brand-lockup"
+                role="button"
+                tabIndex={0}
+                title="Run a connection health check"
+                onClick={triggerTetherPing}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  triggerTetherPing();
+                }}
+              >
                 <TetherGlyph pingKey={tetherPing?.id} />
                 <strong>tether</strong>
                 <span>v0.0</span>
               </div>
               <button
                 className="icon-button compact panel-toggle"
-                title={headerToggleTitle}
+                title={sidebarPeeking ? "Keep sidebar open" : headerToggleTitle}
                 onClick={toggleSidebarFromHeader}
               >
-                <PanelLeftClose size={15} />
+                {sidebarPeeking ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
               </button>
             </div>
 
@@ -1581,6 +2041,9 @@ function App() {
               currentDirectory={currentDirectory}
               documentSource={documentSource}
               entries={fileEntries}
+              expandedDirs={expandedDirs}
+              childrenByDir={childrenByDir}
+              loadingDirs={loadingDirs}
               sampleSourceOpen={sampleSourceOpen}
               localFile={localFile}
               rootLabel={rootLabel}
@@ -1590,6 +2053,9 @@ function App() {
               sourceLoadingTitle={sourceOpening?.title}
               treeLoading={treeLoading}
               onOpenEntry={connected ? openEntry : openLocalEntry}
+              onToggleDir={toggleDir}
+              onEnterDir={enterDirectory}
+              onSetSource={setCurrentDirectoryAsSource}
               onRefresh={refreshSidebarTree}
               onLoadSample={openLocalSample}
             />
@@ -1597,23 +2063,19 @@ function App() {
           </div>
 
           <div className="sidebar-rail">
-            <button className="icon-button compact panel-toggle" title={railToggleTitle} onClick={openSidebarFromRail}>
-              <PanelLeftOpen size={15} />
+            <button
+              className="rail-brand"
+              type="button"
+              title={railToggleTitle}
+              aria-label={railToggleTitle}
+              onClick={openSidebarFromRail}
+            >
+              <TetherGlyph />
             </button>
             <div className="rail-divider" />
-            <button className="rail-source" title={sourceLabel} onClick={openSidebarFromRail}>
+            <span className="rail-source-indicator" title={sourceLabel} aria-label={sourceLabel}>
               {connected ? <span className="status-dot pulse" /> : <Folder size={14} />}
-            </button>
-            <button
-              className="icon-button compact"
-              title="Add source"
-              onClick={() => {
-                setSidebarPeeking(false);
-                setConnectionPaletteOpen(true);
-              }}
-            >
-              <Plus size={15} />
-            </button>
+            </span>
           </div>
         </aside>
       )}
@@ -1633,9 +2095,8 @@ function App() {
             event.preventDefault();
             setResizingSidebar(true);
           }}
-        >
-          <GripVertical size={14} aria-hidden="true" />
-        </div>
+        />
+
       )}
 
       <main className={`workspace ${conflict && !zenMode ? "has-conflict" : ""}`}>
@@ -1646,17 +2107,22 @@ function App() {
               {dirty && <span className="dirty-dot" title="Unsaved changes" />}
             </div>
             <div className="toolbar-actions">
-              <div className="view-switch" role="group" aria-label="View mode">
-                <button className={viewMode === "preview" ? "active" : ""} onClick={() => setViewMode("preview")}>
-                  read
-                </button>
-                <button className={viewMode === "split" ? "active" : ""} onClick={() => setViewMode("split")}>
-                  split
-                </button>
-                <button className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
-                  src
-                </button>
-              </div>
+              {documentSource !== "none" && (
+                <>
+                  <div className="view-switch" role="group" aria-label="View mode">
+                    <button className={viewMode === "preview" ? "active" : ""} onClick={() => setViewMode("preview")}>
+                      read
+                    </button>
+                    <button className={viewMode === "split" ? "active" : ""} onClick={() => setViewMode("split")}>
+                      split
+                    </button>
+                    <button className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
+                      src
+                    </button>
+                  </div>
+                  <div className="toolbar-divider" />
+                </>
+              )}
               {documentSource === "remote" && (
                 <>
                   <button
@@ -1680,25 +2146,40 @@ function App() {
                   </button>
                 </>
               )}
-              <button
-                className="save-button"
-                disabled={!canSave || busy}
-                onClick={saveCurrentFile}
-                title={canSave ? "Save" : "No changes to save"}
-                aria-label="Save current document"
-              >
-                <Save size={13} />
-                <span className="action-label">save</span>
-              </button>
-              <div className="toolbar-divider" />
+              {documentSource !== "none" && (
+                <button
+                  className="save-button"
+                  disabled={!canSave || busy}
+                  onClick={saveCurrentFile}
+                  title={canSave ? "Save" : "No changes to save"}
+                  aria-label="Save current document"
+                >
+                  <Save size={13} />
+                  <span className="action-label">save</span>
+                </button>
+              )}
+              {documentSource !== "none" && <div className="toolbar-divider" />}
               <ThemeSwitch
                 value={preferences.theme}
                 resolvedTheme={resolvedTheme}
                 onChange={(value) => updatePreference("theme", value)}
               />
-              <button className="icon-button compact" title="Zen reading" aria-label="Zen reading" onClick={() => setZenMode(true)}>
-                <Maximize2 size={14} />
-              </button>
+              {documentSource !== "none" && (
+                <button
+                  className={`icon-button compact ${outlineOpen ? "active" : ""}`}
+                  title="Document outline"
+                  aria-label="Toggle document outline"
+                  aria-pressed={outlineOpen}
+                  onClick={() => setOutlineOpen((open) => !open)}
+                >
+                  <List size={14} />
+                </button>
+              )}
+              {documentSource !== "none" && (
+                <button className="icon-button compact" title="Zen reading" aria-label="Zen reading" onClick={() => setZenMode(true)}>
+                  <Maximize2 size={14} />
+                </button>
+              )}
               <button className="icon-button compact" title="Settings" aria-label="Settings" onClick={() => setSettingsPanelOpen(true)}>
                 <Settings size={14} />
               </button>
@@ -1706,19 +2187,36 @@ function App() {
           </header>
         )}
 
+        {!zenMode && sourceTabs.length > 0 && (
+          <TabStrip
+            tabs={sourceTabs}
+            activeTabId={activeTabId}
+            activeDirty={dirty}
+            onSelect={switchToTab}
+            onClose={closeTab}
+          />
+        )}
+
         {conflict && !zenMode && (
           <div className="conflict-banner">
-            <AlertCircle size={14} />
+            <AlertTriangle size={14} />
             <span>
-              <strong>conflict</strong> - {documentTitle} changed while you were editing
+              <strong>conflict</strong> — {documentTitle} changed
+              {connected && connection.host ? ` on ${connection.host}` : ""} while you were editing
             </span>
-            <button onClick={useLatestRemote}>take theirs</button>
-            <button className="warn" onClick={keepLocalEditsAndOverwrite}>
-              keep mine - overwrite
+            <button disabled={busy} onClick={useLatestRemote}>take theirs</button>
+            <button className="warn" disabled={busy} onClick={keepLocalEditsAndOverwrite}>
+              keep mine — overwrite
             </button>
           </div>
         )}
 
+        {documentSource === "none" && !zenMode && !sourceOpening ? (
+          <ContentEmptyState
+            onConnect={() => setConnectionPaletteOpen(true)}
+            onOpenLocalFolder={openLocalDirectory}
+          />
+        ) : (
         <React.Suspense
           fallback={
             <DocumentSurfaceFallback
@@ -1729,7 +2227,7 @@ function App() {
           }
         >
           <LazyDocumentSurface
-            content={previewContent}
+            content={deferredPreviewContent}
             copyText={copyCodeText}
             dirty={dirty}
             documentEyebrow={documentEyebrow}
@@ -1744,9 +2242,11 @@ function App() {
             viewMode={zenMode ? "preview" : viewMode}
           />
         </React.Suspense>
+        )}
 
         {!zenMode && (
           <StatusBar
+            detached={documentSource === "none"}
             lineCount={lineCount}
             statusLabel={tetherPing?.message || statusLabel}
             syncLabel={syncLabel}
@@ -1755,8 +2255,26 @@ function App() {
           />
         )}
 
+        {!zenMode && outlineOpen && documentSource !== "none" && (
+          <div className="outline-flyout" role="region" aria-label="Document outline">
+            <div className="outline-flyout-header">
+              <span>outline</span>
+              <button
+                className="outline-flyout-close"
+                type="button"
+                title="Close outline"
+                aria-label="Close outline"
+                onClick={() => setOutlineOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <OutlinePanel headings={outline} activeId={activeHeadingId} onJump={jumpToHeading} />
+          </div>
+        )}
+
         {zenMode && (
-          <button className="zen-exit" onClick={() => setZenMode(false)} title="Exit Zen mode">
+          <button className="zen-exit" onClick={() => setZenMode(false)} title="Exit zen — Esc">
             esc
           </button>
         )}
@@ -1767,6 +2285,7 @@ function App() {
         connected={connected}
         connection={connection}
         connectionProfile={connectionProfile}
+        currentDirectory={currentDirectory}
         defaultPrivateKeyPath={defaultPrivateKeyPath}
         error={error}
         open={connectionPaletteOpen}
@@ -1798,834 +2317,51 @@ function App() {
   );
 }
 
-function TetherGlyph({ dashed = false, pingKey = null }) {
-  return (
-    <svg className="tether-glyph" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <circle cx="3.6" cy="12.4" r="2.1" fill="var(--accent)" />
-      <path
-        d="M5.4 10.6 C 7.4 8.6, 8.4 7.4, 10.4 5.4"
-        stroke="var(--ink3)"
-        strokeDasharray={dashed ? "1.6 1.6" : undefined}
-        strokeWidth="1.2"
-        fill="none"
-      />
-      <circle cx="12" cy="4" r="2.4" fill="none" stroke="var(--ink)" strokeWidth="1.6" />
-      {pingKey && <circle key={pingKey} className="tether-ping-dot" cx="3.6" cy="12.4" r="1.35" fill="var(--accent)" />}
-    </svg>
-  );
-}
 
-function DocumentSurfaceFallback({ loadingMessage, loadingTitle, previewRef }) {
+function TabStrip({ tabs, activeTabId, activeDirty, onSelect, onClose }) {
+  if (tabs.length === 0) return null;
   return (
-    <div className="document-grid mode-preview is-loading">
-      <section ref={previewRef} className="preview-pane preview-loading-pane" aria-label="Opening document">
-        <article className="document-loading" role="status" aria-live="polite">
-          <span className="loading-mark" aria-hidden="true">
-            <TetherGlyph pingKey="loading" />
-          </span>
-          <strong>{loadingTitle || "loading renderer"}</strong>
-          <span>{loadingMessage || "Preparing the Markdown view."}</span>
-        </article>
-      </section>
-    </div>
-  );
-}
-
-function SourcesPanel({
-  activeSessionId,
-  connected,
-  documentSource,
-  localWorkspaceDirectory,
-  onCloseLocalSource,
-  onCloseSampleSource,
-  onDisconnect,
-  onEditConnection,
-  onForgetSession,
-  onLoadSample,
-  onOpenPalette,
-  onOpenSession,
-  showLocalSource,
-  sourceLabel,
-  sourceSessions
-}) {
-  const hasActiveRemoteSession = sourceSessions.some((session) => session.id === activeSessionId && session.kind === "remote");
-  const sampleSourceActive = showLocalSource && documentSource === "sample";
-
-  return (
-    <section className="sources-panel">
-      <div className="sidebar-label">
-        <span>sources</span>
-        <i />
-      </div>
-      {connected && !hasActiveRemoteSession && (
-        <div className={`source-row ${documentSource === "remote" ? "active" : ""}`} aria-label="Remote source">
-          <span className="source-icon">
-            <span className="status-dot pulse" />
-          </span>
-          <span className="source-name">{sourceLabel}</span>
-          <span className="tag">ssh</span>
-          <button
-            className="source-edit"
-            type="button"
-            title="Edit connection"
-            aria-label="Edit connection"
-            onClick={(event) => {
-              event.stopPropagation();
-              onEditConnection();
-            }}
-          >
-            <Settings size={11} aria-hidden="true" />
-          </button>
-          <button
-            className="source-remove"
-            type="button"
-            title="Disconnect"
-            aria-label="Disconnect remote source"
-            onClick={(event) => {
-              event.stopPropagation();
-              onDisconnect();
-            }}
-          >
-            x
-          </button>
-        </div>
-      )}
-      {sourceSessions.map((session) => {
-        const active = session.id === activeSessionId;
+    <div className="tab-strip" role="tablist" aria-label="Open documents">
+      {tabs.map((tab) => {
+        const active = tab.id === activeTabId;
+        const dirty = active ? activeDirty : Boolean(tab.doc && tab.doc.dirty);
         return (
-          <div
-            key={session.id}
-            className={`source-row remembered-source ${active ? "active" : ""}`}
-            role={active ? undefined : "button"}
-            tabIndex={active ? undefined : 0}
-            aria-current={active ? "true" : undefined}
-            title={session.title || session.detail || session.label}
-            onClick={active ? undefined : () => onOpenSession(session)}
-            onKeyDown={
-              active
-                ? undefined
-                : (event) => {
-                    if (event.key !== "Enter" && event.key !== " ") return;
-                    event.preventDefault();
-                    onOpenSession(session);
-                  }
-            }
-          >
-            <span className="source-icon">
-              {session.kind === "remote" ? (
-                <span className={`status-dot ${active && connected ? "pulse connected" : ""}`} />
-              ) : session.kind === "local-file" ? (
-                <FileText size={13} />
-              ) : (
-                <Folder size={13} />
-              )}
-            </span>
-            <span className="source-copy">
-              <span className="source-name">{session.label}</span>
-              {session.detail && <span className="source-detail">{session.detail}</span>}
-            </span>
-            <span className="tag">{session.tag}</span>
-            {active && session.kind === "remote" && (
-              <button
-                className="source-edit"
-                type="button"
-                title="Edit connection"
-                aria-label="Edit connection"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onEditConnection();
-                }}
-              >
-                <Settings size={11} aria-hidden="true" />
-              </button>
-            )}
-            {active && session.kind === "remote" ? (
-              <button
-                className="source-remove"
-                type="button"
-                title="Disconnect"
-                aria-label="Disconnect remote source"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onDisconnect();
-                }}
-              >
-                x
-              </button>
-            ) : active ? (
-              <button
-                className="source-remove"
-                type="button"
-                title="Close source"
-                aria-label={`Close ${session.label}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onCloseLocalSource();
-                }}
-              >
-                x
-              </button>
-            ) : (
-              <button
-                className="source-remove"
-                type="button"
-                title="Forget source"
-                aria-label={`Forget ${session.label}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onForgetSession(session.id);
-                }}
-              >
-                x
-              </button>
-            )}
-          </div>
-        );
-      })}
-      {showLocalSource && (
-        <div
-          className={`source-row ${sampleSourceActive ? "active" : ""}`}
-          role={sampleSourceActive ? undefined : "button"}
-          tabIndex={sampleSourceActive ? undefined : 0}
-          aria-current={sampleSourceActive ? "true" : undefined}
-          aria-label={sampleSourceActive ? "Local sample source" : "Open local sample source"}
-          title={sampleSourceActive ? "Local sample is open" : "Open local sample"}
-          onClick={sampleSourceActive ? undefined : onLoadSample}
-          onKeyDown={
-            sampleSourceActive
-              ? undefined
-              : (event) => {
-                  if (event.key !== "Enter" && event.key !== " ") return;
-                  event.preventDefault();
-                  onLoadSample();
-                }
-          }
-        >
-          <span className="source-icon">
-            <Folder size={13} />
-          </span>
-          <span className="source-name">local sample</span>
-          <span className="tag">local</span>
-          <button
-            className="source-remove"
-            type="button"
-            title="Close local sample"
-            aria-label="Close local sample"
-            onClick={(event) => {
-              event.stopPropagation();
-              onCloseSampleSource();
-            }}
-          >
-            x
-          </button>
-        </div>
-      )}
-      <button className="source-row add-source" type="button" onClick={onOpenPalette}>
-        <span className="source-icon">+</span>
-        <span className="source-name">add source</span>
-      </button>
-    </section>
-  );
-}
-
-function FilesPanel({
-  connected,
-  currentDirectory,
-  documentSource,
-  entries,
-  sampleSourceOpen,
-  localFile,
-  rootLabel,
-  selectedPath,
-  sourceLoading,
-  sourceLoadingMessage,
-  sourceLoadingTitle,
-  treeLoading,
-  onOpenEntry,
-  onRefresh,
-  onLoadSample
-}) {
-  const showLocalTree = !connected && documentSource === "local";
-  const canRefreshTree = !sourceLoading && (connected || sampleSourceOpen || showLocalTree);
-  const showSourceLoading = sourceLoading;
-  const showSampleFile = !connected && documentSource === "sample";
-  const directoryPath = formatSidebarDirectoryPath(rootLabel || currentDirectory);
-
-  return (
-    <section className="sidebar-section files-section">
-      <div className="sidebar-label">
-        <span>files</span>
-        <i />
-      </div>
-      {directoryPath && !sourceLoading && (
-        <div className="sidebar-path" title={directoryPath.full} aria-label={`Current folder: ${directoryPath.full}`}>
-          <span>{directoryPath.display}</span>
-        </div>
-      )}
-
-      <div className="file-list" aria-label="Markdown files">
-        {showSourceLoading && (
-          <div className="sidebar-loading" role="status" aria-live="polite">
-            <span className="loading-mark" aria-hidden="true">
-              <TetherGlyph pingKey="loading" />
-            </span>
-            <strong>{sourceLoadingTitle || (connected ? "opening source" : "connecting source")}</strong>
-            <span>{sourceLoadingMessage || statusTextForLoading(documentSource)}</span>
-          </div>
-        )}
-
-        {!showSourceLoading && showSampleFile && (
-          <button className="file-row active" onClick={onLoadSample}>
-            <FileText size={16} />
-            <span>sample.md</span>
-          </button>
-        )}
-
-        {!showSourceLoading && documentSource === "none" && <div className="empty-state">No source open</div>}
-
-        {!showSourceLoading && connected && canGoUp(currentDirectory) && (
-          <button
-            className="file-row"
-            onClick={() =>
-              onOpenEntry({
-                name: "..",
-                path: parentRemotePath(currentDirectory),
-                type: "directory"
-              })
-            }
-          >
-            <FolderOpen size={16} />
-            <span>..</span>
-          </button>
-        )}
-
-        {!showSourceLoading && showLocalTree && localCanGoUp(currentDirectory) && (
-          <button
-            className="file-row"
-            onClick={() =>
-              onOpenEntry({
-                name: "..",
-                path: localParentPath(currentDirectory),
-                type: "directory",
-                isMarkdown: true
-              })
-            }
-          >
-            <FolderOpen size={16} />
-            <span>..</span>
-          </button>
-        )}
-
-        {!showSourceLoading && (connected || showLocalTree) && entries.length === 0 && (
-          <div className="empty-state">{treeLoading ? "Loading..." : "No files in this folder"}</div>
-        )}
-
-        {!showSourceLoading &&
-          (connected || showLocalTree) &&
-          entries.map((entry) => (
+          <div key={tab.id} className={`tab ${active ? "active" : ""}`} role="tab" aria-selected={active}>
+            <button className="tab-label" type="button" title={tab.path} onClick={() => onSelect(tab.id)}>
+              {dirty && <span className="tab-dirty" aria-hidden="true" />}
+              <span>{tab.label}</span>
+            </button>
             <button
-              key={entry.path}
-              className={`file-row ${entry.path === selectedPath ? "active" : ""} ${
-                entry.name.startsWith(".") ? "muted" : ""
-              }`}
-              disabled={entry.type === "file" && !entry.isMarkdown}
-              onClick={() => onOpenEntry(entry)}
-              title={entry.path}
+              className="tab-close"
+              type="button"
+              aria-label={`Close ${tab.label}`}
+              title="Close tab"
+              onClick={() => onClose(tab.id)}
             >
-              {entry.type === "directory" ? <FolderOpen size={16} /> : <File size={16} />}
-              <span>{entry.name}</span>
-            </button>
-          ))}
-      </div>
-      {canRefreshTree && (
-        <button
-          className={`file-refresh ${treeLoading ? "loading" : ""}`}
-          type="button"
-          disabled={treeLoading}
-          aria-busy={treeLoading}
-          onClick={onRefresh}
-        >
-          <RefreshCw size={12} />
-          {treeLoading ? "refreshing" : "refresh tree"}
-        </button>
-      )}
-    </section>
-  );
-}
-
-function ConnectionPalette({
-  busy,
-  connected,
-  connection,
-  connectionProfile,
-  defaultPrivateKeyPath,
-  error,
-  open,
-  onChoosePrivateKey,
-  onClose,
-  onConnect,
-  onDisconnect,
-  onOpenLocalDirectory,
-  onOpenLocalFile,
-  onUpdate,
-  status
-}) {
-  if (!open) return null;
-
-  return (
-    <div className="palette-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="connection-palette"
-        role="dialog"
-        aria-modal="true"
-        aria-label={connected ? "Edit connection" : "Open or connect"}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="palette-header">
-          <span>{connected ? "edit connection" : "open / connect"}</span>
-          <button className="esc-chip" type="button" onClick={onClose}>
-            esc
-          </button>
-        </div>
-
-        <div className="target-input">
-          <span>&gt;</span>
-          <input
-            value={formatConnectionTarget(connection)}
-            onChange={(event) => applyConnectionTarget(event.target.value, onUpdate)}
-            placeholder="user@host:/path/to/doc.md - or use local actions below"
-            spellCheck="false"
-          />
-        </div>
-        <p className="palette-helper">Host aliases from ~/.ssh/config work; an empty remote path browses from home.</p>
-
-        <div className="palette-section">
-          <div className="palette-label">local</div>
-          <div className="palette-local-actions">
-            <button type="button" onClick={onOpenLocalDirectory}>
-              <FolderOpen size={13} />
-              open folder...
-            </button>
-            <button type="button" onClick={onOpenLocalFile}>
-              <FileText size={13} />
-              open file...
+              ×
             </button>
           </div>
-        </div>
-
-        <ConnectionPanel
-          connected={connected}
-          connection={connection}
-          connectionProfile={connectionProfile}
-          defaultPrivateKeyPath={defaultPrivateKeyPath}
-          error={error}
-          onChoosePrivateKey={onChoosePrivateKey}
-          onUpdate={onUpdate}
-          status={status}
-        />
-
-        <div className="palette-footer">
-          {connected ? (
-            <button className="disconnect-action" type="button" onClick={onDisconnect}>
-              disconnect
-            </button>
-          ) : (
-            <span className="palette-hint">local files or ssh remotes</span>
-          )}
-          <span className="footer-spacer" />
-          <button className="outline-action" type="button" onClick={onClose}>
-            cancel
-          </button>
-          <button className="connect-action" type="button" disabled={busy} onClick={onConnect}>
-            {connected ? "reconnect" : "connect"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ConnectionPanel({
-  connected,
-  connection,
-  connectionProfile,
-  defaultPrivateKeyPath,
-  error,
-  onChoosePrivateKey,
-  onUpdate,
-  status
-}) {
-  return (
-    <section className="sidebar-section">
-      <h2>Connection</h2>
-      <div className={`connection-note ${error ? "error" : connected ? "connected" : ""}`}>
-        {error
-          ? error.message
-          : connected
-            ? "Edit fields and reconnect to apply changes."
-            : "Enter host and username. The remote file path is optional; you can pick a Markdown file after connecting."}
-      </div>
-      <div className="connection-fields">
-        <Field label="Host">
-          <input
-            value={connection.host}
-            autoComplete="off"
-            onChange={(event) => onUpdate("host", event.target.value)}
-            placeholder="docs.example.com"
-          />
-        </Field>
-        <Field label="Username">
-          <input
-            value={connection.username}
-            autoComplete="username"
-            onChange={(event) => onUpdate("username", event.target.value)}
-            placeholder="deploy"
-          />
-        </Field>
-      </div>
-      <div className="connection-fields compact">
-        <Field label="Port">
-          <input
-            type="number"
-            min="1"
-            value={connection.port}
-            onChange={(event) => onUpdate("port", event.target.value)}
-          />
-        </Field>
-        <Field label="Polling">
-          <SegmentedControl
-            ariaLabel="Polling interval"
-            options={[
-              { label: "1s", value: 1000 },
-              { label: "2s", value: 2000 },
-              { label: "5s", value: 5000 }
-            ]}
-            value={Number(connection.intervalMs)}
-            onChange={(value) => onUpdate("intervalMs", value)}
-          />
-        </Field>
-      </div>
-      <Field label="Authentication">
-        <SegmentedControl
-          ariaLabel="Authentication method"
-          options={[
-            { label: "auto", value: "auto" },
-            { label: "key", value: "privateKey" },
-            { label: "password", value: "password" }
-          ]}
-          value={connection.authMode}
-          onChange={(value) => onUpdate("authMode", value)}
-        />
-      </Field>
-
-      {connection.authMode === "password" ? (
-        <Field label="Password">
-          <input
-            type="password"
-            value={connection.password}
-            autoComplete="current-password"
-            onChange={(event) => onUpdate("password", event.target.value)}
-            placeholder="Kept in memory only"
-          />
-        </Field>
-      ) : (
-        <>
-          <Field label="Private Key Path">
-            <div className="input-row">
-              <input
-                value={connection.privateKeyPath}
-                autoComplete="off"
-                onChange={(event) => onUpdate("privateKeyPath", event.target.value)}
-                placeholder={
-                  connection.authMode === "auto"
-                    ? "Optional; Auto checks SSH config and common keys"
-                    : defaultPrivateKeyPath || "Choose or enter a private key"
-                  }
-                />
-              <button
-                className="icon-button compact"
-                type="button"
-                onClick={onChoosePrivateKey}
-                title="Choose private key"
-              >
-                <FolderOpen size={16} />
-              </button>
-            </div>
-          </Field>
-          <Field label="Key Passphrase">
-            <input
-              type="password"
-              value={connection.passphrase}
-              autoComplete="off"
-              onChange={(event) => onUpdate("passphrase", event.target.value)}
-              placeholder="Optional"
-            />
-          </Field>
-        </>
-      )}
-
-      <Field label="Remote Markdown Path">
-        <input
-          value={connection.remotePath}
-          autoComplete="off"
-          onChange={(event) => onUpdate("remotePath", event.target.value)}
-          placeholder="Optional: /srv/docs/readme.md"
-        />
-      </Field>
-
-      <ConnectionProfile profile={connectionProfile} />
-    </section>
-  );
-}
-
-function SegmentedControl({ ariaLabel, options, value, onChange }) {
-  return (
-    <div className="segmented-control" role="group" aria-label={ariaLabel}>
-      {options.map((option) => (
-        <button
-          key={option.value}
-          className={option.value === value ? "active" : ""}
-          type="button"
-          onClick={() => onChange(option.value)}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function PageWidthControl({ value, onChange }) {
-  const width = clampPageWidth(value);
-
-  function updateWidth(nextValue) {
-    onChange(clampPageWidth(nextValue));
-  }
-
-  return (
-    <div className="width-control">
-      <input
-        aria-label="Page width"
-        type="range"
-        min={PAGE_WIDTH_MIN}
-        max={PAGE_WIDTH_MAX}
-        step={PAGE_WIDTH_STEP}
-        value={width}
-        onChange={(event) => updateWidth(event.target.value)}
-      />
-      <label className="width-value">
-        <input
-          aria-label="Page width in pixels"
-          type="number"
-          min={PAGE_WIDTH_MIN}
-          max={PAGE_WIDTH_MAX}
-          step={PAGE_WIDTH_STEP}
-          value={width}
-          onChange={(event) => updateWidth(event.target.value)}
-        />
-        <span>px</span>
-      </label>
-    </div>
-  );
-}
-
-function ThemeSwitch({ value, resolvedTheme, onChange }) {
-  const options = [
-    { value: "system", label: `Use system theme (${resolvedTheme})`, icon: Monitor },
-    { value: "dark", label: "Use dark theme", icon: Moon },
-    { value: "light", label: "Use light theme", icon: Sun }
-  ];
-
-  return (
-    <div className="theme-switch" role="group" aria-label="Theme mode">
-      {options.map((option) => {
-        const Icon = option.icon;
-        return (
-          <button
-            key={option.value}
-            aria-label={option.label}
-            aria-pressed={value === option.value}
-            className={value === option.value ? "active" : ""}
-            title={option.label}
-            type="button"
-            onClick={() => onChange(option.value)}
-          >
-            <Icon size={13} aria-hidden="true" />
-          </button>
         );
       })}
     </div>
   );
 }
 
-function ConnectionProfile({ profile }) {
-  if (!profile) return null;
-
-  const resolvedHost = profile.host
-    ? `${profile.username || "unknown"}@${profile.host}:${profile.port || 22}`
-    : "Enter a host to resolve SSH settings";
-  const keyCandidates = profile.privateKeyCandidates || [];
-  const configuredKeys = profile.configuredIdentityFiles || [];
-
+function ContentEmptyState({ onConnect, onOpenLocalFolder }) {
   return (
-    <div className="connection-profile" aria-label="Resolved connection settings">
-      <div className="profile-row">
-        <span>resolved</span>
-        <strong>{resolvedHost}</strong>
-      </div>
-      {profile.hostAlias && profile.hostAlias !== profile.host && (
-        <div className="profile-row">
-          <span>alias</span>
-          <strong>{profile.hostAlias}</strong>
-        </div>
-      )}
-      <div className="profile-row">
-        <span>auth</span>
-        <strong>{profile.agentAvailable ? "keys + agent" : "keys only"}</strong>
-      </div>
-      {configuredKeys.length > 0 && (
-        <div className="profile-list">
-          <span>ssh config</span>
-          {configuredKeys.map((keyPath) => (
-            <code key={keyPath}>{keyPath}</code>
-          ))}
-        </div>
-      )}
-      <div className="profile-list">
-        <span>auto keys</span>
-        {keyCandidates.length > 0 ? (
-          keyCandidates.map((keyPath) => <code key={keyPath}>{keyPath}</code>)
-        ) : (
-          <em>None found yet</em>
-        )}
-      </div>
-      {profile.warnings?.length > 0 && (
-        <div className="profile-warnings">
-          {profile.warnings.map((warning) => (
-            <p key={warning}>{warning}</p>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SettingsPanel({ open, preferences, onClose, onUpdate }) {
-  if (!open) return null;
-
-  return (
-    <div className="palette-backdrop" role="presentation" onClick={onClose}>
-      <div className="settings-panel" role="dialog" aria-modal="true" aria-label="Settings" onClick={(event) => event.stopPropagation()}>
-        <div className="palette-header">
-          <span>settings</span>
-          <button className="esc-chip" type="button" onClick={onClose}>
-            esc
-          </button>
-        </div>
-
-        <section className="settings-section">
-          <div className="palette-label">appearance</div>
-          <div className="settings-row">
-            <div>
-              <strong>theme</strong>
-            </div>
-            <SegmentedControl
-              ariaLabel="Theme"
-              options={[
-                { label: "system", value: "system" },
-                { label: "dark", value: "dark" },
-                { label: "light", value: "light" }
-              ]}
-              value={preferences.theme}
-              onChange={(value) => onUpdate("theme", value)}
-            />
-          </div>
-
-          <div className="settings-row">
-            <div>
-              <strong>accent</strong>
-            </div>
-            <div className="accent-picker" role="group" aria-label="Accent color">
-              {[
-                { label: "phosphor", value: "phosphor", color: "#43b37a" },
-                { label: "amber", value: "amber", color: "#dba33e" },
-                { label: "cobalt", value: "cobalt", color: "#4d80e8" }
-              ].map((accent) => (
-                <button
-                  key={accent.value}
-                  aria-label={`${accent.label} accent`}
-                  aria-pressed={preferences.accent === accent.value}
-                  className={`accent-option accent-${accent.value} ${preferences.accent === accent.value ? "active" : ""}`}
-                  style={{ "--swatch": accent.color }}
-                  title={accent.label}
-                  type="button"
-                  onClick={() => onUpdate("accent", accent.value)}
-                >
-                  <i aria-hidden="true" />
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="settings-row">
-            <div>
-              <strong>reading</strong>
-            </div>
-            <SegmentedControl
-              ariaLabel="Reading font"
-              options={[
-                { label: "sans", value: "sans" },
-                { label: "serif", value: "serif" }
-              ]}
-              value={preferences.readingFont}
-              onChange={(value) => onUpdate("readingFont", value)}
-            />
-          </div>
-
-          <div className="settings-row">
-            <div>
-              <strong>width</strong>
-            </div>
-            <PageWidthControl
-              value={preferences.pageWidthPx}
-              onChange={(value) => onUpdate("pageWidthPx", value)}
-            />
-          </div>
-        </section>
-
+    <div className="content-empty" role="region" aria-label="No source connected">
+      <TetherGlyph dashed />
+      <div className="content-empty-title">no source connected</div>
+      <p className="content-empty-text">Connect to a host over SSH, or open a local folder to start reading.</p>
+      <div className="content-empty-actions">
+        <button className="empty-connect" type="button" onClick={onConnect}>
+          {hotkey("k")} connect
+        </button>
+        <button className="empty-open" type="button" onClick={onOpenLocalFolder}>
+          open local folder
+        </button>
       </div>
     </div>
-  );
-}
-
-function StatusBar({ lineCount, statusLabel, syncLabel, tone, wordCount }) {
-  const showStatusDot = tone === "watching" || tone === "conflict" || tone === "error";
-  const metrics = [`${wordCount}w`, `${lineCount}L`, "utf-8", syncLabel].filter(Boolean);
-
-  return (
-    <footer className="status-bar" aria-label={`Status: ${[statusLabel, ...metrics].join("; ")}`} aria-live="polite">
-      <span className="status-cluster">
-        {showStatusDot && <span className={`status-dot ${tone === "watching" ? "pulse" : ""} ${tone}`} />}
-        <span className="status-primary">{statusLabel}</span>
-      </span>
-      <span className="status-spacer" />
-      <span className="status-metrics" aria-hidden="true">
-        {metrics.map((metric) => (
-          <span className="status-metric" key={metric}>
-            {metric}
-          </span>
-        ))}
-      </span>
-    </footer>
-  );
-}
-
-function Field({ label, children }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
   );
 }
 
@@ -2669,165 +2405,6 @@ async function copyTextToBrowserClipboard(text) {
   }
 
   return false;
-}
-
-function formatConnectionTarget(connection) {
-  const userHost = connection.username ? `${connection.username}@${connection.host}` : connection.host;
-  const remotePath = connection.remotePath ? `:${connection.remotePath}` : "";
-  return `${userHost}${remotePath}`;
-}
-
-function applyConnectionTarget(value, onUpdate) {
-  const match = value.match(/^(?:(?<username>[^@:]+)@)?(?<host>[^:]*)(?::(?<remotePath>.*))?$/);
-  if (!match?.groups) return;
-  onUpdate("host", match.groups.host || "");
-  if (match.groups.username !== undefined) onUpdate("username", match.groups.username);
-  if (match.groups.remotePath !== undefined) onUpdate("remotePath", match.groups.remotePath);
-}
-
-function countWords(text) {
-  const matches = text.trim().match(/\S+/g);
-  return matches ? matches.length : 0;
-}
-
-function countLines(text) {
-  return Math.max(text.split(/\r\n|\r|\n/).length, 1);
-}
-
-function compactPath(value) {
-  if (!value) return "";
-  const normalized = String(value).replace(/\\/g, "/");
-  const homeMatch = normalized.match(/^(?:[A-Za-z]:)?\/Users\/[^/]+(\/.*)?$/i);
-  if (homeMatch) return `~${homeMatch[1] || ""}`;
-  if (normalized.length <= 34) return normalized;
-  return `...${normalized.slice(-31)}`;
-}
-
-function pathsReferToSameLocalFile(left, right) {
-  if (!left || !right) return false;
-  return normalizeLocalComparisonPath(left) === normalizeLocalComparisonPath(right);
-}
-
-function normalizeLocalComparisonPath(value) {
-  const normalized = String(value).replace(/\\/g, "/").replace(/\/+$/, "");
-  return /^[A-Za-z]:/.test(normalized) ? normalized.toLowerCase() : normalized;
-}
-
-function formatStatusMessage(message, fallback) {
-  const cleanMessage = String(message || "")
-    .trim()
-    .replace(/^connected(?:\s*[-.]|\s+)/i, "")
-    .trim();
-
-  if (!cleanMessage) return fallback;
-  return cleanMessage.charAt(0).toLowerCase() + cleanMessage.slice(1);
-}
-
-function formatFileModifiedLabel(value) {
-  const timestamp = formatFileTimestamp(value);
-  return timestamp ? `edited ${timestamp}` : "";
-}
-
-function formatFileTimestamp(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-
-  const today = new Date();
-  const sameDay =
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate();
-
-  return new Intl.DateTimeFormat(
-    undefined,
-    sameDay
-      ? { hour: "2-digit", minute: "2-digit" }
-      : { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }
-  ).format(date);
-}
-
-function formatLatency(value) {
-  const rawLatency = Number(value);
-  if (!Number.isFinite(rawLatency) || rawLatency < 1) return "<1ms";
-  const latency = rawLatency < 10 ? Math.round(rawLatency * 10) / 10 : Math.round(rawLatency);
-  return `${latency}ms`;
-}
-
-function healthCheckPendingMessage(context) {
-  if (!context.hasNativeBackend) return "checking preview";
-  if (context.documentSource === "remote") return "checking server";
-  if (context.documentSource === "sample") return "checking sample";
-  if (context.documentSource === "local") return "checking local source";
-  return "checking source";
-}
-
-function healthCheckSuccessMessage(response) {
-  const latency = formatLatency(response.latencyMs);
-  if (response.kind === "remote") return `server checked - ${latency}`;
-  if (response.kind === "sample") return `sample checked - ${latency}`;
-  if (response.kind === "local") return `local source checked - ${latency}`;
-  if (response.kind === "preview") return `preview checked - ${latency}`;
-  return `source checked - ${latency}`;
-}
-
-function healthCheckErrorMessage(error) {
-  return `check failed - ${error?.message || "Unable to reach source."}`;
-}
-
-function statusTextForLoading(documentSource) {
-  if (documentSource === "remote") return "Refreshing the remote file tree.";
-  if (documentSource === "local") return "Reading the local folder.";
-  return "Resolving connection and files.";
-}
-
-function formatSidebarDirectoryPath(value) {
-  if (!value) return null;
-
-  const full = String(value).replace(/\\/g, "/");
-  const readable = full
-    .replace(/^(?:[A-Za-z]:)?\/Users\/[^/]+(?=\/|$)/i, "~")
-    .replace(/^\/home\/[^/]+(?=\/|$)/i, "~");
-
-  return { full, display: compactPathStart(readable, 30) };
-}
-
-function compactPathStart(value, maxLength) {
-  if (!value || value.length <= maxLength) return value;
-
-  const normalized = String(value).replace(/\\/g, "/");
-  const parts = normalized.split("/").filter(Boolean);
-  if (parts.length <= 1) return `...${normalized.slice(-(maxLength - 3))}`;
-
-  const tail = [parts[parts.length - 1]];
-
-  for (let index = parts.length - 2; index >= 0; index -= 1) {
-    const nextTail = [parts[index], ...tail];
-    const candidate = `.../${nextTail.join("/")}`;
-    if (candidate.length > maxLength) break;
-    tail.unshift(parts[index]);
-  }
-
-  const display = `.../${tail.join("/")}`;
-  return display.length <= maxLength ? display : `...${display.slice(-(maxLength - 3))}`;
-}
-
-function formatPoll(value) {
-  const ms = Number(value) || 0;
-  if (ms >= 1000) return `${Math.round(ms / 1000)}s`;
-  return `${ms}ms`;
-}
-
-function formatRelativeTime(value) {
-  if (!value) return "just now";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "just now";
-  const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
-  if (seconds < 45) return "just now";
-  if (seconds < 90) return "1m ago";
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
-  if (seconds < 5400) return "1h ago";
-  return `${Math.round(seconds / 3600)}h ago`;
 }
 
 function captureScrollRatio(previewRef, ratioRef) {
@@ -2908,20 +2485,6 @@ async function waitForAppReadyToReveal(container) {
       await Promise.allSettled([waitForImagesToSettle(container), waitForFrames(1)]);
     })(),
     waitForTimeout(650)
-  ]);
-}
-
-async function waitForFontSetToSettle(timeoutMs = 700) {
-  if (typeof document === "undefined" || !document.fonts) return;
-  await Promise.race([
-    (async () => {
-      for (;;) {
-        await document.fonts.ready;
-        await waitForFrames(2);
-        if (document.fonts.status !== "loading") return;
-      }
-    })(),
-    waitForTimeout(timeoutMs)
   ]);
 }
 
@@ -3282,9 +2845,33 @@ function getRemoteSourceSessionId(connection) {
   return `remote:${username}@${host}:${port}`;
 }
 
-function formatSourcePathDetail(value) {
-  if (!value) return "";
-  return formatSidebarDirectoryPath(value)?.display || value;
+// A stable key that groups open tabs by source (survives reconnects).
+function remoteSourceKey(connection) {
+  return getRemoteSourceSessionId(connection) || "remote";
+}
+
+function localSourceKey(directory) {
+  return `local:${directory || "local"}`;
+}
+
+function sourceKeyFor(documentSource, connection, localWorkspaceDirectory, localFile) {
+  if (documentSource === "remote") return remoteSourceKey(connection);
+  if (documentSource === "local") {
+    return localSourceKey(localWorkspaceDirectory || (localFile ? localDirname(localFile.path) : ""));
+  }
+  if (documentSource === "sample") return "sample";
+  return "none";
+}
+
+function docFromFile(file) {
+  return {
+    content: file.content,
+    editorContent: file.content,
+    fileVersion: file.version,
+    dirty: false,
+    conflict: false,
+    remoteShadow: null
+  };
 }
 
 function normalizeStoredNumber(value, fallback) {
@@ -3305,12 +2892,6 @@ function getStoredPageWidth(storedPreferences) {
   };
 
   return clampPageWidth(legacyWidths[storedPreferences.pageWidth] || PAGE_WIDTH_DEFAULT);
-}
-
-function clampPageWidth(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return PAGE_WIDTH_DEFAULT;
-  return Math.min(PAGE_WIDTH_MAX, Math.max(PAGE_WIDTH_MIN, Math.round(number)));
 }
 
 function getIsCompactLayout() {
@@ -3398,50 +2979,6 @@ function getInitialSidebarWidth() {
 function clampSidebarWidth(width) {
   const viewportMax = Math.max(SIDEBAR_MIN_WIDTH, window.innerWidth - 560);
   return Math.min(Math.max(Number(width) || SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH), Math.min(SIDEBAR_MAX_WIDTH, viewportMax));
-}
-
-function basename(remotePath) {
-  return remotePath?.split(/[\\/]/).filter(Boolean).pop() || "Remote file";
-}
-
-function dirname(remotePath) {
-  const normalized = remotePath.replace(/\\/g, "/");
-  const parts = normalized.split("/");
-  parts.pop();
-  const directory = parts.join("/");
-  return directory || "/";
-}
-
-function localDirname(filePath) {
-  const normalized = filePath.replace(/\\/g, "/");
-  const trimmed = normalized.replace(/\/+$/, "");
-  const slashIndex = trimmed.lastIndexOf("/");
-
-  if (slashIndex < 0) return ".";
-  if (slashIndex === 0) return "/";
-  if (slashIndex === 2 && /^[A-Za-z]:/.test(trimmed)) return trimmed.slice(0, 3);
-  return trimmed.slice(0, slashIndex);
-}
-
-function canGoUp(remotePath) {
-  return remotePath && remotePath !== "." && remotePath !== "/";
-}
-
-function localCanGoUp(directory) {
-  if (!directory || directory === "." || directory === "/") return false;
-  return !/^[A-Za-z]:\/?$/.test(directory.replace(/\\/g, "/"));
-}
-
-function parentRemotePath(remotePath) {
-  if (!canGoUp(remotePath)) return remotePath || ".";
-  const normalized = remotePath.replace(/\\/g, "/").replace(/\/+$/, "");
-  const parent = normalized.split("/").slice(0, -1).join("/");
-  return parent || (normalized.startsWith("/") ? "/" : ".");
-}
-
-function localParentPath(directory) {
-  if (!localCanGoUp(directory)) return directory || ".";
-  return localDirname(directory);
 }
 
 const rootElement = document.getElementById("root");

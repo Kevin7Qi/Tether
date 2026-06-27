@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const SftpClient = require("ssh2-sftp-client");
+const { isConnectionLossError } = require("./connectionLoss.cjs");
 
 const MIN_POLL_MS = 750;
 const REMOTE_MARKDOWN_PATTERN = /\.(md|mdx|markdown|mdown|mkd|txt)$/i;
@@ -18,6 +19,7 @@ class RemoteFileProvider extends EventEmitter {
     this.watchPath = null;
     this.lastVersion = null;
     this.polling = false;
+    this.disconnecting = false;
     this.knownHostsPath = options.knownHostsPath || defaultKnownHostsPath;
     this.hostVerificationError = null;
   }
@@ -86,10 +88,38 @@ class RemoteFileProvider extends EventEmitter {
 
     await this.connectWithAttempts(attempts, resolvedConnection);
     this.connected = true;
+    this.attachConnectionListeners();
     this.emit("status", {
       state: "connected",
       message: `Connected to ${config.username}@${config.host}:${config.port}`
     });
+  }
+
+  attachConnectionListeners() {
+    if (!this.client || typeof this.client.on !== "function") return;
+    const onLoss = (error) => this.handleUnexpectedDisconnect(error);
+    this.client.on("error", onLoss);
+    this.client.on("end", () => this.handleUnexpectedDisconnect());
+    this.client.on("close", () => this.handleUnexpectedDisconnect());
+  }
+
+  // Fires when the SSH/SFTP socket drops on its own (network loss, server
+  // closing the session). Mark the provider disconnected, stop polling, and tell
+  // the renderer so it can recover instead of issuing doomed file operations.
+  handleUnexpectedDisconnect(error) {
+    if (this.disconnecting || !this.connected) return;
+    this.connected = false;
+    this.client = null;
+    this.lastVersion = null;
+    if (this.watchTimer) {
+      clearInterval(this.watchTimer);
+      this.watchTimer = null;
+    }
+    this.watchPath = null;
+    this.polling = false;
+    const message = `Lost connection to the remote host${error && error.message ? `: ${error.message}` : "."}`;
+    this.emit("status", { state: "disconnected", message, unexpected: true });
+    this.emit("error", userError("CONNECTION_LOST", message));
   }
 
   async connectWithAttempts(attempts, resolvedConnection) {
@@ -142,6 +172,7 @@ class RemoteFileProvider extends EventEmitter {
   }
 
   async disconnect() {
+    this.disconnecting = true;
     this.stopWatching();
     if (this.client) {
       try {
@@ -150,8 +181,11 @@ class RemoteFileProvider extends EventEmitter {
         this.client = null;
         this.connected = false;
         this.lastVersion = null;
+        this.disconnecting = false;
         this.emit("status", { state: "disconnected", message: "Disconnected" });
       }
+    } else {
+      this.disconnecting = false;
     }
   }
 
@@ -161,12 +195,19 @@ class RemoteFileProvider extends EventEmitter {
 
     const stat = await this.client.stat(remotePath);
     const mtimeMs = normalizeMtime(stat);
+    const isDirectory =
+      typeof stat.isDirectory === "function"
+        ? stat.isDirectory()
+        : typeof stat.isDirectory === "boolean"
+          ? stat.isDirectory
+          : (Number(stat.mode) & 0o170000) === 0o040000;
     return {
       path: remotePath,
       size: Number(stat.size || 0),
       mtimeMs,
       mtime: mtimeMs ? new Date(mtimeMs).toISOString() : null,
-      mode: stat.mode
+      mode: stat.mode,
+      isDirectory
     };
   }
 
@@ -278,17 +319,21 @@ class RemoteFileProvider extends EventEmitter {
 
   async pollOnce() {
     if (this.polling || !this.watchPath) return;
+    const target = this.watchPath;
     this.polling = true;
 
     try {
-      const metadata = await this.statFile(this.watchPath);
+      const metadata = await this.statFile(target);
+      // Bail if a disconnect or watch-target change landed while we awaited.
+      if (this.disconnecting || this.watchPath !== target) return;
       const statSignature = `${metadata.mtimeMs || ""}:${metadata.size}`;
       const lastSignature = this.lastVersion
         ? `${this.lastVersion.mtimeMs || ""}:${this.lastVersion.size}`
         : null;
 
       if (statSignature !== lastSignature) {
-        const file = await this.readFile(this.watchPath);
+        const file = await this.readFile(target);
+        if (this.disconnecting || this.watchPath !== target) return;
         if (!this.lastVersion || !versionsMatch(file.version, this.lastVersion)) {
           this.lastVersion = file.version;
           this.emit("update", file);
@@ -302,6 +347,14 @@ class RemoteFileProvider extends EventEmitter {
         checkedAt: new Date().toISOString()
       });
     } catch (error) {
+      // Suppress errors caused by an intentional disconnect or watch change.
+      if (this.disconnecting || this.watchPath !== target) return;
+      // A dropped connection ends the watch and triggers recovery; a transient
+      // error keeps the watch alive with the last rendered content visible.
+      if (isConnectionLossError(error)) {
+        this.handleUnexpectedDisconnect(error);
+        return;
+      }
       this.emit("error", error);
       this.emit("status", {
         state: "watching",
@@ -725,6 +778,7 @@ module.exports = {
   getConnectionProfile,
   getDefaultPrivateKeyPath,
   getSshConfigForHost,
+  isConnectionLossError,
   isRemoteMarkdownPath,
   parseSshConfig,
   resolveConnection,
