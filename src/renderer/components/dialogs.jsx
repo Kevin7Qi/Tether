@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FileText, FolderOpen, Monitor, Moon, Sun } from "lucide-react";
+import { FilePlus, FileText, FolderOpen, Monitor, Moon, Sun } from "lucide-react";
 import { applyConnectionTarget, formatConnectionTarget } from "../lib/format.js";
 import { useDialogFocus } from "../lib/useDialogFocus.js";
 import { PAGE_WIDTH_MAX, PAGE_WIDTH_MIN, PAGE_WIDTH_STEP, clampPageWidth, hotkey } from "../lib/constants.js";
@@ -506,6 +506,23 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
 
           <div className="settings-row">
             <div className="settings-label">
+              <strong>text alignment</strong>
+              <span>Smart keeps justified prose but relaxes loose lines.</span>
+            </div>
+            <SegmentedControl
+              ariaLabel="Text alignment"
+              options={[
+                { label: "smart", value: "smart" },
+                { label: "justify", value: "justify" },
+                { label: "left", value: "left" }
+              ]}
+              value={preferences.textAlignment}
+              onChange={(value) => onUpdate("textAlignment", value)}
+            />
+          </div>
+
+          <div className="settings-row">
+            <div className="settings-label">
               <strong>reading width</strong>
               <span>Measure of the centered article column.</span>
             </div>
@@ -517,6 +534,73 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
         </section>
 
       </div>
+    </div>
+  );
+}
+
+export function NewFileDialog({ busy, directory, open, onClose, onCreate }) {
+  const dialogRef = useRef(null);
+  const [name, setName] = useState("");
+  useDialogFocus(open, dialogRef);
+
+  useEffect(() => {
+    if (open) setName("");
+  }, [open]);
+
+  if (!open) return null;
+
+  async function submit(event) {
+    event.preventDefault();
+    if (!name.trim() || busy) return;
+    const created = await onCreate(name);
+    if (created) setName("");
+  }
+
+  return (
+    <div className="palette-backdrop" role="presentation" onClick={onClose}>
+      <form
+        className="new-file-dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-file-title"
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+        onSubmit={submit}
+      >
+        <div className="palette-header">
+          <span id="new-file-title">new file</span>
+          <button className="esc-chip" type="button" onClick={onClose}>
+            esc
+          </button>
+        </div>
+
+        <div className="new-file-target" title={directory || ""}>
+          <span>folder</span>
+          <strong>{directory || "current folder"}</strong>
+        </div>
+
+        <label className="field">
+          <span>file name</span>
+          <input
+            autoFocus
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="notes.md"
+            spellCheck="false"
+          />
+        </label>
+
+        <div className="new-file-actions">
+          <button type="button" className="quiet-button" onClick={onClose}>
+            cancel
+          </button>
+          <button type="submit" className="save-button" disabled={busy || !name.trim()}>
+            <FilePlus size={13} />
+            <span>create</span>
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

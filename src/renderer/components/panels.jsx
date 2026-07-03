@@ -4,19 +4,24 @@ import { canGoUp, formatSidebarDirectoryPath, localCanGoUp, localParentPath, par
 import { statusTextForLoading } from "../lib/format.js";
 import { hotkey } from "../lib/constants.js";
 
-function FileTreeRows({ entries, depth, expandedDirs, childrenByDir, loadingDirs, selectedPath, onToggle, onOpen, onEnter }) {
+function FileTreeRows({ entries, depth, expandedDirs, childrenByDir, loadingDirs, selectedPath, onToggle, onOpen, onEnter, onContextMenu }) {
   return entries.map((entry) => {
     const isDir = entry.type === "directory";
     const expanded = isDir && expandedDirs.has(entry.path);
     const children = childrenByDir[entry.path];
     const indent = 6 + depth * 13;
+    const unsupported = !isDir && !entry.isMarkdown;
     return (
       <Fragment key={entry.path}>
         <button
-          className={`file-row tree-row ${entry.path === selectedPath ? "active" : ""} ${entry.name.startsWith(".") ? "muted" : ""}`}
+          className={`file-row tree-row ${entry.path === selectedPath ? "active" : ""} ${entry.name.startsWith(".") ? "muted" : ""} ${unsupported ? "disabled" : ""}`}
           style={{ paddingLeft: `${indent}px` }}
-          disabled={!isDir && !entry.isMarkdown}
-          onClick={() => (isDir ? onToggle(entry) : onOpen(entry))}
+          aria-disabled={unsupported ? "true" : undefined}
+          onClick={() => {
+            if (unsupported) return;
+            isDir ? onToggle(entry) : onOpen(entry);
+          }}
+          onContextMenu={(event) => onContextMenu?.(event, entry)}
           title={entry.path}
           aria-expanded={isDir ? expanded : undefined}
         >
@@ -54,6 +59,7 @@ function FileTreeRows({ entries, depth, expandedDirs, childrenByDir, loadingDirs
             onToggle={onToggle}
             onOpen={onOpen}
             onEnter={onEnter}
+            onContextMenu={onContextMenu}
           />
         )}
         {expanded && children && children.length === 0 && (
@@ -112,6 +118,7 @@ export function SourcesPanel({
   onLoadSample,
   onOpenPalette,
   onOpenSession,
+  onSourceContextMenu,
   showLocalSource,
   sourceLabel,
   sourceSessions
@@ -126,7 +133,11 @@ export function SourcesPanel({
         <i />
       </div>
       {connected && !hasActiveRemoteSession && (
-        <div className={`source-row ${documentSource === "remote" ? "active" : ""}`} aria-label="Remote source">
+        <div
+          className={`source-row ${documentSource === "remote" ? "active" : ""}`}
+          aria-label="Remote source"
+          onContextMenu={(event) => onSourceContextMenu?.(event, { kind: "remote-live" })}
+        >
           <span className="source-icon">
             <span className="status-dot pulse" />
           </span>
@@ -169,6 +180,7 @@ export function SourcesPanel({
             aria-current={active ? "true" : undefined}
             title={session.title || session.detail || session.label}
             onClick={active ? undefined : () => onOpenSession(session)}
+            onContextMenu={(event) => onSourceContextMenu?.(event, { kind: session.kind, session })}
             onKeyDown={
               active
                 ? undefined
@@ -259,6 +271,7 @@ export function SourcesPanel({
           aria-label={sampleSourceActive ? "Local sample source" : "Open local sample source"}
           title={sampleSourceActive ? "Local sample is open" : "Open local sample"}
           onClick={sampleSourceActive ? undefined : onLoadSample}
+          onContextMenu={(event) => onSourceContextMenu?.(event, { kind: "sample" })}
           onKeyDown={
             sampleSourceActive
               ? undefined
@@ -342,7 +355,8 @@ export function FilesPanel({
   onEnterDir,
   onSetSource,
   onRefresh,
-  onLoadSample
+  onLoadSample,
+  onFileContextMenu
 }) {
   const showLocalTree = !connected && documentSource === "local";
   const canRefreshTree = !sourceLoading && (connected || sampleSourceOpen || showLocalTree);
@@ -398,7 +412,13 @@ export function FilesPanel({
         )}
 
         {!showSourceLoading && showSampleFile && (
-          <button className="file-row active" onClick={onLoadSample}>
+          <button
+            className="file-row active"
+            onClick={onLoadSample}
+            onContextMenu={(event) =>
+              onFileContextMenu?.(event, { name: "sample.md", path: "samples/sample.md", type: "file", isMarkdown: true })
+            }
+          >
             <FileText size={16} />
             <span>sample.md</span>
           </button>
@@ -417,6 +437,13 @@ export function FilesPanel({
                 type: "directory"
               })
             }
+            onContextMenu={(event) =>
+              onFileContextMenu?.(event, {
+                name: "..",
+                path: parentRemotePath(currentDirectory),
+                type: "directory"
+              })
+            }
           >
             <span className="tree-twist" aria-hidden="true" />
             <FolderOpen size={15} />
@@ -430,6 +457,14 @@ export function FilesPanel({
             style={{ paddingLeft: "6px" }}
             onClick={() =>
               onEnterDir({
+                name: "..",
+                path: localParentPath(currentDirectory),
+                type: "directory",
+                isMarkdown: true
+              })
+            }
+            onContextMenu={(event) =>
+              onFileContextMenu?.(event, {
                 name: "..",
                 path: localParentPath(currentDirectory),
                 type: "directory",
@@ -458,6 +493,7 @@ export function FilesPanel({
             onToggle={onToggleDir}
             onOpen={onOpenEntry}
             onEnter={onEnterDir}
+            onContextMenu={onFileContextMenu}
           />
         )}
       </div>

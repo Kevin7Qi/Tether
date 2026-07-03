@@ -6,7 +6,8 @@ const { performance } = require("node:perf_hooks");
 const {
   RemoteFileProvider,
   getConnectionProfile,
-  getDefaultPrivateKeyPath
+  getDefaultPrivateKeyPath,
+  isRemoteMarkdownPath
 } = require("./remoteFileProvider.cjs");
 
 let mainWindow;
@@ -80,6 +81,34 @@ function localFilePayload(filePath, content, metadata) {
       mtime: metadata.mtime.toISOString()
     }
   };
+}
+
+function normalizeMarkdownFileName(value) {
+  const fileName = String(value || "").trim();
+  if (!fileName || fileName === "." || fileName === "..") {
+    throw userError("FILE_NAME_REQUIRED", "Enter a Markdown file name.");
+  }
+  if (/[\\/]/.test(fileName) || fileName.includes("\0")) {
+    throw userError("FILE_NAME_INVALID", "Use a file name, not a path.");
+  }
+
+  const normalized = path.extname(fileName) ? fileName : `${fileName}.md`;
+  if (!isLocalMarkdownPath(normalized)) {
+    throw userError("FILE_NAME_INVALID", "New files must use a Markdown or text extension.");
+  }
+  return normalized;
+}
+
+async function showMarkdownSaveDialog(defaultPath, title = "Save Markdown file") {
+  return dialog.showSaveDialog(mainWindow, {
+    title,
+    defaultPath: defaultPath || "document.md",
+    filters: [
+      { name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd"] },
+      { name: "Text", extensions: ["txt"] },
+      { name: "All files", extensions: ["*"] }
+    ]
+  });
 }
 
 function getLocalGrantsPath() {
@@ -547,6 +576,24 @@ ipcMain.handle("app:copyText", async (_event, text) => {
   }
 });
 
+ipcMain.handle("app:saveTextAs", async (_event, payload) => {
+  try {
+    assertObject(payload, "Export");
+    assertString(payload.content, "Content");
+    const response = await showMarkdownSaveDialog(payload.defaultPath || "document.md", payload.title || "Save Markdown file");
+
+    if (response.canceled || !response.filePath) {
+      return { ok: true, canceled: true, path: "" };
+    }
+
+    await fs.writeFile(response.filePath, payload.content, "utf8");
+    grantLocalRoot(path.dirname(response.filePath));
+    return { ok: true, canceled: false, path: response.filePath };
+  } catch (error) {
+    return { ok: false, error: toRendererError(error) };
+  }
+});
+
 ipcMain.handle("remote:selectPrivateKey", async () => {
   const response = await dialog.showOpenDialog(mainWindow, {
     title: "Choose private key",
@@ -578,6 +625,27 @@ ipcMain.handle("remote:openFile", async (_event, remotePath) => {
     assertString(remotePath, "Remote path");
     const file = await provider.readFile(remotePath);
     return { ok: true, file };
+  } catch (error) {
+    return { ok: false, error: toRendererError(error) };
+  }
+});
+
+ipcMain.handle("remote:downloadFile", async (_event, remotePath) => {
+  try {
+    assertString(remotePath, "Remote path");
+    if (!isRemoteMarkdownPath(remotePath)) {
+      throw userError("REMOTE_FILE_TYPE", "Only Markdown and text files can be downloaded.");
+    }
+
+    const file = await provider.readFile(remotePath);
+    const response = await showMarkdownSaveDialog(path.basename(remotePath), "Download remote Markdown file");
+    if (response.canceled || !response.filePath) {
+      return { ok: true, canceled: true, path: "", file };
+    }
+
+    await fs.writeFile(response.filePath, file.content, "utf8");
+    grantLocalRoot(path.dirname(response.filePath));
+    return { ok: true, canceled: false, path: response.filePath, file };
   } catch (error) {
     return { ok: false, error: toRendererError(error) };
   }
@@ -620,6 +688,21 @@ ipcMain.handle("remote:saveFile", async (_event, payload) => {
       payload.expectedVersion
     );
     return { ok: true, file };
+  } catch (error) {
+    return { ok: false, error: toRendererError(error) };
+  }
+});
+
+ipcMain.handle("remote:createFile", async (_event, payload) => {
+  try {
+    assertObject(payload, "Create file");
+    assertString(payload.directory, "Remote directory");
+    const fileName = normalizeMarkdownFileName(payload.name);
+    const directory = payload.directory?.trim() || ".";
+    const remotePath = directory === "." ? fileName : path.posix.join(directory.replace(/\\/g, "/"), fileName);
+    const file = await provider.createFile(remotePath, "");
+    const entries = await provider.listDirectory(directory);
+    return { ok: true, file, path: remotePath, entries };
   } catch (error) {
     return { ok: false, error: toRendererError(error) };
   }
@@ -738,6 +821,29 @@ ipcMain.handle("local:saveFile", async (_event, payload) => {
     const metadata = await fs.stat(grantedPath);
     return { ok: true, file: localFilePayload(grantedPath, payload.content, metadata) };
   } catch (error) {
+    return { ok: false, error: toRendererError(error) };
+  }
+});
+
+ipcMain.handle("local:createFile", async (_event, payload) => {
+  try {
+    assertObject(payload, "Create file");
+    assertString(payload.directory, "Folder");
+    const directory = assertLocalPathGranted(payload.directory);
+    const fileName = normalizeMarkdownFileName(payload.name);
+    const filePath = path.join(directory, fileName);
+
+    await fs.writeFile(filePath, "", { encoding: "utf8", flag: "wx" });
+    const metadata = await fs.stat(filePath);
+    const entries = await listLocalDirectoryEntries(directory);
+    return { ok: true, file: localFilePayload(filePath, "", metadata), directory, entries };
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      return {
+        ok: false,
+        error: toRendererError(userError("LOCAL_FILE_EXISTS", "A local file already exists at that path."))
+      };
+    }
     return { ok: false, error: toRendererError(error) };
   }
 });

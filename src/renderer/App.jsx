@@ -2,20 +2,22 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useReducer, u
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  Download,
   File,
-  FileText,
+  FilePlus,
   Folder,
-  FolderOpen,
   List,
   Maximize2,
-  Monitor,
-  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
   Save,
+  Search,
   Settings,
-  Sun
+  X
 } from "lucide-react";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
@@ -63,7 +65,7 @@ import { parseOutline } from "./lib/outline.js";
 import { isConnectionLostError, connectionLostMessage } from "./lib/connection.js";
 import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, rekeyTabsForSource, selectNeighborTab } from "./lib/tabs.js";
 import { DocumentSurfaceFallback, FilesPanel, OutlinePanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
-import { ConnectionPalette, SettingsPanel, StatusBar, ThemeSwitch } from "./components/dialogs.jsx";
+import { ConnectionPalette, NewFileDialog, SettingsPanel, StatusBar, ThemeSwitch } from "./components/dialogs.jsx";
 
 const LazyDocumentSurface = React.lazy(() => import("./DocumentSurface.jsx"));
 const BOOT_PREFERENCES_KEY = "remoteMarkdownPreview.preferences";
@@ -92,6 +94,7 @@ const SOURCE_SESSION_LIMIT = 8;
 const SIDEBAR_MIN_WIDTH = 208;
 const SIDEBAR_MAX_WIDTH = 520;
 const SIDEBAR_DEFAULT_WIDTH = 256;
+const COPY_NOTICE_TIMEOUT_MS = 1800;
 const THEME_OPTIONS = ["system", "dark", "light"];
 const defaultPreferences = {
   theme: "system",
@@ -99,6 +102,7 @@ const defaultPreferences = {
   readingFont: "sans",
   pageWidthPx: PAGE_WIDTH_DEFAULT,
   defaultView: "preview",
+  textAlignment: "smart",
   sidebarCollapsed: false
 };
 const initialSampleMarkdown = getInitialSampleMarkdown();
@@ -202,6 +206,20 @@ const fallbackRemoteApi = {
       message: "Remote saving is available in the Electron app."
     }
   }),
+  createRemoteFile: async () => ({
+    ok: false,
+    error: {
+      code: "BROWSER_PREVIEW",
+      message: "Remote file creation is available in the Electron app."
+    }
+  }),
+  downloadRemoteFile: async () => ({
+    ok: false,
+    error: {
+      code: "BROWSER_PREVIEW",
+      message: "Remote downloads are available in the Electron app."
+    }
+  }),
   readLocalSample: async () => ({
     ok: true,
     file: createLocalSampleFile(window.localStorage.getItem(LOCAL_SAMPLE_KEY) || sampleMarkdown)
@@ -224,6 +242,25 @@ const fallbackRemoteApi = {
     window.localStorage.setItem(`remoteMarkdownPreview.localFile:${path}`, content);
     return { ok: true, file: createBrowserLocalFile(path, content) };
   },
+  createLocalFile: async ({ directory, name }) => {
+    const fileName = normalizeMarkdownFileName(name);
+    const filePath = joinBrowserPath(directory || ".", fileName);
+    window.localStorage.setItem(`remoteMarkdownPreview.localFile:${filePath}`, "");
+    return {
+      ok: true,
+      file: createBrowserLocalFile(filePath, ""),
+      directory: directory || ".",
+      entries: [
+        {
+          name: fileName,
+          path: filePath,
+          type: "file",
+          size: 0,
+          isMarkdown: true
+        }
+      ]
+    };
+  },
   openLocalDirectory: async () => ({
     ok: false,
     error: {
@@ -237,6 +274,7 @@ const fallbackRemoteApi = {
     return { ok: true, file: createLocalSampleFile(content) };
   },
   copyText: async (text) => ({ ok: await copyTextToBrowserClipboard(text) }),
+  saveTextAs: async ({ content, defaultPath }) => saveTextAsBrowserDownload(content, defaultPath),
   onStatus: () => () => {},
   onUpdate: () => () => {},
   onError: () => () => {}
@@ -285,6 +323,12 @@ function App() {
   const [compactLayout, setCompactLayout] = useState(() => getIsCompactLayout());
   const [connectionPaletteOpen, setConnectionPaletteOpen] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findMatchCount, setFindMatchCount] = useState(0);
+  const [findActiveIndex, setFindActiveIndex] = useState(0);
+  const [contextMenu, setContextMenu] = useState(null);
+  const [newFileDialog, setNewFileDialog] = useState({ open: false, directory: "" });
   const [tetherPing, setTetherPing] = useState(null);
   const [sourceSessions, setSourceSessions] = useState(initialSourceSessions);
   const [activeSessionId, setActiveSessionId] = useState(null);
@@ -297,6 +341,7 @@ function App() {
   const [documentRefreshNotice, setDocumentRefreshNotice] = useState(null);
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeRefreshNotice, setTreeRefreshNotice] = useState(null);
+  const [copyNotice, setCopyNotice] = useState(null);
   const [expandedDirs, setExpandedDirs] = useState(() => new Set());
   const [childrenByDir, setChildrenByDir] = useState({});
   const [loadingDirs, setLoadingDirs] = useState(() => new Set());
@@ -312,14 +357,17 @@ function App() {
   dirtyRef.current = dirty;
   const selectedPathRef = useRef(selectedPath);
   selectedPathRef.current = selectedPath;
+  const documentSourceRef = useRef("none");
   const pingTimerRef = useRef(null);
   const pingRequestRef = useRef(0);
   const documentRefreshTimerRef = useRef(null);
   const treeRefreshTimerRef = useRef(null);
+  const copyNoticeTimerRef = useRef(null);
   const sourceOpeningRef = useRef(null);
   const saveActionRef = useRef(null);
   const openFileActionRef = useRef(null);
   const openFolderActionRef = useRef(null);
+  const findInputRef = useRef(null);
 
   useEffect(() => {
     remoteApi.getDefaultPrivateKeyPath().then((response) => {
@@ -491,8 +539,41 @@ function App() {
       if (pingTimerRef.current) window.clearTimeout(pingTimerRef.current);
       if (documentRefreshTimerRef.current) window.clearTimeout(documentRefreshTimerRef.current);
       if (treeRefreshTimerRef.current) window.clearTimeout(treeRefreshTimerRef.current);
+      if (copyNoticeTimerRef.current) window.clearTimeout(copyNoticeTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!findOpen) return undefined;
+    const timer = window.setTimeout(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [findOpen]);
+
+  useEffect(() => {
+    if (!contextMenu) return undefined;
+
+    function closeMenu() {
+      setContextMenu(null);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") closeMenu();
+    }
+
+    window.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextMenu]);
 
   useEffect(() => {
     // Cmd/Ctrl+Shift+O reaches us on key-down in the normal case, but may only
@@ -511,6 +592,18 @@ function App() {
     function onKeyDown(event) {
       if (event.isComposing) return;
       const key = event.key ? event.key.toLowerCase() : "";
+
+      if ((event.ctrlKey || event.metaKey) && key === "f") {
+        event.preventDefault();
+        if (documentSourceRef.current !== "none") setFindOpen(true);
+        return;
+      }
+
+      if (event.key === "F3" && findOpen) {
+        event.preventDefault();
+        setFindActiveIndex((current) => current + (event.shiftKey ? -1 : 1));
+        return;
+      }
 
       if ((event.ctrlKey || event.metaKey) && key === "k") {
         event.preventDefault();
@@ -539,6 +632,14 @@ function App() {
       }
 
       if (event.key === "Escape") {
+        if (contextMenu) {
+          setContextMenu(null);
+          return;
+        }
+        if (findOpen) {
+          setFindOpen(false);
+          return;
+        }
         if (connectionPaletteOpen) setConnectionPaletteOpen(false);
         if (settingsPanelOpen) setSettingsPanelOpen(false);
         if (sidebarPeeking) setSidebarPeeking(false);
@@ -561,7 +662,7 @@ function App() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [connectionPaletteOpen, settingsPanelOpen, sidebarPeeking, zenMode]);
+  }, [connectionPaletteOpen, contextMenu, findOpen, settingsPanelOpen, sidebarPeeking, zenMode]);
 
   useEffect(() => {
     if (!resizingSidebar) return undefined;
@@ -634,6 +735,7 @@ function App() {
   // Falls back to the connection-derived source when no tab is live (the
   // "choose a file" placeholders and the tab-less sample).
   const documentSource = activeTab ? activeTab.kind : connectionSource;
+  documentSourceRef.current = documentSource;
   const currentSourceKey = activeTab
     ? activeTab.sourceKey
     : sourceKeyFor(connectionSource, connection, localWorkspaceDirectory, localFile);
@@ -672,6 +774,11 @@ function App() {
       // stays "remote" (so its tab/place are kept) but saving waits for reconnect.
       (documentSource === "remote" && selectedPath && connected));
   const canRefreshDocument = documentSource === "remote" && selectedPath && connected;
+  const canCopyDocument = documentSource !== "none" && Boolean(editorContent || content);
+  const canDownloadDocument = documentSource === "remote" && selectedPath;
+  const canCreateFile =
+    (documentSource === "remote" && connected && currentDirectory) ||
+    (documentSource === "local" && localWorkspaceDirectory && currentDirectory);
   const sourceLabel = connected
     ? `${connection.username || "user"}@${connection.host || "host"}`
     : documentSource === "local" && localWorkspaceDirectory
@@ -930,6 +1037,13 @@ function App() {
     if (activeSessionId === sessionId) setActiveSessionId(null);
   }
 
+  function editSourceSessionConnection(session) {
+    if (!session || session.kind !== "remote") return;
+    setConnection(hydrateConnectionFromSourceSession(session));
+    setError(null);
+    setConnectionPaletteOpen(true);
+  }
+
   function confirmDiscardEdits(action) {
     return !dirty || window.confirm(`Discard unsaved local edits and ${action}?`);
   }
@@ -966,6 +1080,15 @@ function App() {
       setDocumentRefreshNotice(null);
       documentRefreshTimerRef.current = null;
     }, 2400);
+  }
+
+  function showCopyNotice(message = "Copied") {
+    if (copyNoticeTimerRef.current) window.clearTimeout(copyNoticeTimerRef.current);
+    setCopyNotice(message);
+    copyNoticeTimerRef.current = window.setTimeout(() => {
+      setCopyNotice(null);
+      copyNoticeTimerRef.current = null;
+    }, COPY_NOTICE_TIMEOUT_MS);
   }
 
   async function choosePrivateKey() {
@@ -1375,6 +1498,395 @@ function App() {
     }
   }
 
+  function startFind(query = findQuery) {
+    if (documentSource === "none") return;
+    setFindOpen(true);
+    setFindActiveIndex(0);
+    if (typeof query === "string") setFindQuery(normalizeFindQuery(query));
+  }
+
+  function updateFindQuery(value) {
+    setFindQuery(value);
+    setFindActiveIndex(0);
+  }
+
+  const handleSearchResultCount = useCallback((count) => {
+    const safeCount = Math.max(0, Number(count) || 0);
+    setFindMatchCount(safeCount);
+    setFindActiveIndex((current) => (safeCount ? wrapIndex(current, safeCount) : 0));
+  }, []);
+
+  function moveFind(delta) {
+    if (!findOpen) setFindOpen(true);
+    setFindActiveIndex((current) => current + delta);
+  }
+
+  async function copyDocumentText() {
+    if (!canCopyDocument) return false;
+    const ok = await copyCodeText(editorContent);
+    if (ok) {
+      setStatus((current) => ({ ...current, message: "Copied document" }));
+      showCopyNotice("Copied document");
+      return true;
+    }
+    setError({ code: "COPY_FAILED", message: "Unable to copy the document." });
+    return false;
+  }
+
+  async function copySelectionText(selectedText) {
+    const ok = await copyCodeText(selectedText);
+    if (ok) {
+      setStatus((current) => ({ ...current, message: "Copied selection" }));
+      showCopyNotice("Copied selection");
+    } else {
+      setError({ code: "COPY_FAILED", message: "Unable to copy the selection." });
+    }
+    return ok;
+  }
+
+  async function exportCurrentDocument() {
+    if (!canDownloadDocument) return false;
+
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await remoteApi.saveTextAs({
+        content: editorContent,
+        defaultPath: basename(selectedPath),
+        title: "Download current Markdown file"
+      });
+      if (!response?.ok) {
+        setError(response?.error || { message: "Unable to download the current document." });
+        setStatus((current) => ({
+          ...current,
+          state: "error",
+          message: response?.error?.message || "Unable to download the current document."
+        }));
+        return false;
+      }
+      if (!response.canceled) {
+        setStatus((current) => ({ ...current, message: "Downloaded remote file" }));
+      }
+      return true;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openNewFileDialog(directory = currentDirectory) {
+    if (!canCreateFile) return;
+    setContextMenu(null);
+    setNewFileDialog({ open: true, directory: directory || currentDirectory });
+  }
+
+  async function createBlankFile(name) {
+    const directory = newFileDialog.directory || currentDirectory;
+    if (!directory || !canCreateFile) return false;
+    if (!activeTabId && !confirmDiscardEdits("create a new file")) return false;
+
+    setBusy(true);
+    setError(null);
+    try {
+      if (watching) {
+        await remoteApi.stopWatching();
+        setWatching(false);
+      }
+
+      const response =
+        documentSource === "remote"
+          ? await remoteApi.createRemoteFile({ directory, name })
+          : await remoteApi.createLocalFile({ directory, name });
+
+      if (!response?.ok) {
+        if (documentSource === "remote" && isConnectionLostError(response?.error)) {
+          handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        } else {
+          const nextError = response?.error || { message: "Unable to create the file." };
+          setError(nextError);
+          setStatus((current) => ({ ...current, state: "error", message: nextError.message }));
+        }
+        return false;
+      }
+
+      const createdPath = response.path || response.file?.path;
+      if (response.entries && directory === currentDirectory) setFileEntries(response.entries);
+      if (response.entries) {
+        setChildrenByDir((prev) => (prev[directory] ? { ...prev, [directory]: response.entries } : prev));
+      }
+
+      if (documentSource === "remote") {
+        setConnection((current) => ({ ...current, remotePath: createdPath }));
+        adoptFileIntoTab({
+          sourceKey: remoteSourceKey(connection),
+          kind: "remote",
+          path: createdPath,
+          label: basename(createdPath),
+          file: response.file
+        });
+        const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
+        rememberSourceSession(
+          buildRemoteSourceSession(connection, dirname(createdPath), createdPath, activeSession?.kind === "remote" ? activeSession.id : "")
+        );
+        setStatus((current) => ({ ...current, state: "connected", message: "Created remote file" }));
+      } else {
+        const sourceRoot = localWorkspaceDirectory || currentDirectory;
+        setLocalFile({ path: response.file.path });
+        adoptFileIntoTab({
+          sourceKey: localSourceKey(sourceRoot),
+          kind: "local",
+          path: response.file.path,
+          label: basename(response.file.path),
+          file: response.file
+        });
+        const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
+        if (activeSession?.kind === "local-folder") {
+          rememberSourceSession(buildLocalFolderSourceSession(activeSession.rootPath || sourceRoot, directory, response.file.path, activeSession.id));
+        } else {
+          rememberSourceSession(buildLocalFileSourceSession(response.file.path, directory));
+        }
+        setStatus({ state: "idle", message: "Created local file", checkedAt: null, metadata: response.file.metadata });
+      }
+
+      setNewFileDialog({ open: false, directory: "" });
+      return true;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function downloadRemoteEntry(entry) {
+    if (!entry || entry.type === "directory") return false;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await remoteApi.downloadRemoteFile(entry.path);
+      if (!response?.ok) {
+        if (isConnectionLostError(response?.error)) {
+          handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        } else {
+          const nextError = response?.error || { message: "Unable to download the remote file." };
+          setError(nextError);
+          setStatus((current) => ({ ...current, state: "error", message: nextError.message }));
+        }
+        return false;
+      }
+      if (!response.canceled) {
+        setStatus((current) => ({ ...current, state: "connected", message: `Downloaded ${entry.name}` }));
+      }
+      return true;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyEntryContents(entry) {
+    if (!entry || entry.type === "directory") return false;
+    if (documentSource === "sample" && entry.path === sampleEntry.path) {
+      const ok = await copyCodeText(editorContent);
+      if (ok) {
+        setStatus((current) => ({ ...current, message: "Copied sample.md" }));
+        showCopyNotice("Copied sample.md");
+      }
+      return ok;
+    }
+
+    const response = documentSource === "remote" ? await remoteApi.openFile(entry.path) : await remoteApi.readLocalFile(entry.path);
+    if (!response?.ok) {
+      if (documentSource === "remote" && isConnectionLostError(response?.error)) {
+        handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+      } else {
+        const nextError = response?.error || { message: "Unable to read the file." };
+        setError(nextError);
+        setStatus((current) => ({ ...current, state: "error", message: nextError.message }));
+      }
+      return false;
+    }
+    const ok = await copyCodeText(response.file.content);
+    if (ok) {
+      setStatus((current) => ({ ...current, message: `Copied ${entry.name}` }));
+      showCopyNotice(`Copied ${entry.name}`);
+    }
+    return ok;
+  }
+
+  async function copyPathText(pathText) {
+    if (!pathText) return false;
+    const ok = await copyCodeText(pathText);
+    if (ok) {
+      setStatus((current) => ({ ...current, message: "Copied path" }));
+      showCopyNotice("Copied path");
+    }
+    return ok;
+  }
+
+  function openContextMenu(event, items) {
+    const actionableItems = items.filter(Boolean);
+    if (actionableItems.length === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items: actionableItems
+    });
+  }
+
+  function handleDocumentContextMenu(event, detail = {}) {
+    const selectedText = normalizeSelectedText(detail.selectedText);
+    openContextMenu(event, [
+      selectedText && {
+        label: "Copy selection",
+        icon: Copy,
+        onSelect: () => copySelectionText(selectedText)
+      },
+      selectedText && {
+        label: "Find selection",
+        icon: Search,
+        onSelect: () => startFind(selectedText)
+      },
+      {
+        label: "Copy all",
+        icon: Copy,
+        disabled: !canCopyDocument,
+        onSelect: copyDocumentText
+      },
+      canDownloadDocument && {
+        label: "Download",
+        icon: Download,
+        disabled: busy,
+        onSelect: exportCurrentDocument
+      },
+      canCreateFile && {
+        label: "New file",
+        icon: FilePlus,
+        disabled: busy,
+        onSelect: () => openNewFileDialog(currentDirectory)
+      }
+    ]);
+  }
+
+  function handleFileContextMenu(event, entry) {
+    if (!entry) return;
+    const isDir = entry.type === "directory";
+    const isRemoteTree = connected;
+    const isLocalTree = !connected && documentSource === "local";
+    const isSampleTree = !connected && documentSource === "sample";
+    const canReadEntry = isRemoteTree || isLocalTree || isSampleTree;
+
+    openContextMenu(event, [
+      {
+        label: isDir ? "Open folder" : "Open",
+        icon: isDir ? Folder : File,
+        disabled: busy || (!isDir && !entry.isMarkdown),
+        onSelect: () => (isRemoteTree ? openEntry(entry) : isSampleTree ? openLocalSample() : openLocalEntry(entry))
+      },
+      isDir &&
+        canCreateFile && {
+          label: "New file here",
+          icon: FilePlus,
+          disabled: busy,
+          onSelect: () => openNewFileDialog(entry.path)
+        },
+      isDir &&
+        (isRemoteTree || isLocalTree) && {
+          label: "Set as source root",
+          icon: Folder,
+          disabled: busy,
+          onSelect: () => setDirectoryAsSource(entry.path)
+        },
+      !isDir && {
+        label: "Copy contents",
+        icon: Copy,
+        disabled: busy || !entry.isMarkdown || !canReadEntry,
+        onSelect: () => copyEntryContents(entry)
+      },
+      !isDir &&
+        isRemoteTree && {
+          label: "Download",
+          icon: Download,
+          disabled: busy || !entry.isMarkdown,
+          onSelect: () => downloadRemoteEntry(entry)
+        },
+      {
+        label: "Copy path",
+        icon: Copy,
+        onSelect: () => copyPathText(entry.path)
+      }
+    ]);
+  }
+
+  function handleSourceContextMenu(event, source) {
+    if (!source) return;
+    const session = source.session;
+
+    openContextMenu(event, [
+      source.kind === "remote-live" && {
+        label: "Edit connection",
+        icon: Settings,
+        onSelect: () => setConnectionPaletteOpen(true)
+      },
+      source.kind === "remote-live" && {
+        label: "Disconnect",
+        icon: X,
+        disabled: busy,
+        onSelect: disconnect
+      },
+      source.kind === "sample" && {
+        label: "Open",
+        icon: Folder,
+        disabled: busy || documentSource === "sample",
+        onSelect: openLocalSample
+      },
+      session &&
+        session.id !== activeSessionId && {
+          label: "Open",
+          icon: Folder,
+          disabled: busy,
+          onSelect: () => openSourceSession(session)
+        },
+      session?.kind === "remote" && {
+        label: "Edit connection",
+        icon: Settings,
+        onSelect: () => editSourceSessionConnection(session)
+      },
+      session?.kind === "remote" &&
+        session.id === activeSessionId && {
+          label: "Disconnect",
+          icon: X,
+          disabled: busy,
+          onSelect: disconnect
+        },
+      source.kind === "sample" && {
+        label: "Close",
+        icon: X,
+        onSelect: closeSampleSource
+      },
+      session?.kind?.startsWith("local") &&
+        session.id === activeSessionId && {
+          label: "Close",
+          icon: X,
+          onSelect: closeLocalSource
+        },
+      session &&
+        session.id !== activeSessionId && {
+          label: "Forget",
+          icon: X,
+          onSelect: () => forgetSourceSession(session.id)
+        },
+      session?.title && {
+        label: "Copy path",
+        icon: Copy,
+        onSelect: () => copyPathText(session.title)
+      },
+      source.kind === "remote-live" &&
+        sourceLabel && {
+          label: "Copy path",
+          icon: Copy,
+          onSelect: () => copyPathText(selectedPath || currentDirectory || sourceLabel)
+      }
+    ]);
+  }
+
   function applyLocalSampleFile(file, message = "Loaded local sample") {
     const nextEntry = {
       ...sampleEntry,
@@ -1549,22 +2061,45 @@ function App() {
   // is remembered, displayed in Sources, and restored next time. Remote sources
   // are keyed by connection (tabs unaffected); local sources are keyed by their
   // directory, so re-key any open tabs onto the new root to keep them.
-  function setCurrentDirectoryAsSource() {
-    if (!currentDirectory) return;
+  async function setDirectoryAsSource(directory = currentDirectory) {
+    if (!directory) return;
+
+    if (directory !== currentDirectory) {
+      setTreeLoading(true);
+      setError(null);
+      try {
+        const response = connected
+          ? await remoteApi.listDirectory(directory)
+          : await remoteApi.listLocalDirectory(directory);
+        if (!response.ok) {
+          if (connected && isConnectionLostError(response.error)) {
+            handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+          } else {
+            setError(response.error);
+            setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
+          }
+          return;
+        }
+        setFileEntries(response.entries);
+      } finally {
+        setTreeLoading(false);
+      }
+    }
 
     if (connected) {
-      setConnection((current) => ({ ...current, remoteDirectory: currentDirectory }));
+      setConnection((current) => ({ ...current, remoteDirectory: directory }));
       const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
       rememberSourceSession(
-        buildRemoteSourceSession(connection, currentDirectory, "", activeSession?.kind === "remote" ? activeSession.id : "")
+        buildRemoteSourceSession(connection, directory, "", activeSession?.kind === "remote" ? activeSession.id : "")
       );
+      setCurrentDirectory(directory);
       showTreeRefreshNotice("source root set");
       return;
     }
 
     if (localWorkspaceDirectory) {
       const oldKey = localSourceKey(localWorkspaceDirectory);
-      const newKey = localSourceKey(currentDirectory);
+      const newKey = localSourceKey(directory);
       if (oldKey !== newKey) {
         const activeTab = tabs.find((tab) => tab.id === activeTabId);
         setTabs((prev) => rekeyTabsForSource(prev, oldKey, newKey));
@@ -1572,13 +2107,18 @@ function App() {
           setActiveTabId(tabId(newKey, activeTab.path));
         }
       }
-      setLocalWorkspaceDirectory(currentDirectory);
+      setLocalWorkspaceDirectory(directory);
+      setCurrentDirectory(directory);
       const activeSession = sourceSessions.find((session) => session.id === activeSessionId);
       rememberSourceSession(
-        buildLocalFolderSourceSession(currentDirectory, currentDirectory, "", activeSession?.kind === "local-folder" ? activeSession.id : "")
+        buildLocalFolderSourceSession(directory, directory, "", activeSession?.kind === "local-folder" ? activeSession.id : "")
       );
       showTreeRefreshNotice("source root set");
     }
+  }
+
+  function setCurrentDirectoryAsSource() {
+    void setDirectoryAsSource(currentDirectory);
   }
 
   function isSourceSessionOpen(session) {
@@ -2030,6 +2570,7 @@ function App() {
               onForgetSession={forgetSourceSession}
               onOpenPalette={() => setConnectionPaletteOpen(true)}
               onOpenSession={openSourceSession}
+              onSourceContextMenu={handleSourceContextMenu}
               showLocalSource={showLocalSource}
               sourceLabel={sourceLabel}
               sourceSessions={sourceSessions}
@@ -2058,6 +2599,7 @@ function App() {
               onSetSource={setCurrentDirectoryAsSource}
               onRefresh={refreshSidebarTree}
               onLoadSample={openLocalSample}
+              onFileContextMenu={handleFileContextMenu}
             />
 
           </div>
@@ -2126,9 +2668,10 @@ function App() {
               {documentSource === "remote" && (
                 <>
                   <button
-                    className={`quiet-button ${documentRefreshing ? "loading" : ""}`}
+                    className={`icon-button compact toolbar-icon-action ${documentRefreshing ? "loading" : ""}`}
                     disabled={!canRefreshDocument || busy || documentRefreshing}
                     aria-busy={documentRefreshing}
+                    aria-label={documentRefreshing ? "Refreshing current file" : "Refresh current file"}
                     onClick={refreshCurrentFile}
                     title={documentRefreshing ? "Refreshing current file" : "Refresh once"}
                   >
@@ -2136,14 +2679,63 @@ function App() {
                     <span className="action-label">{documentRefreshing ? "refreshing" : "refresh"}</span>
                   </button>
                   <button
-                    className={`watch-chip ${watching ? "active" : ""}`}
+                    className={`icon-button compact toolbar-icon-action watch-chip ${watching ? "active" : ""}`}
                     disabled={!connected || !selectedPath || busy}
+                    aria-label={watching ? "Stop watching remote changes" : "Watch remote changes"}
                     onClick={toggleWatching}
                     title={watching ? "Stop watching" : "Watch remote changes"}
                   >
                     <span className={watching ? "status-dot pulse" : "status-dot"} />
                     <span className="action-label">{watching ? "watching" : "watch"}</span>
                   </button>
+                </>
+              )}
+              {documentSource !== "none" && (
+                <>
+                  <button
+                    className={`icon-button compact ${findOpen ? "active" : ""}`}
+                    type="button"
+                    title="Find in document"
+                    aria-label="Find in document"
+                    aria-pressed={findOpen}
+                    onClick={() => startFind()}
+                  >
+                    <Search size={14} />
+                  </button>
+                  <button
+                    className="icon-button compact"
+                    type="button"
+                    disabled={!canCopyDocument}
+                    title="Copy all"
+                    aria-label="Copy all"
+                    onClick={copyDocumentText}
+                  >
+                    <Copy size={14} />
+                  </button>
+                  {canDownloadDocument && (
+                    <button
+                      className="icon-button compact"
+                      type="button"
+                      disabled={busy}
+                      title="Download current remote file"
+                      aria-label="Download current remote file"
+                      onClick={exportCurrentDocument}
+                    >
+                      <Download size={14} />
+                    </button>
+                  )}
+                  {canCreateFile && (
+                    <button
+                      className="icon-button compact"
+                      type="button"
+                      disabled={busy}
+                      title="New blank file"
+                      aria-label="New blank file"
+                      onClick={() => openNewFileDialog(currentDirectory)}
+                    >
+                      <FilePlus size={14} />
+                    </button>
+                  )}
                 </>
               )}
               {documentSource !== "none" && (
@@ -2155,7 +2747,6 @@ function App() {
                   aria-label="Save current document"
                 >
                   <Save size={13} />
-                  <span className="action-label">save</span>
                 </button>
               )}
               {documentSource !== "none" && <div className="toolbar-divider" />}
@@ -2185,6 +2776,19 @@ function App() {
               </button>
             </div>
           </header>
+        )}
+
+        {!zenMode && findOpen && documentSource !== "none" && (
+          <FindBar
+            activeIndex={findActiveIndex}
+            inputRef={findInputRef}
+            matchCount={findMatchCount}
+            query={findQuery}
+            onChange={updateFindQuery}
+            onClose={() => setFindOpen(false)}
+            onNext={() => moveFind(1)}
+            onPrevious={() => moveFind(-1)}
+          />
         )}
 
         {!zenMode && sourceTabs.length > 0 && (
@@ -2236,9 +2840,14 @@ function App() {
             loading={Boolean(sourceOpening)}
             loadingMessage={sourceOpening?.message}
             loadingTitle={sourceOpening?.title}
+            onContextMenu={handleDocumentContextMenu}
             onEditorChange={onEditorChange}
+            onSearchResultCount={handleSearchResultCount}
             previewRef={previewRef}
+            searchActiveIndex={findActiveIndex}
+            searchQuery={findOpen ? findQuery : ""}
             sourceLabel={sourceLabel}
+            textAlignment={preferences.textAlignment}
             viewMode={zenMode ? "preview" : viewMode}
           />
         </React.Suspense>
@@ -2253,6 +2862,12 @@ function App() {
             tone={tetherPing?.tone || sourceTone}
             wordCount={wordCount}
           />
+        )}
+
+        {!zenMode && copyNotice && (
+          <div className="copy-notice" role="status" aria-live="polite">
+            {copyNotice}
+          </div>
         )}
 
         {!zenMode && outlineOpen && documentSource !== "none" && (
@@ -2313,6 +2928,14 @@ function App() {
         onClose={() => setSettingsPanelOpen(false)}
         onUpdate={updatePreference}
       />
+      <NewFileDialog
+        busy={busy}
+        directory={newFileDialog.directory}
+        open={newFileDialog.open}
+        onClose={() => setNewFileDialog({ open: false, directory: "" })}
+        onCreate={createBlankFile}
+      />
+      <ContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
     </div>
   );
 }
@@ -2365,6 +2988,81 @@ function ContentEmptyState({ onConnect, onOpenLocalFolder }) {
   );
 }
 
+function FindBar({ activeIndex, inputRef, matchCount, query, onChange, onClose, onNext, onPrevious }) {
+  const activeLabel = query ? (matchCount ? `${wrapIndex(activeIndex, matchCount) + 1} / ${matchCount}` : "no matches") : "";
+
+  return (
+    <div className="find-bar" role="search" aria-label="Find in document">
+      <Search size={14} aria-hidden="true" />
+      <input
+        ref={inputRef}
+        aria-label="Find text"
+        value={query}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            event.shiftKey ? onPrevious() : onNext();
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+          }
+        }}
+        placeholder="Find in document"
+        spellCheck="false"
+      />
+      <span className={`find-count ${query && !matchCount ? "empty" : ""}`} aria-live="polite">
+        {activeLabel}
+      </span>
+      <button type="button" className="icon-button compact" title="Previous match" aria-label="Previous match" onClick={onPrevious}>
+        <ChevronUp size={14} />
+      </button>
+      <button type="button" className="icon-button compact" title="Next match" aria-label="Next match" onClick={onNext}>
+        <ChevronDown size={14} />
+      </button>
+      <button type="button" className="icon-button compact" title="Close find" aria-label="Close find" onClick={onClose}>
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
+function ContextMenu({ menu, onClose }) {
+  if (!menu) return null;
+  const left = typeof window === "undefined" ? menu.x : Math.max(8, Math.min(menu.x, window.innerWidth - 196));
+  const top = typeof window === "undefined" ? menu.y : Math.max(8, Math.min(menu.y, window.innerHeight - 240));
+
+  return (
+    <div
+      className="context-menu"
+      role="menu"
+      style={{ left: `${left}px`, top: `${top}px` }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {menu.items.map((item, index) => {
+        const Icon = item.icon;
+        return (
+          <button
+            key={`${item.label}-${index}`}
+            type="button"
+            role="menuitem"
+            disabled={item.disabled}
+            onClick={() => {
+              onClose();
+              if (!item.disabled) item.onSelect?.();
+            }}
+          >
+            {Icon ? <Icon size={14} aria-hidden="true" /> : <span className="context-menu-spacer" aria-hidden="true" />}
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 async function copyCodeText(text) {
   try {
     const response = await remoteApi.copyText(text);
@@ -2405,6 +3103,57 @@ async function copyTextToBrowserClipboard(text) {
   }
 
   return false;
+}
+
+function normalizeFindQuery(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, 180);
+}
+
+function normalizeSelectedText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, 180);
+}
+
+function wrapIndex(index, count) {
+  if (!count) return 0;
+  return ((index % count) + count) % count;
+}
+
+function normalizeMarkdownFileName(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed || trimmed === "." || trimmed === "..") return "untitled.md";
+  const fileName = trimmed.split(/[\\/]/).filter(Boolean).pop() || "untitled.md";
+  return /\.[A-Za-z0-9]+$/.test(fileName) ? fileName : `${fileName}.md`;
+}
+
+function joinBrowserPath(directory, fileName) {
+  const base = String(directory || ".").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!base || base === ".") return fileName;
+  return `${base}/${fileName}`;
+}
+
+function saveTextAsBrowserDownload(content, defaultPath = "document.md") {
+  try {
+    const fileName = basename(defaultPath) || "document.md";
+    const blob = new Blob([content || ""], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    return { ok: true, canceled: false, path: fileName };
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: "DOWNLOAD_FAILED",
+        message: error?.message || "Unable to save the document."
+      }
+    };
+  }
 }
 
 function captureScrollRatio(previewRef, ratioRef) {
@@ -2595,6 +3344,9 @@ function getInitialPreferences() {
       defaultView: ["preview", "split", "source"].includes(storedPreferences.defaultView)
         ? storedPreferences.defaultView
         : defaultPreferences.defaultView,
+      textAlignment: ["smart", "justify", "left"].includes(storedPreferences.textAlignment)
+        ? storedPreferences.textAlignment
+        : defaultPreferences.textAlignment,
       sidebarCollapsed:
         typeof storedPreferences.sidebarCollapsed === "boolean"
           ? storedPreferences.sidebarCollapsed
@@ -2670,6 +3422,9 @@ function savePreferences(preferences) {
     readingFont: preferences.readingFont,
     pageWidthPx: clampPageWidth(preferences.pageWidthPx),
     defaultView: preferences.defaultView,
+    textAlignment: ["smart", "justify", "left"].includes(preferences.textAlignment)
+      ? preferences.textAlignment
+      : defaultPreferences.textAlignment,
     sidebarCollapsed: preferences.sidebarCollapsed
   };
   try {
@@ -2811,14 +3566,14 @@ function buildLocalFileSourceSession(filePath, directory = localDirname(filePath
 
 function hydrateConnectionFromSourceSession(session) {
   const connection = sanitizeConnectionForSession(session.connection || {});
-  const shouldOpenFile = session.selectedPath && (!session.directory || dirname(session.selectedPath) === session.directory);
+  const restoredRemotePath = session.selectedPath || session.directory || connection.remotePath || connection.remoteDirectory || "";
   return {
     ...defaultConnection,
     ...connection,
     password: "",
     passphrase: "",
-    remotePath: shouldOpenFile ? session.selectedPath : "",
-    remoteDirectory: shouldOpenFile ? "" : session.directory || connection.remoteDirectory || ""
+    remotePath: restoredRemotePath,
+    remoteDirectory: ""
   };
 }
 

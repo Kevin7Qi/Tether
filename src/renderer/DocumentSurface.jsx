@@ -16,9 +16,14 @@ function DocumentSurface({
   loading,
   loadingMessage,
   loadingTitle,
+  onContextMenu,
   onEditorChange,
+  onSearchResultCount,
   previewRef,
+  searchActiveIndex = 0,
+  searchQuery = "",
   sourceLabel,
+  textAlignment = "smart",
   viewMode
 }) {
   const gutterRef = useRef(null);
@@ -63,6 +68,123 @@ function DocumentSurface({
     if (viewMode === "split") syncScrollRatio(event.currentTarget, textareaRef.current);
   }
 
+  useEffect(() => {
+    if (!showPreview || loading) return undefined;
+    const pane = previewRef?.current;
+    const article = pane?.querySelector(".markdown-document");
+    if (!article) return undefined;
+
+    let raf = 0;
+    function run() {
+      raf = 0;
+      markLooseJustification(article, textAlignment);
+    }
+    function schedule() {
+      if (raf) window.cancelAnimationFrame(raf);
+      raf = window.requestAnimationFrame(() => {
+        raf = window.requestAnimationFrame(run);
+      });
+    }
+
+    schedule();
+    const ResizeObserverClass = window.ResizeObserver;
+    const observer = ResizeObserverClass ? new ResizeObserverClass(schedule) : null;
+    observer?.observe(article);
+    window.addEventListener("resize", schedule);
+
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf);
+      observer?.disconnect();
+      window.removeEventListener("resize", schedule);
+      clearLooseJustification(article);
+    };
+  }, [content, loading, previewRef, showPreview, textAlignment, viewMode]);
+
+  useEffect(() => {
+    if (loading) return undefined;
+    const query = searchQuery.trim();
+    const pane = previewRef?.current;
+    const article = pane?.querySelector(".markdown-document");
+    const highlightSupported = hasHighlightApi();
+
+    clearSearchHighlights();
+    clearDomSearchMarks(article);
+
+    if (!query) {
+      onSearchResultCount?.(0);
+      return undefined;
+    }
+
+    if (showPreview && article) {
+      const matches = collectSearchMatches(article, query);
+      const ranges = matches.map((match) => match.range);
+      const activeIndex = getActiveSearchIndex(searchActiveIndex, ranges.length);
+      onSearchResultCount?.(ranges.length);
+
+      if (highlightSupported) {
+        const passiveRanges = ranges.filter((_, index) => index !== activeIndex);
+        CSS.highlights.set("tether-search", new Highlight(...passiveRanges));
+        if (ranges[activeIndex]) CSS.highlights.set("tether-search-active", new Highlight(ranges[activeIndex]));
+      } else {
+        const marks = applyDomSearchMarks(matches, activeIndex);
+        if (marks[activeIndex]) {
+          scrollElementIntoPane(marks[activeIndex], pane);
+          return () => {
+            clearDomSearchMarks(article);
+            clearSearchHighlights();
+          };
+        }
+      }
+
+      if (ranges[activeIndex]) {
+        scrollRangeIntoPane(ranges[activeIndex], pane);
+      }
+
+      return () => {
+        clearDomSearchMarks(article);
+        clearSearchHighlights();
+      };
+    }
+
+    if (showEditor && textareaRef.current) {
+      const ranges = findTextRanges(editorContent, query);
+      const activeIndex = getActiveSearchIndex(searchActiveIndex, ranges.length);
+      onSearchResultCount?.(ranges.length);
+      if (ranges[activeIndex]) {
+        selectTextareaRange(textareaRef.current, ranges[activeIndex]);
+      }
+    } else {
+      onSearchResultCount?.(0);
+    }
+
+    return () => {
+      clearDomSearchMarks(article);
+      clearSearchHighlights();
+    };
+  }, [
+    content,
+    editorContent,
+    loading,
+    onSearchResultCount,
+    previewRef,
+    searchActiveIndex,
+    searchQuery,
+    showEditor,
+    showPreview,
+    viewMode
+  ]);
+
+  function handlePreviewContextMenu(event) {
+    const selection = getWindowSelectionText();
+    onContextMenu?.(event, { surface: "preview", selectedText: selection });
+  }
+
+  function handleEditorContextMenu(event) {
+    const textarea = textareaRef.current;
+    const selectedText = textarea ? textarea.value.slice(textarea.selectionStart, textarea.selectionEnd) : "";
+    onContextMenu?.(event, { surface: "editor", selectedText });
+  }
+
   if (loading) {
     return (
       <DocumentLoading
@@ -93,6 +215,7 @@ function DocumentSurface({
               spellCheck="false"
               value={editorContent}
               onChange={onEditorChange}
+              onContextMenu={handleEditorContextMenu}
               onScroll={syncLineNumberScroll}
               aria-label="Markdown source"
               wrap="off"
@@ -106,9 +229,10 @@ function DocumentSurface({
           ref={previewRef}
           className="preview-pane"
           aria-label="Rendered Markdown preview"
+          onContextMenu={handlePreviewContextMenu}
           onScroll={syncPreviewScroll}
         >
-          <article className="markdown-document" lang="en">
+          <article className={`markdown-document alignment-${textAlignment}`} lang="en">
             {showEyebrow && (
               <div className="markdown-eyebrow">
                 <span>{documentEyebrow}</span>
@@ -540,6 +664,9 @@ function highlightCssLine(line) {
 }
 
 const GENERIC_PATTERN_CACHE = new Map();
+const DOM_SHOW_TEXT = 4;
+const DOM_FILTER_ACCEPT = 1;
+const DOM_FILTER_REJECT = 2;
 
 function getGenericPattern(group) {
   let pattern = GENERIC_PATTERN_CACHE.get(group);
@@ -633,6 +760,232 @@ function previousNonSpace(line, index) {
     if (/\S/.test(line[cursor])) return line[cursor];
   }
   return "";
+}
+
+function markLooseJustification(article, textAlignment) {
+  clearLooseJustification(article);
+  if (textAlignment !== "smart") return;
+
+  for (const block of article.querySelectorAll("p, li, blockquote")) {
+    if (block.closest("pre, .code-block")) continue;
+    if (blockHasLooseJustification(block)) block.classList.add("loose-justify");
+  }
+}
+
+function clearLooseJustification(article) {
+  article?.querySelectorAll(".loose-justify").forEach((node) => node.classList.remove("loose-justify"));
+}
+
+function blockHasLooseJustification(block) {
+  const text = block.textContent || "";
+  if (text.trim().length < 80) return false;
+
+  const rects = collectWordRects(block);
+  if (rects.length < 6) return false;
+
+  const blockWidth = block.getBoundingClientRect().width;
+  const fontSize = Number.parseFloat(window.getComputedStyle(block).fontSize) || 16;
+  const gapLimit = Math.max(20, Math.min(44, fontSize * 1.55));
+  const lines = groupRectsByLine(rects);
+
+  return lines.some((line) => {
+    if (line.length < 3) return false;
+    const sorted = line.sort((left, right) => left.left - right.left);
+    const left = sorted[0].left;
+    const right = sorted[sorted.length - 1].right;
+    if (right - left < blockWidth * 0.62) return false;
+    return sorted.some((rect, index) => {
+      const next = sorted[index + 1];
+      if (!next) return false;
+      return next.left - rect.right > gapLimit;
+    });
+  });
+}
+
+function collectWordRects(root) {
+  const rects = [];
+  const walker = document.createTreeWalker(root, DOM_SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue || !node.nodeValue.trim()) return DOM_FILTER_REJECT;
+      if (isInsideMeasurementSkip(node.parentElement)) return DOM_FILTER_REJECT;
+      return DOM_FILTER_ACCEPT;
+    }
+  });
+
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = node.nodeValue || "";
+    const pattern = /\S+/g;
+    let match;
+
+    while ((match = pattern.exec(text))) {
+      const range = document.createRange();
+      range.setStart(node, match.index);
+      range.setEnd(node, match.index + match[0].length);
+      for (const rect of range.getClientRects()) {
+        if (rect.width > 0 && rect.height > 0) {
+          rects.push({
+            top: rect.top,
+            bottom: rect.bottom,
+            left: rect.left,
+            right: rect.right,
+            width: rect.width
+          });
+        }
+      }
+      range.detach?.();
+    }
+  }
+
+  return rects.sort((left, right) => left.top - right.top || left.left - right.left);
+}
+
+function isInsideMeasurementSkip(element) {
+  return Boolean(element?.closest(".katex, .markdown-eyebrow, .code-block-toolbar, .code-line-numbers, button"));
+}
+
+function groupRectsByLine(rects) {
+  const lines = [];
+
+  for (const rect of rects) {
+    const line = lines.find((candidate) => Math.abs(candidate.top - rect.top) < 3);
+    if (line) {
+      line.rects.push(rect);
+      line.top = Math.min(line.top, rect.top);
+      line.bottom = Math.max(line.bottom, rect.bottom);
+    } else {
+      lines.push({ top: rect.top, bottom: rect.bottom, rects: [rect] });
+    }
+  }
+
+  return lines.map((line) => line.rects);
+}
+
+function hasHighlightApi() {
+  return typeof CSS !== "undefined" && CSS.highlights && typeof Highlight !== "undefined";
+}
+
+function clearSearchHighlights() {
+  if (!hasHighlightApi()) return;
+  CSS.highlights.delete("tether-search");
+  CSS.highlights.delete("tether-search-active");
+}
+
+function collectSearchMatches(root, query) {
+  const matches = [];
+  const needle = query.toLowerCase();
+  if (!needle) return matches;
+
+  const walker = document.createTreeWalker(root, DOM_SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue || !node.nodeValue.trim()) return DOM_FILTER_REJECT;
+      if (isInsideSearchSkip(node.parentElement)) return DOM_FILTER_REJECT;
+      return DOM_FILTER_ACCEPT;
+    }
+  });
+
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = node.nodeValue || "";
+    const lowerText = text.toLowerCase();
+    let index = lowerText.indexOf(needle);
+
+    while (index !== -1) {
+      const range = document.createRange();
+      range.setStart(node, index);
+      range.setEnd(node, index + query.length);
+      matches.push({ node, start: index, end: index + query.length, range });
+      index = lowerText.indexOf(needle, index + needle.length);
+    }
+  }
+
+  return matches;
+}
+
+function isInsideSearchSkip(element) {
+  return Boolean(element?.closest(".markdown-eyebrow, .code-block-toolbar, .code-line-numbers, button, input, textarea"));
+}
+
+function findTextRanges(text, query) {
+  const ranges = [];
+  const needle = query.toLowerCase();
+  if (!needle) return ranges;
+
+  const lowerText = String(text || "").toLowerCase();
+  let index = lowerText.indexOf(needle);
+  while (index !== -1) {
+    ranges.push({ start: index, end: index + query.length });
+    index = lowerText.indexOf(needle, index + needle.length);
+  }
+  return ranges;
+}
+
+function getActiveSearchIndex(index, count) {
+  if (!count) return -1;
+  return ((index % count) + count) % count;
+}
+
+function applyDomSearchMarks(matches, activeIndex) {
+  const marks = [];
+
+  [...matches].reverse().forEach((match, reverseIndex) => {
+    const originalIndex = matches.length - reverseIndex - 1;
+    const range = document.createRange();
+    range.setStart(match.node, match.start);
+    range.setEnd(match.node, match.end);
+
+    const mark = document.createElement("mark");
+    mark.className = `tether-search-mark ${originalIndex === activeIndex ? "active" : ""}`;
+    mark.appendChild(range.extractContents());
+    range.insertNode(mark);
+    marks[originalIndex] = mark;
+  });
+
+  return marks;
+}
+
+function clearDomSearchMarks(root) {
+  root?.querySelectorAll("mark.tether-search-mark").forEach((mark) => {
+    const parent = mark.parentNode;
+    mark.replaceWith(document.createTextNode(mark.textContent || ""));
+    parent?.normalize?.();
+  });
+}
+
+function scrollRangeIntoPane(range, pane) {
+  const rect = range.getBoundingClientRect?.() || range.getClientRects?.()[0];
+  if (!rect || !pane) return;
+
+  const paneRect = pane.getBoundingClientRect();
+  pane.scrollTo({
+    top: Math.max(0, pane.scrollTop + rect.top - paneRect.top - 84),
+    behavior: "smooth"
+  });
+}
+
+function scrollElementIntoPane(element, pane) {
+  const rect = element?.getBoundingClientRect?.();
+  if (!rect || !pane) return;
+
+  const paneRect = pane.getBoundingClientRect();
+  pane.scrollTo({
+    top: Math.max(0, pane.scrollTop + rect.top - paneRect.top - 84),
+    behavior: "smooth"
+  });
+}
+
+function selectTextareaRange(textarea, range) {
+  textarea.setSelectionRange(range.start, range.end);
+  const textBefore = textarea.value.slice(0, range.start);
+  const lineIndex = textBefore.split(/\r\n|\r|\n/).length - 1;
+  const lineHeight = Number.parseFloat(window.getComputedStyle(textarea).lineHeight) || 20;
+  textarea.scrollTop = Math.max(0, lineIndex * lineHeight - textarea.clientHeight / 2);
+}
+
+function getWindowSelectionText() {
+  try {
+    return window.getSelection?.()?.toString() || "";
+  } catch {
+    return "";
+  }
 }
 
 export default React.memo(DocumentSurface);

@@ -66,6 +66,26 @@ body {
   background: color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
+::highlight(tether-search) {
+  background: color-mix(in srgb, var(--warn) 38%, transparent);
+  color: inherit;
+}
+
+::highlight(tether-search-active) {
+  background: color-mix(in srgb, var(--accent) 58%, transparent);
+  color: inherit;
+}
+
+.tether-search-mark {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--warn) 38%, transparent);
+  color: inherit;
+}
+
+.tether-search-mark.active {
+  background: color-mix(in srgb, var(--accent) 58%, transparent);
+}
+
 /* Inline-SVG icons share the design's 1.6 stroke weight. */
 .lucide {
   stroke-width: 1.6;
@@ -262,6 +282,17 @@ textarea:focus-visible,
   }
   to {
     transform: translateY(-1px) scale(1);
+  }
+}
+
+@keyframes tetherNoticeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
@@ -844,8 +875,8 @@ textarea:focus-visible,
   padding-bottom: 8px;
 }
 
-.file-row:hover:not(:disabled):not(.active),
-.file-row:focus-visible:not(:disabled):not(.active) {
+.file-row:hover:not(:disabled):not(.disabled):not(.active),
+.file-row:focus-visible:not(:disabled):not(.disabled):not(.active) {
   border-color: color-mix(in srgb, var(--line) 72%, transparent);
   background: color-mix(in srgb, var(--surface) 74%, transparent);
   color: var(--ink);
@@ -854,8 +885,8 @@ textarea:focus-visible,
 
 /* Every passive icon in the row (file/folder icon, chevron) highlights to the
    accent on hover. The drill-in action button is the exception — see below. */
-.file-row:hover:not(:disabled):not(.active) svg,
-.file-row:focus-visible:not(:disabled):not(.active) svg {
+.file-row:hover:not(:disabled):not(.disabled):not(.active) svg,
+.file-row:focus-visible:not(:disabled):not(.disabled):not(.active) svg {
   color: var(--accent);
 }
 
@@ -884,7 +915,8 @@ textarea:focus-visible,
   color: var(--ink3);
 }
 
-.file-row:disabled {
+.file-row:disabled,
+.file-row.disabled {
   opacity: 0.44;
 }
 
@@ -1034,12 +1066,12 @@ textarea:focus-visible,
 }
 
 .document-toolbar {
-  height: 48px;
+  height: 44px;
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 12px 0 16px;
+  gap: 8px;
+  padding: 0 10px 0 14px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
   transition:
@@ -1092,7 +1124,7 @@ textarea:focus-visible,
   flex: none;
   min-width: 0;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .view-switch {
@@ -1105,12 +1137,12 @@ textarea:focus-visible,
 }
 
 .view-switch button {
-  min-width: 44px;
+  min-width: 38px;
   border-color: transparent;
   border-radius: 3px;
-  padding: 4px 9px;
+  padding: 4px 7px;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 11px;
 }
 
 .view-switch button.active {
@@ -1152,7 +1184,8 @@ textarea:focus-visible,
 
 .quiet-button,
 .watch-chip,
-.save-button {
+.save-button,
+.toolbar-icon-action {
   min-height: 30px;
   font-family: var(--mono);
   font-size: 11.5px;
@@ -1162,15 +1195,28 @@ textarea:focus-visible,
   border-color: var(--line);
 }
 
-.quiet-button.loading,
-.quiet-button.loading:disabled {
+.toolbar-icon-action {
+  width: 30px;
+  min-width: 30px;
+  justify-content: center;
+  border-color: transparent;
+  padding: 0;
+  color: var(--ink3);
+}
+
+.toolbar-icon-action .action-label {
+  display: none;
+}
+
+.toolbar-icon-action.loading,
+.toolbar-icon-action.loading:disabled {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
   color: var(--accent);
   cursor: default;
   opacity: 1;
 }
 
-.quiet-button.loading svg {
+.toolbar-icon-action.loading svg {
   animation: tetherSpin 900ms linear infinite;
   color: var(--accent);
   stroke: var(--accent);
@@ -1178,6 +1224,11 @@ textarea:focus-visible,
 
 .watch-chip {
   color: var(--ink3);
+}
+
+.watch-chip .status-dot {
+  width: 7px;
+  height: 7px;
 }
 
 .watch-chip.active {
@@ -1192,6 +1243,14 @@ textarea:focus-visible,
   font-size: 12px;
   font-weight: 500;
   padding: 5px 9px;
+}
+
+.document-toolbar .save-button {
+  width: 30px;
+  min-width: 30px;
+  justify-content: center;
+  border: 1px solid transparent;
+  padding: 0;
 }
 
 .save-button:disabled {
@@ -1211,6 +1270,42 @@ textarea:focus-visible,
 
 .action-label {
   min-width: 0;
+}
+
+.find-bar {
+  min-height: 42px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 16px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 92%, var(--code));
+  color: var(--ink3);
+}
+
+.find-bar input {
+  width: min(360px, 44vw);
+  min-width: 120px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.find-count {
+  min-width: 68px;
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: right;
+}
+
+.find-count.empty {
+  color: var(--warn);
 }
 
 .status-dot {
@@ -1800,10 +1895,26 @@ textarea:focus-visible,
 .markdown-document blockquote {
   hyphens: auto;
   overflow-wrap: break-word;
-  text-align: justify;
-  text-justify: inter-word;
   text-wrap: pretty;
   word-break: normal;
+}
+
+.markdown-document.alignment-justify p,
+.markdown-document.alignment-justify li,
+.markdown-document.alignment-justify blockquote,
+.markdown-document.alignment-smart p,
+.markdown-document.alignment-smart li,
+.markdown-document.alignment-smart blockquote {
+  text-align: justify;
+  text-justify: inter-word;
+}
+
+.markdown-document.alignment-left p,
+.markdown-document.alignment-left li,
+.markdown-document.alignment-left blockquote,
+.markdown-document .loose-justify {
+  text-align: left;
+  text-justify: auto;
 }
 
 .markdown-document a {
@@ -2206,6 +2317,28 @@ textarea:focus-visible,
   color: var(--line);
 }
 
+.copy-notice {
+  position: absolute;
+  right: 16px;
+  bottom: 38px;
+  z-index: 55;
+  max-width: min(320px, calc(100% - 32px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--ok) 42%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--ok));
+  box-shadow: 0 12px 30px -18px var(--shadow);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 9px 11px;
+  pointer-events: none;
+  animation: tetherNoticeIn 140ms ease-out;
+}
+
 .content-empty {
   flex: 1;
   min-height: 0;
@@ -2309,7 +2442,8 @@ textarea:focus-visible,
 }
 
 .connection-palette,
-.settings-panel {
+.settings-panel,
+.new-file-dialog {
   width: min(580px, calc(100vw - 48px));
   max-height: 80vh;
   overflow-y: auto;
@@ -2325,6 +2459,10 @@ textarea:focus-visible,
 
 .settings-panel {
   width: min(440px, calc(100vw - 32px));
+}
+
+.new-file-dialog {
+  width: min(420px, calc(100vw - 32px));
 }
 
 .palette-header,
@@ -2349,6 +2487,47 @@ textarea:focus-visible,
   border-radius: 3px;
   color: var(--ink3);
   font-size: 10px;
+}
+
+.new-file-target {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin: 16px 18px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+}
+
+.new-file-target span {
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+}
+
+.new-file-target strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-file-dialog .field {
+  margin: 16px 18px 0;
+}
+
+.new-file-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 18px;
 }
 
 .target-input {
@@ -2886,6 +3065,60 @@ textarea:focus-visible,
     0 0 0 3px var(--accent);
 }
 
+.context-menu {
+  position: fixed;
+  z-index: 70;
+  width: 184px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow:
+    0 18px 42px -14px var(--shadow),
+    0 4px 12px var(--shadow);
+  animation: tetherMenuIn 120ms ease-out;
+}
+
+.context-menu button {
+  width: 100%;
+  min-height: 28px;
+  justify-content: flex-start;
+  gap: 8px;
+  border-color: transparent;
+  padding: 5px 8px;
+  color: var(--ink2);
+  font-size: 12px;
+  text-align: left;
+}
+
+.context-menu button:hover:not(:disabled),
+.context-menu button:focus-visible {
+  border-color: transparent;
+  background: var(--code);
+  color: var(--ink);
+}
+
+.context-menu svg,
+.context-menu-spacer {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+@keyframes tetherMenuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 920px) {
   .toolbar-actions {
     gap: 5px;
@@ -2969,6 +3202,20 @@ textarea:focus-visible,
 
   .toolbar-divider {
     display: none;
+  }
+
+  .find-bar {
+    gap: 5px;
+    padding: 6px 8px;
+  }
+
+  .find-bar input {
+    width: min(44vw, 220px);
+  }
+
+  .find-count {
+    min-width: 42px;
+    font-size: 10px;
   }
 
   .markdown-document {

@@ -283,6 +283,25 @@ class RemoteFileProvider extends EventEmitter {
     return file;
   }
 
+  async createFile(remotePath, content = "") {
+    this.ensureConnected();
+    validateRemotePath(remotePath);
+
+    try {
+      await this.client.stat(remotePath);
+      throw userError("REMOTE_FILE_EXISTS", "A remote file already exists at that path.");
+    } catch (error) {
+      if (error?.code === "REMOTE_FILE_EXISTS") throw error;
+      if (!isMissingRemoteFileError(error)) throw error;
+    }
+
+    await this.client.put(Buffer.from(content, "utf8"), remotePath);
+    const file = await this.readFile(remotePath);
+    this.lastVersion = file.version;
+    this.emit("update", file);
+    return file;
+  }
+
   async deleteFile(remotePath) {
     this.ensureConnected();
     validateRemotePath(remotePath);
@@ -388,6 +407,12 @@ function validateRemotePath(remotePath) {
 
 function isRemoteMarkdownPath(filePath) {
   return REMOTE_MARKDOWN_PATTERN.test(String(filePath || ""));
+}
+
+function isMissingRemoteFileError(error) {
+  const code = String(error?.code || "");
+  const message = String(error?.message || "");
+  return code === "2" || code === "ENOENT" || /no such file|not found|does not exist/i.test(message);
 }
 
 function verifyHostFingerprint(connection, fingerprint, knownHostsPath = defaultKnownHostsPath) {
