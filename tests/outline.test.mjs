@@ -43,7 +43,7 @@ test("cleanHeadingText keeps comparison operators but drops real HTML tags", () 
   // `<[^>]+>` rule deleted everything between them).
   assert.equal(cleanHeadingText("If a < b and c > d"), "If a < b and c > d");
   assert.equal(cleanHeadingText("Loop while i <= 5"), "Loop while i <= 5");
-  // Tag-shaped spans are removed, matching what react-markdown renders.
+  // Tag-shaped spans are removed, matching rendered Markdown text.
   assert.equal(cleanHeadingText("Wrap <span>text</span> here"), "Wrap text here");
   assert.equal(cleanHeadingText("Generic List<T>"), "Generic List");
 });

@@ -16,7 +16,7 @@ Inline code such as `remotePath`, `~/.ssh/config`, and `provider.readFile()` sho
 - [x] Tables
 - [x] Fenced code blocks
 - [x] Inline and block math
-- [x] Your remote documentationx
+- [x] Your remote documentation
 
 ## Table
 
@@ -24,7 +24,7 @@ Inline code such as `remotePath`, `~/.ssh/config`, and `provider.readFile()` sho
 | --- | --- | --- |
 | Authentication | Password or private key path | Secrets stay in memory only |
 | Watching | SFTP stat/read polling | No SSHFS or mounted folders |
-| Editing | Source pane plus conflict check | No WYSIWYG editor yet |
+| Editing | Inline document plus source fallback | Markdown remains portable |
 
 ## Code
 

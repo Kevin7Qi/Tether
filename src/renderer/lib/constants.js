@@ -2,8 +2,8 @@
 // and the PageWidthControl component.
 
 export const PAGE_WIDTH_MIN = 560;
-export const PAGE_WIDTH_MAX = 1320;
-export const PAGE_WIDTH_DEFAULT = 980;
+export const PAGE_WIDTH_MAX = 1180;
+export const PAGE_WIDTH_DEFAULT = 820;
 export const PAGE_WIDTH_STEP = 20;
 
 export function clampPageWidth(value) {

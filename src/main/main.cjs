@@ -867,6 +867,9 @@ function assertString(value, label) {
 }
 
 app.whenReady().then(() => {
+  // Packaged macOS builds must use the bundle's multi-resolution .icns. A
+  // runtime PNG override changes how macOS composites the transparent glyph.
+  if (process.platform === "darwin" && app.dock && !app.isPackaged) app.dock.setIcon(appIconPath);
   installApplicationMenu();
   provider.setKnownHostsPath(getTrustedHostsPath());
   loadLocalGrants();

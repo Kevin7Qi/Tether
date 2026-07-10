@@ -1,0 +1,17 @@
+{
+  "codes": [
+    "CONNECTION_LOST",
+    "NOT_CONNECTED",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ECONNABORTED",
+    "ETIMEDOUT",
+    "EHOSTUNREACH",
+    "EHOSTDOWN",
+    "ENETUNREACH",
+    "ENETDOWN",
+    "EPIPE",
+    "ENOTCONN"
+  ],
+  "messagePattern": "\\b(econnreset|econnrefused|econnaborted|etimedout|ehostunreach|enetunreach|epipe|enotconn)\\b|not connected|no sftp connection|sftp.*\\b(closed|ended|disconnect)|connection (lost|closed|reset|ended|aborted|timed out|refused)|socket (closed|hang ?up)|channel open failure|server unexpectedly closed|keepalive timeout"
+}

@@ -40,6 +40,7 @@ async function main() {
   await writePortablePackageJson();
   await fs.cp(path.join(root, "dist"), path.join(appDir, "dist"), { recursive: true });
   await fs.cp(path.join(root, "src", "main"), path.join(appDir, "src", "main"), { recursive: true });
+  await fs.cp(path.join(root, "src", "shared"), path.join(appDir, "src", "shared"), { recursive: true });
   await fs.cp(path.join(root, "samples"), path.join(appDir, "samples"), { recursive: true });
   await fs.cp(path.join(root, "resources"), path.join(appDir, "resources"), { recursive: true });
 

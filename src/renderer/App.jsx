@@ -1,9 +1,9 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
   ChevronDown,
   ChevronUp,
+  Code2,
   Copy,
   Download,
   File,
@@ -11,23 +11,35 @@ import {
   Folder,
   List,
   Maximize2,
+  MoreHorizontal,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  PenLine,
   RefreshCw,
   Save,
   Search,
   Settings,
+  Sun,
+  SunMoon,
   X
 } from "lucide-react";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
 import "@fontsource/ibm-plex-mono/latin-600.css";
 import "@fontsource/instrument-sans/latin-400.css";
+import "@fontsource/instrument-sans/latin-400-italic.css";
 import "@fontsource/instrument-sans/latin-500.css";
+import "@fontsource/instrument-sans/latin-500-italic.css";
 import "@fontsource/instrument-sans/latin-600.css";
+import "@fontsource/instrument-sans/latin-600-italic.css";
 import "@fontsource/instrument-sans/latin-700.css";
+import "@fontsource/instrument-sans/latin-700-italic.css";
 import "@fontsource/newsreader/latin-400.css";
+import "@fontsource/newsreader/latin-400-italic.css";
 import "@fontsource/newsreader/latin-600.css";
+import "@fontsource/newsreader/latin-600-italic.css";
+import "@milkdown/crepe/theme/common/style.css";
 import "./styles.css";
 import sampleMarkdown from "../../samples/sample.md?raw";
 import {
@@ -61,11 +73,12 @@ import {
 } from "./lib/format.js";
 import { createDocumentState, documentReducer } from "./lib/documentState.js";
 import { PAGE_WIDTH_DEFAULT, clampPageWidth, hotkey } from "./lib/constants.js";
+import { EDITOR_MODE_SOURCE, EDITOR_MODE_WYSIWYG } from "./lib/editorModes.js";
 import { parseOutline } from "./lib/outline.js";
 import { isConnectionLostError, connectionLostMessage } from "./lib/connection.js";
 import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, rekeyTabsForSource, selectNeighborTab } from "./lib/tabs.js";
 import { DocumentSurfaceFallback, FilesPanel, OutlinePanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
-import { ConnectionPalette, NewFileDialog, SettingsPanel, StatusBar, ThemeSwitch } from "./components/dialogs.jsx";
+import { ConnectionPalette, NewFileDialog, SettingsPanel, StatusBar } from "./components/dialogs.jsx";
 
 const LazyDocumentSurface = React.lazy(() => import("./DocumentSurface.jsx"));
 const BOOT_PREFERENCES_KEY = "remoteMarkdownPreview.preferences";
@@ -101,8 +114,6 @@ const defaultPreferences = {
   accent: "phosphor",
   readingFont: "sans",
   pageWidthPx: PAGE_WIDTH_DEFAULT,
-  defaultView: "preview",
-  textAlignment: "smart",
   sidebarCollapsed: false
 };
 const initialSampleMarkdown = getInitialSampleMarkdown();
@@ -286,7 +297,7 @@ const remoteApi = {
 };
 const hasNativeHealthCheck = Boolean(window.remoteMarkdown?.healthCheck);
 
-function App() {
+export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(getInitialSidebarWidth);
   const [resizingSidebar, setResizingSidebar] = useState(false);
   const [connection, setConnection] = useState(getInitialConnection);
@@ -312,11 +323,12 @@ function App() {
   const [preferences, setPreferences] = useState(initialPreferences);
   const [fontsReady, setFontsReady] = useState(initialFontsReady);
   const [systemTheme, setSystemTheme] = useState(getSystemTheme);
-  const [viewMode, setViewMode] = useState(initialPreferences.defaultView);
+  const [viewMode, setViewMode] = useState(EDITOR_MODE_WYSIWYG);
   const [zenMode, setZenMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialPreferences.sidebarCollapsed);
   const [sidebarPeeking, setSidebarPeeking] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [outlineHovering, setOutlineHovering] = useState(false);
   const [activeHeadingId, setActiveHeadingId] = useState(null);
   const [tabs, setTabs] = useState([]);
   const [activeTabId, setActiveTabId] = useState(null);
@@ -363,6 +375,7 @@ function App() {
   const documentRefreshTimerRef = useRef(null);
   const treeRefreshTimerRef = useRef(null);
   const copyNoticeTimerRef = useRef(null);
+  const outlineHoverTimerRef = useRef(null);
   const sourceOpeningRef = useRef(null);
   const saveActionRef = useRef(null);
   const openFileActionRef = useRef(null);
@@ -540,6 +553,7 @@ function App() {
       if (documentRefreshTimerRef.current) window.clearTimeout(documentRefreshTimerRef.current);
       if (treeRefreshTimerRef.current) window.clearTimeout(treeRefreshTimerRef.current);
       if (copyNoticeTimerRef.current) window.clearTimeout(copyNoticeTimerRef.current);
+      if (outlineHoverTimerRef.current) window.clearTimeout(outlineHoverTimerRef.current);
     };
   }, []);
 
@@ -698,7 +712,7 @@ function App() {
 
   // Scroll-spy: while the outline is visible, highlight the heading the reader is in.
   useEffect(() => {
-    if (!outlineOpen) return undefined;
+    if (!outlineOpen && !outlineHovering) return undefined;
     const pane = previewRef.current;
     if (!pane) return undefined;
 
@@ -724,7 +738,7 @@ function App() {
       pane.removeEventListener("scroll", onScroll);
       if (raf) window.cancelAnimationFrame(raf);
     };
-  }, [outlineOpen, deferredPreviewContent, viewMode, zenMode]);
+  }, [outlineOpen, outlineHovering, deferredPreviewContent, viewMode, zenMode]);
   const activeTab = activeTabId ? tabs.find((tab) => tab.id === activeTabId) : null;
   const hasLocalDocument = Boolean(localFile || localWorkspaceDirectory);
   const connectionSource = connected ? "remote" : hasLocalDocument ? "local" : sampleSourceOpen ? "sample" : "none";
@@ -1719,21 +1733,24 @@ function App() {
     return ok;
   }
 
-  function openContextMenu(event, items) {
+  function openContextMenuAt(x, y, items) {
     const actionableItems = items.filter(Boolean);
     if (actionableItems.length === 0) return;
-    event.preventDefault();
-    event.stopPropagation();
     setContextMenu({
-      x: event.clientX,
-      y: event.clientY,
+      x,
+      y,
       items: actionableItems
     });
   }
 
-  function handleDocumentContextMenu(event, detail = {}) {
-    const selectedText = normalizeSelectedText(detail.selectedText);
-    openContextMenu(event, [
+  function openContextMenu(event, items) {
+    event.preventDefault();
+    event.stopPropagation();
+    openContextMenuAt(event.clientX, event.clientY, items);
+  }
+
+  function documentActionItems(selectedText = "") {
+    return [
       selectedText && {
         label: "Copy selection",
         icon: Copy,
@@ -1762,7 +1779,17 @@ function App() {
         disabled: busy,
         onSelect: () => openNewFileDialog(currentDirectory)
       }
-    ]);
+    ];
+  }
+
+  function handleDocumentContextMenu(event, detail = {}) {
+    const selectedText = normalizeSelectedText(detail.selectedText);
+    openContextMenu(event, documentActionItems(selectedText));
+  }
+
+  function openDocumentActions(event) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    openContextMenuAt(rect.right - 184, rect.bottom + 6, documentActionItems());
   }
 
   function handleFileContextMenu(event, entry) {
@@ -2238,8 +2265,9 @@ function App() {
 
   // The reducer derives dirty from the value vs. the base and clears a stuck
   // conflict when edits are reverted, so this stays stable (no deps needed).
-  const onEditorChange = useCallback((event) => {
-    dispatchDocument({ type: "EDIT", value: event.target.value });
+  const onEditorChange = useCallback((valueOrEvent) => {
+    const value = typeof valueOrEvent === "string" ? valueOrEvent : valueOrEvent?.target?.value ?? "";
+    dispatchDocument({ type: "EDIT", value });
   }, []);
 
   function useLatestRemote() {
@@ -2391,7 +2419,6 @@ function App() {
 
   function updatePreference(field, value) {
     setPreferences((current) => ({ ...current, [field]: value }));
-    if (field === "defaultView") setViewMode(value);
     if (field === "sidebarCollapsed") setSidebarCollapsed(Boolean(value));
   }
 
@@ -2439,6 +2466,22 @@ function App() {
     }, 2200);
   }
 
+  function startOutlineHover() {
+    if (outlineHoverTimerRef.current) {
+      window.clearTimeout(outlineHoverTimerRef.current);
+      outlineHoverTimerRef.current = null;
+    }
+    setOutlineHovering(true);
+  }
+
+  function endOutlineHover() {
+    if (outlineHoverTimerRef.current) window.clearTimeout(outlineHoverTimerRef.current);
+    outlineHoverTimerRef.current = window.setTimeout(() => {
+      setOutlineHovering(false);
+      outlineHoverTimerRef.current = null;
+    }, 280);
+  }
+
   function jumpToHeading(heading, index) {
     if (!heading) return;
 
@@ -2457,9 +2500,9 @@ function App() {
       setActiveHeadingId(heading.id);
     }
 
-    if (viewMode === "source") {
-      // The preview must be mounted to scroll it; split keeps the editor visible too.
-      setViewMode("split");
+    if (viewMode === EDITOR_MODE_SOURCE) {
+      // The inline surface must be mounted before an outline target can scroll.
+      setViewMode(EDITOR_MODE_WYSIWYG);
       window.requestAnimationFrame(() => window.requestAnimationFrame(performScroll));
     } else {
       performScroll();
@@ -2547,7 +2590,6 @@ function App() {
               >
                 <TetherGlyph pingKey={tetherPing?.id} />
                 <strong>tether</strong>
-                <span>v0.0</span>
               </div>
               <button
                 className="icon-button compact panel-toggle"
@@ -2651,17 +2693,16 @@ function App() {
             <div className="toolbar-actions">
               {documentSource !== "none" && (
                 <>
-                  <div className="view-switch" role="group" aria-label="View mode">
-                    <button className={viewMode === "preview" ? "active" : ""} onClick={() => setViewMode("preview")}>
-                      read
-                    </button>
-                    <button className={viewMode === "split" ? "active" : ""} onClick={() => setViewMode("split")}>
-                      split
-                    </button>
-                    <button className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
-                      src
-                    </button>
-                  </div>
+                  <button
+                    className="icon-button compact toolbar-icon-action editor-mode-switch"
+                    aria-label={viewMode === EDITOR_MODE_WYSIWYG ? "Open Markdown source" : "Return to inline editor"}
+                    title={viewMode === EDITOR_MODE_WYSIWYG ? "Markdown source" : "Inline editor"}
+                    onClick={() =>
+                      setViewMode(viewMode === EDITOR_MODE_WYSIWYG ? EDITOR_MODE_SOURCE : EDITOR_MODE_WYSIWYG)
+                    }
+                  >
+                    {viewMode === EDITOR_MODE_WYSIWYG ? <Code2 size={15} /> : <PenLine size={15} />}
+                  </button>
                   <div className="toolbar-divider" />
                 </>
               )}
@@ -2691,52 +2732,16 @@ function App() {
                 </>
               )}
               {documentSource !== "none" && (
-                <>
-                  <button
-                    className={`icon-button compact ${findOpen ? "active" : ""}`}
-                    type="button"
-                    title="Find in document"
-                    aria-label="Find in document"
-                    aria-pressed={findOpen}
-                    onClick={() => startFind()}
-                  >
-                    <Search size={14} />
-                  </button>
-                  <button
-                    className="icon-button compact"
-                    type="button"
-                    disabled={!canCopyDocument}
-                    title="Copy all"
-                    aria-label="Copy all"
-                    onClick={copyDocumentText}
-                  >
-                    <Copy size={14} />
-                  </button>
-                  {canDownloadDocument && (
-                    <button
-                      className="icon-button compact"
-                      type="button"
-                      disabled={busy}
-                      title="Download current remote file"
-                      aria-label="Download current remote file"
-                      onClick={exportCurrentDocument}
-                    >
-                      <Download size={14} />
-                    </button>
-                  )}
-                  {canCreateFile && (
-                    <button
-                      className="icon-button compact"
-                      type="button"
-                      disabled={busy}
-                      title="New blank file"
-                      aria-label="New blank file"
-                      onClick={() => openNewFileDialog(currentDirectory)}
-                    >
-                      <FilePlus size={14} />
-                    </button>
-                  )}
-                </>
+                <button
+                  className={`icon-button compact ${findOpen ? "active" : ""}`}
+                  type="button"
+                  title="Find in document"
+                  aria-label="Find in document"
+                  aria-pressed={findOpen}
+                  onClick={() => startFind()}
+                >
+                  <Search size={14} />
+                </button>
               )}
               {documentSource !== "none" && (
                 <button
@@ -2749,19 +2754,40 @@ function App() {
                   <Save size={13} />
                 </button>
               )}
-              {documentSource !== "none" && <div className="toolbar-divider" />}
-              <ThemeSwitch
-                value={preferences.theme}
-                resolvedTheme={resolvedTheme}
-                onChange={(value) => updatePreference("theme", value)}
-              />
               {documentSource !== "none" && (
                 <button
-                  className={`icon-button compact ${outlineOpen ? "active" : ""}`}
+                  className="icon-button compact"
+                  type="button"
+                  title="Document actions"
+                  aria-label="Document actions"
+                  aria-haspopup="menu"
+                  onClick={openDocumentActions}
+                >
+                  <MoreHorizontal size={14} />
+                </button>
+              )}
+              {documentSource !== "none" && <div className="toolbar-divider" />}
+              <button
+                className="icon-button compact"
+                type="button"
+                title={`Theme: ${preferences.theme}${preferences.theme === "system" ? ` (${resolvedTheme})` : ""}`}
+                aria-label="Cycle theme"
+                onClick={() => {
+                  const next = preferences.theme === "system" ? "dark" : preferences.theme === "dark" ? "light" : "system";
+                  updatePreference("theme", next);
+                }}
+              >
+                {preferences.theme === "system" ? <SunMoon size={14} /> : preferences.theme === "dark" ? <Moon size={14} /> : <Sun size={14} />}
+              </button>
+              {documentSource !== "none" && (
+                <button
+                  className={`icon-button compact ${outlineOpen || outlineHovering ? "active" : ""}`}
                   title="Document outline"
                   aria-label="Toggle document outline"
                   aria-pressed={outlineOpen}
                   onClick={() => setOutlineOpen((open) => !open)}
+                  onMouseEnter={startOutlineHover}
+                  onMouseLeave={endOutlineHover}
                 >
                   <List size={14} />
                 </button>
@@ -2831,9 +2857,8 @@ function App() {
           }
         >
           <LazyDocumentSurface
-            content={deferredPreviewContent}
-            copyText={copyCodeText}
             dirty={dirty}
+            documentId={activeTabId || `${documentSource}:${selectedPath || documentTitle}`}
             documentEyebrow={documentEyebrow}
             editorContent={editorContent}
             LoadingGlyph={TetherGlyph}
@@ -2842,13 +2867,13 @@ function App() {
             loadingTitle={sourceOpening?.title}
             onContextMenu={handleDocumentContextMenu}
             onEditorChange={onEditorChange}
+            onNotice={showCopyNotice}
             onSearchResultCount={handleSearchResultCount}
             previewRef={previewRef}
             searchActiveIndex={findActiveIndex}
             searchQuery={findOpen ? findQuery : ""}
             sourceLabel={sourceLabel}
-            textAlignment={preferences.textAlignment}
-            viewMode={zenMode ? "preview" : viewMode}
+            viewMode={zenMode ? EDITOR_MODE_WYSIWYG : viewMode}
           />
         </React.Suspense>
         )}
@@ -2864,14 +2889,20 @@ function App() {
           />
         )}
 
-        {!zenMode && copyNotice && (
+        {copyNotice && (
           <div className="copy-notice" role="status" aria-live="polite">
             {copyNotice}
           </div>
         )}
 
-        {!zenMode && outlineOpen && documentSource !== "none" && (
-          <div className="outline-flyout" role="region" aria-label="Document outline">
+        {!zenMode && (outlineOpen || outlineHovering) && documentSource !== "none" && (
+          <div
+            className="outline-flyout"
+            role="region"
+            aria-label="Document outline"
+            onMouseEnter={startOutlineHover}
+            onMouseLeave={endOutlineHover}
+          >
             <div className="outline-flyout-header">
               <span>outline</span>
               <button
@@ -2879,7 +2910,7 @@ function App() {
                 type="button"
                 title="Close outline"
                 aria-label="Close outline"
-                onClick={() => setOutlineOpen(false)}
+                onClick={() => { setOutlineOpen(false); setOutlineHovering(false); }}
               >
                 ×
               </button>
@@ -3341,12 +3372,6 @@ function getInitialPreferences() {
         ? storedPreferences.readingFont
         : defaultPreferences.readingFont,
       pageWidthPx: getStoredPageWidth(storedPreferences),
-      defaultView: ["preview", "split", "source"].includes(storedPreferences.defaultView)
-        ? storedPreferences.defaultView
-        : defaultPreferences.defaultView,
-      textAlignment: ["smart", "justify", "left"].includes(storedPreferences.textAlignment)
-        ? storedPreferences.textAlignment
-        : defaultPreferences.textAlignment,
       sidebarCollapsed:
         typeof storedPreferences.sidebarCollapsed === "boolean"
           ? storedPreferences.sidebarCollapsed
@@ -3421,10 +3446,6 @@ function savePreferences(preferences) {
     accent: preferences.accent,
     readingFont: preferences.readingFont,
     pageWidthPx: clampPageWidth(preferences.pageWidthPx),
-    defaultView: preferences.defaultView,
-    textAlignment: ["smart", "justify", "left"].includes(preferences.textAlignment)
-      ? preferences.textAlignment
-      : defaultPreferences.textAlignment,
     sidebarCollapsed: preferences.sidebarCollapsed
   };
   try {
@@ -3735,8 +3756,3 @@ function clampSidebarWidth(width) {
   const viewportMax = Math.max(SIDEBAR_MIN_WIDTH, window.innerWidth - 560);
   return Math.min(Math.max(Number(width) || SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH), Math.min(SIDEBAR_MAX_WIDTH, viewportMax));
 }
-
-const rootElement = document.getElementById("root");
-const reactRoot = window.__TETHER_REACT_ROOT__ || createRoot(rootElement);
-window.__TETHER_REACT_ROOT__ = reactRoot;
-reactRoot.render(<App />);

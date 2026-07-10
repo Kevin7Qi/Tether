@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FilePlus, FileText, FolderOpen, Monitor, Moon, Sun } from "lucide-react";
+import { FilePlus, FileText, FolderOpen } from "lucide-react";
 import { applyConnectionTarget, formatConnectionTarget } from "../lib/format.js";
 import { useDialogFocus } from "../lib/useDialogFocus.js";
 import { PAGE_WIDTH_MAX, PAGE_WIDTH_MIN, PAGE_WIDTH_STEP, clampPageWidth, hotkey } from "../lib/constants.js";
@@ -44,6 +44,7 @@ export function ConnectionPalette({
           </button>
         </div>
 
+        <div className="palette-scroll-body">
         <div className="target-input">
           <span>❯</span>
           {/* Uncontrolled: typing (e.g. the ":" before a path) is never eaten by
@@ -94,6 +95,7 @@ export function ConnectionPalette({
           onUpdate={onUpdate}
           status={status}
         />
+        </div>
 
         <div className="palette-footer">
           {connected ? (
@@ -329,35 +331,6 @@ export function PageWidthControl({ value, onChange }) {
   );
 }
 
-export function ThemeSwitch({ value, resolvedTheme, onChange }) {
-  const options = [
-    { value: "system", label: `Use system theme (${resolvedTheme})`, icon: Monitor },
-    { value: "dark", label: "Use dark theme", icon: Moon },
-    { value: "light", label: "Use light theme", icon: Sun }
-  ];
-
-  return (
-    <div className="theme-switch" role="group" aria-label="Theme mode">
-      {options.map((option) => {
-        const Icon = option.icon;
-        return (
-          <button
-            key={option.value}
-            aria-label={option.label}
-            aria-pressed={value === option.value}
-            className={value === option.value ? "active" : ""}
-            title={option.label}
-            type="button"
-            onClick={() => onChange(option.value)}
-          >
-            <Icon size={13} aria-hidden="true" />
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 export function ConnectionProfile({ profile }) {
   if (!profile) return null;
 
@@ -429,10 +402,7 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
           <div className="palette-label">appearance</div>
 
           <div className="settings-row">
-            <div className="settings-label">
-              <strong>theme</strong>
-              <span>Match your system, or force light or dark.</span>
-            </div>
+            <strong className="settings-key">theme</strong>
             <SegmentedControl
               ariaLabel="Theme"
               options={[
@@ -446,10 +416,7 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
           </div>
 
           <div className="settings-row">
-            <div className="settings-label">
-              <strong>accent</strong>
-              <span>Highlight color used across the interface.</span>
-            </div>
+            <strong className="settings-key">accent</strong>
             <div className="accent-picker" role="group" aria-label="Accent color">
               {[
                 { label: "phosphor", value: "phosphor" },
@@ -472,10 +439,7 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
           </div>
 
           <div className="settings-row">
-            <div className="settings-label">
-              <strong>reading font</strong>
-              <span>Typeface for the document body.</span>
-            </div>
+            <strong className="settings-key">reading font</strong>
             <SegmentedControl
               ariaLabel="Reading font"
               options={[
@@ -488,44 +452,7 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
           </div>
 
           <div className="settings-row">
-            <div className="settings-label">
-              <strong>default view</strong>
-              <span>Which pane documents open in.</span>
-            </div>
-            <SegmentedControl
-              ariaLabel="Default view"
-              options={[
-                { label: "read", value: "preview" },
-                { label: "split", value: "split" },
-                { label: "src", value: "source" }
-              ]}
-              value={preferences.defaultView}
-              onChange={(value) => onUpdate("defaultView", value)}
-            />
-          </div>
-
-          <div className="settings-row">
-            <div className="settings-label">
-              <strong>text alignment</strong>
-              <span>Smart keeps justified prose but relaxes loose lines.</span>
-            </div>
-            <SegmentedControl
-              ariaLabel="Text alignment"
-              options={[
-                { label: "smart", value: "smart" },
-                { label: "justify", value: "justify" },
-                { label: "left", value: "left" }
-              ]}
-              value={preferences.textAlignment}
-              onChange={(value) => onUpdate("textAlignment", value)}
-            />
-          </div>
-
-          <div className="settings-row">
-            <div className="settings-label">
-              <strong>reading width</strong>
-              <span>Measure of the centered article column.</span>
-            </div>
+            <strong className="settings-key">width</strong>
             <PageWidthControl
               value={preferences.pageWidthPx}
               onChange={(value) => onUpdate("pageWidthPx", value)}

@@ -6,23 +6,10 @@
 //
 // Keep this module dependency-free: it is imported into the renderer bundle.
 
-const CONNECTION_LOSS_CODES = new Set([
-  "CONNECTION_LOST",
-  "NOT_CONNECTED",
-  "ECONNRESET",
-  "ECONNREFUSED",
-  "ECONNABORTED",
-  "ETIMEDOUT",
-  "EHOSTUNREACH",
-  "EHOSTDOWN",
-  "ENETUNREACH",
-  "ENETDOWN",
-  "EPIPE",
-  "ENOTCONN"
-]);
+const connectionLossConfig = require("../shared/connectionLossConfig.json");
 
-const CONNECTION_LOSS_MESSAGE =
-  /\b(econnreset|econnrefused|econnaborted|etimedout|ehostunreach|enetunreach|epipe|enotconn)\b|not connected|no sftp connection|sftp.*\b(closed|ended|disconnect)|connection (lost|closed|reset|ended|aborted|timed out|refused)|socket (closed|hang ?up)|channel open failure|server unexpectedly closed|keepalive timeout/;
+const CONNECTION_LOSS_CODES = new Set(connectionLossConfig.codes);
+const CONNECTION_LOSS_MESSAGE = new RegExp(connectionLossConfig.messagePattern);
 
 function isConnectionLossError(error) {
   if (!error) return false;

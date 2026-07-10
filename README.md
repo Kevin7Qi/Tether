@@ -1,16 +1,17 @@
 # Tether
 
-Tether is a desktop Markdown reader and editor for documentation that lives on another machine. It opens Markdown from local folders or remote SSH/SFTP workspaces, renders it with a clean reading-focused interface, and can watch remote files for changes.
+Tether is a desktop WYSIWYG Markdown editor for documents that live locally or in an SSH/SFTP workspace. Markdown syntax stays underneath, but the default editing experience is the rendered document itself—closer to Typora than a source-and-preview tool.
 
-The app is built for working with notes, project docs, and reference material without pulling an entire repository onto the current machine.
+The app is built for notes, project documentation, and reference material that should remain portable Markdown without pulling an entire remote repository onto the current machine.
 
 ## Highlights
 
 - Open Markdown files from local disk, local folders, or SSH/SFTP.
 - Browse remote and local folders from a persistent source sidebar.
-- Render GitHub-flavored Markdown, tables, task lists, fenced code blocks, and LaTeX math.
-- Switch between Read, Split, and Source views.
-- Edit Markdown with line-numbered source view and save back to local disk or SFTP.
+- Write directly in the rendered document with inline formatting controls and slash commands.
+- Edit tables, task lists, fenced code blocks, links, and LaTeX math in place.
+- Switch to a line-numbered Markdown source view when exact syntax control is useful.
+- Save the same Markdown back to local disk or SFTP.
 - Watch remote files with SFTP polling and keep the last good render visible if refresh fails.
 - Remember recently opened sources without storing passwords or private key contents.
 - Resolve SSH config, common private key paths, and SSH agent auth in Auto mode.
@@ -18,7 +19,9 @@ The app is built for working with notes, project docs, and reference material wi
 
 ## Interface
 
-Tether starts in a documentation-first layout: sources and files on the left, content in the main pane, and compact controls in the top bar. The Markdown renderer is loaded lazily so the app shell can start quickly, while the full renderer supports code block copy actions, syntax highlighting, line numbers, task lists, tables, and math.
+Tether starts in a document-first layout: sources and files on the left, one editable document in the main pane, and compact controls in the top bar. `write` is the default inline editor; `md` is the raw Markdown escape hatch. The editor is loaded lazily so the source browser and app shell can become interactive first.
+
+Select text to reveal formatting controls, type `/` on an empty line to insert a block, or use the document actions menu for copy and download operations. Zen mode keeps the inline editor and removes surrounding chrome.
 
 ## Install
 
@@ -105,8 +108,10 @@ Tether keeps file access in the Electron main process and exposes a narrow IPC b
 - `src/main/main.cjs`: Electron window, app lifecycle, native dialogs, IPC handlers, local file grants, and app state persistence.
 - `src/main/preload.cjs`: renderer-safe API bridge.
 - `src/main/remoteFileProvider.cjs`: SSH/SFTP connection, directory listing, stat, read, write, polling, SSH config resolution, and host key checks.
-- `src/renderer/App.jsx`: React app shell, source/session state, sidebar, toolbar, settings, local/remote workflow, and editor state.
-- `src/renderer/DocumentSurface.jsx`: lazy-loaded Markdown renderer, source editor, code blocks, copy actions, highlighting, and math support.
+- `src/renderer/App.jsx`: React app shell, source/session state, sidebar, toolbar, settings, local/remote workflow, and document state.
+- `src/renderer/DocumentSurface.jsx`: lazy boundary for inline/source modes, document search, outline anchors, and source editing.
+- `src/renderer/WysiwygSurface.jsx`: Milkdown/Crepe lifecycle, controlled Markdown synchronization, and editor accessibility/failure handling.
+- `src/shared/connectionLossConfig.json`: shared connection-loss definitions used by both Electron and the renderer.
 - `src/renderer/styles.css`: application layout, themes, Markdown typography, editor styling, and responsive behavior.
 
 ## Security Model
@@ -120,7 +125,7 @@ Tether keeps file access in the Electron main process and exposes a narrow IPC b
 
 ## Status
 
-Tether is under active development. The core local-file, remote-file, reading, editing, saving, watching, and portable Windows packaging flows are implemented. The next major work areas are installer packaging, stronger conflict review, and optional remote watcher support.
+Tether is under active development. The core local-file, remote-file, inline editing, source editing, saving, polling, conflict protection, and portable Windows packaging flows are implemented. The next major work areas are installer packaging, richer asset handling for pasted images, stronger conflict review, and optional remote watcher support.
 
 ## License
 

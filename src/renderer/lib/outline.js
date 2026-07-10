@@ -1,6 +1,6 @@
 // Extracts a heading outline from Markdown source. Pure + unit-testable.
-// Each heading's `line` (1-based) matches react-markdown's node.position.start.line,
-// so the renderer can tag headings with `tether-h-${line}` anchors to jump to.
+// Each heading's `line` (1-based) gives the inline editor a stable
+// `tether-h-${line}` anchor for outline navigation.
 
 export function parseOutline(markdown) {
   if (!markdown) return [];
@@ -58,7 +58,7 @@ export function cleanHeadingText(raw) {
     .replace(/\b_([^_]+)_\b/g, "$1")
     .replace(/\$([^$]+)\$/g, "$1")
     // Strip only things that look like real HTML tags (`<tag…>` / `</tag>`), the
-    // same spans react-markdown drops when rendering. A bare `<` followed by a
+    // same spans a Markdown renderer drops. A bare `<` followed by a
     // space or non-letter — e.g. `a < b`, `i <= 5` — is left as literal text.
     .replace(/<\/?[a-zA-Z][^>]*>/g, "")
     .replace(/\s+/g, " ")
