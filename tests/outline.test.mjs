@@ -55,3 +55,35 @@ test("parseOutline preserves comparison operators in heading labels", () => {
     ["When a < b", "Budget > 0"]
   );
 });
+
+test("parseOutline detects setext headings like the renderer does", () => {
+  const md = ["Top Title", "=====", "", "Second Level", "---", "", "para", "---", "", "- item", "---"].join("\n");
+  const outline = parseOutline(md);
+  assert.deepEqual(
+    outline.map((h) => [h.level, h.text, h.line]),
+    [
+      [1, "Top Title", 1],
+      [2, "Second Level", 4],
+      // "para" followed by --- is a setext h2 per CommonMark; the --- after a
+      // list item is a thematic break and must NOT create a heading.
+      [2, "para", 7]
+    ]
+  );
+});
+
+test("parseOutline includes headings inside blockquotes", () => {
+  const md = ["# Intro", "", "> # Quoted Title", "> body", "", "## After"].join("\n");
+  assert.deepEqual(
+    parseOutline(md).map((h) => h.text),
+    ["Intro", "Quoted Title", "After"]
+  );
+});
+
+test("parseOutline allows up to three leading spaces before ATX markers", () => {
+  assert.deepEqual(parseOutline("   ## Indented").map((h) => h.text), ["Indented"]);
+});
+
+test("parseOutline ignores table delimiter rows", () => {
+  const md = ["| a | b |", "| --- | --- |", "| 1 | 2 |"].join("\n");
+  assert.deepEqual(parseOutline(md), []);
+});

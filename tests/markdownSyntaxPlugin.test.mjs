@@ -51,6 +51,22 @@ test("completed inline Markdown is detected at the typing caret", () => {
   assert.equal(completedInlineMarkdownSource("unfinished **bold"), null);
 });
 
+test("prose that merely resembles Markdown stays literal while typing", () => {
+  // Dollar amounts are prices, not math: the "$..$" span here wraps text with
+  // whitespace at its edges, and a digit can follow the closing "$".
+  assert.equal(completedInlineMarkdownSource("I have $5 and $"), null);
+  assert.equal(completedInlineMarkdownSource("range $a$", "9"), null);
+  // Intra-word underscores never become emphasis.
+  assert.equal(completedInlineMarkdownSource("use snake_case_"), null);
+  assert.equal(completedInlineMarkdownSource("path/to_file_"), null);
+  assert.equal(completedInlineMarkdownSource("a_b_", "c"), null);
+  // Indexing followed by a call is code-shaped, not a link.
+  assert.equal(completedInlineMarkdownSource("read arr[i](x)"), null);
+  // Boundary-safe versions still convert.
+  assert.equal(completedInlineMarkdownSource("some _italic_")?.[0], "_italic_");
+  assert.equal(completedInlineMarkdownSource("math $E=mc^2$")?.[0], "$E=mc^2$");
+});
+
 test("activeMarkdownSyntax treats nested bold and italic as one source range", () => {
   const syntax = activeMarkdownSyntax(stateWithMarks(["strong", "emphasis"]));
   assert.deepEqual(syntax.names, ["strong", "emphasis"]);

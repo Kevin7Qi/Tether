@@ -1,6 +1,6 @@
 # Tether
 
-Tether is a desktop WYSIWYG Markdown editor for documents that live locally or in an SSH/SFTP workspace. Markdown syntax stays underneath, but the default editing experience is the rendered document itself—closer to Typora than a source-and-preview tool.
+Tether is a desktop WYSIWYG Markdown editor for documents that live locally or in an SSH/SFTP workspace. Markdown syntax stays underneath, but the default editing experience is the rendered document itself: you write directly in the formatted view, and the raw syntax appears only where you are editing.
 
 The app is built for notes, project documentation, and reference material that should remain portable Markdown without pulling an entire remote repository onto the current machine.
 

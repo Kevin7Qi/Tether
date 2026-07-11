@@ -35,7 +35,7 @@ test("document loading uses the centered preview-pane layout contract", () => {
   const start = source.indexOf("function DocumentLoading");
   const end = source.indexOf("function hasHighlightApi", start);
   assert.ok(start >= 0 && end > start);
-  assert.match(source.slice(start, end), /document-grid mode-preview is-loading/);
+  assert.match(source.slice(start, end), /document-grid mode-wysiwyg is-loading/);
 });
 
 test("WYSIWYG tables use content-driven columns instead of equal fixed widths", () => {
@@ -59,8 +59,9 @@ test("reading view mounts the Markdown surface in readonly mode", () => {
   const wysiwyg = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
   assert.match(app, /EDITOR_MODE_READING/);
   assert.match(surface, /readOnly=\{readingMode\}/);
-  assert.match(wysiwyg, /crepe\.setReadonly\(true\)/);
-  assert.match(wysiwyg, /if \(readOnly\) return;/);
+  // Reading <-> editing toggles in place on a single editor instance.
+  assert.match(wysiwyg, /crepe\.setReadonly\(readOnly\)/);
+  assert.match(wysiwyg, /if \(!readOnlyRef\.current\) return;/);
   assert.match(wysiwyg, /beforeinput", blockReadingCodeInteraction, true/);
   assert.match(wysiwyg, /const label = "Copy formula"/);
   assert.match(wysiwyg, /aria-label", "Copy inline formula"/);

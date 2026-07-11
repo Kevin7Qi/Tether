@@ -34,9 +34,15 @@ export const tetherCodeLanguages = [
   }),
   LanguageDescription.of({
     name: "SCSS",
-    alias: ["scss", "sass"],
-    extensions: ["scss", "sass"],
+    alias: ["scss"],
+    extensions: ["scss"],
     load: () => import("@codemirror/lang-sass").then(({ sass }) => sass())
+  }),
+  LanguageDescription.of({
+    name: "Sass",
+    alias: ["sass"],
+    extensions: ["sass"],
+    load: () => import("@codemirror/lang-sass").then(({ sass }) => sass({ indented: true }))
   }),
   LanguageDescription.of({
     name: "HTML",
@@ -94,9 +100,21 @@ export const tetherCodeLanguages = [
   }),
   LanguageDescription.of({
     name: "Java",
-    alias: ["java", "kt", "kotlin"],
-    extensions: ["java", "kt"],
+    alias: ["java"],
+    extensions: ["java"],
     load: () => import("@codemirror/lang-java").then(({ java }) => java())
+  }),
+  LanguageDescription.of({
+    name: "Kotlin",
+    alias: ["kt", "kts", "kotlin"],
+    extensions: ["kt", "kts"],
+    load: () => import("@codemirror/legacy-modes/mode/clike").then(({ kotlin }) => legacySupport(kotlin))
+  }),
+  LanguageDescription.of({
+    name: "Swift",
+    alias: ["swift"],
+    extensions: ["swift"],
+    load: () => import("@codemirror/legacy-modes/mode/swift").then(({ swift }) => legacySupport(swift))
   }),
   LanguageDescription.of({
     name: "Rust",
@@ -122,6 +140,18 @@ export const tetherCodeLanguages = [
     extensions: ["ps1"],
     load: () =>
       import("@codemirror/legacy-modes/mode/powershell").then(({ powerShell }) => legacySupport(powerShell))
+  }),
+  LanguageDescription.of({
+    name: "TOML",
+    alias: ["toml"],
+    extensions: ["toml"],
+    load: () => import("@codemirror/legacy-modes/mode/toml").then(({ toml }) => legacySupport(toml))
+  }),
+  LanguageDescription.of({
+    name: "Lua",
+    alias: ["lua"],
+    extensions: ["lua"],
+    load: () => import("@codemirror/legacy-modes/mode/lua").then(({ lua }) => legacySupport(lua))
   }),
   LanguageDescription.of({
     name: "Diff",

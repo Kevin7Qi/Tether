@@ -9,13 +9,15 @@ import { listItem } from "@milkdown/crepe/feature/list-item";
 import { placeholder } from "@milkdown/crepe/feature/placeholder";
 import { table } from "@milkdown/crepe/feature/table";
 import { toolbar } from "@milkdown/crepe/feature/toolbar";
-import { editorViewCtx } from "@milkdown/kit/core";
+import { editorViewCtx, remarkStringifyOptionsCtx } from "@milkdown/kit/core";
 import { replaceAll } from "@milkdown/kit/utils";
 import { tetherCodeExtensions, tetherCodeLanguages } from "./lib/codeEditor.js";
+import { normalizeSerializedMarkdown, tetherStringifyOptions } from "./lib/markdownStyle.js";
 import {
   activateMarkdownSourceAt,
   activateMarkdownSourceFromPointer,
   activateMarkdownTableSourceAt,
+  flushActiveMarkdownSource,
   markdownSyntaxPlugin
 } from "./lib/markdownSyntaxPlugin.js";
 
@@ -44,23 +46,67 @@ function contentCopyButton() {
   return button;
 }
 
-export default function WysiwygSurface({ content, documentId, onChange, onCopy, onNotice, readOnly = false }) {
+export default function WysiwygSurface({
+  content,
+  documentId,
+  editorApiRef,
+  onChange,
+  onCopy,
+  onNotice,
+  readOnly = false
+}) {
   const hostRef = useRef(null);
   const crepeRef = useRef(null);
   const contentRef = useRef(content);
   const onChangeRef = useRef(onChange);
   const onCopyRef = useRef(onCopy);
   const onNoticeRef = useRef(onNotice);
+  const readOnlyRef = useRef(readOnly);
   const lastMarkdownRef = useRef(content);
   const baselineMarkdownRef = useRef(content);
+  // The source text the current baseline serialization corresponds to, so a
+  // document that returns to its loaded state (e.g. via undo) can report the
+  // original file text and clear the unsaved marker.
+  const baselineSourceRef = useRef(content);
   const applyingExternalRef = useRef(false);
   const hasUserChangeRef = useRef(false);
+  const refreshWidgetsRef = useRef(null);
   const [state, setState] = useState("loading");
 
   contentRef.current = content;
   onChangeRef.current = onChange;
   onCopyRef.current = onCopy;
   onNoticeRef.current = onNotice;
+  readOnlyRef.current = readOnly;
+
+  useEffect(() => {
+    if (!editorApiRef) return undefined;
+    editorApiRef.current = {
+      // Commit any in-progress inline source edit and return the up-to-date
+      // markdown when it differs from what onChange has already reported as
+      // the clean baseline; null means "nothing pending".
+      flushPendingEdits: () => {
+        const crepe = crepeRef.current;
+        if (!crepe) return null;
+        try {
+          const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
+          flushActiveMarkdownSource(view.dom);
+        } catch {
+          return null;
+        }
+        const markdown = normalizeSerializedMarkdown(crepe.getMarkdown());
+        lastMarkdownRef.current = markdown;
+        if (markdown === baselineMarkdownRef.current) {
+          return hasUserChangeRef.current ? baselineSourceRef.current : null;
+        }
+        hasUserChangeRef.current = true;
+        return markdown;
+      }
+    };
+    return () => {
+      editorApiRef.current = null;
+    };
+  }, [editorApiRef]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -80,7 +126,7 @@ export default function WysiwygSurface({ content, documentId, onChange, onCopy, 
       onNoticeRef.current?.("Paste a Markdown image URL; embedded image files are not stored yet");
     };
     const blockReadingCodeInteraction = (event) => {
-      if (!readOnly) return;
+      if (!readOnlyRef.current) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest(".tether-content-copy, .copy-button")) return;
       const block = target?.closest(".milkdown-code-block");
@@ -94,7 +140,7 @@ export default function WysiwygSurface({ content, documentId, onChange, onCopy, 
     const copyRenderedContent = async (event) => {
       if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
       const target = event.target instanceof Element ? event.target : null;
-      const inlineMath = readOnly
+      const inlineMath = readOnlyRef.current
         ? target?.closest("span[data-type='math_inline'].tether-reading-math")
         : null;
       const copyButton = target?.closest(".tether-content-copy");
@@ -122,7 +168,7 @@ export default function WysiwygSurface({ content, documentId, onChange, onCopy, 
       }, 1400);
     };
     const activateTableSource = (event) => {
-      if (readOnly) return;
+      if (readOnlyRef.current) return;
       if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
       const target = event.target instanceof Element ? event.target : null;
       const button = target?.closest(".tether-table-source");
@@ -142,7 +188,7 @@ export default function WysiwygSurface({ content, documentId, onChange, onCopy, 
       activateMarkdownTableSourceAt(view, position);
     };
     const activateFencedSource = (event) => {
-      if (readOnly) return;
+      if (readOnlyRef.current) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest(".tether-content-copy, .copy-button")) {
         if (event.type === "mousedown") event.stopPropagation();
@@ -171,6 +217,7 @@ export default function WysiwygSurface({ content, documentId, onChange, onCopy, 
       requestAnimationFrame(() => activateMarkdownSourceAt(view, position));
     };
     const prepareMarkdownWidgets = () => {
+      const readOnly = readOnlyRef.current;
       host.querySelectorAll(".milkdown-code-block .preview-panel").forEach((preview) => {
         let copyButton = preview.querySelector(".tether-content-copy");
         if (!copyButton) {
@@ -220,22 +267,31 @@ export default function WysiwygSurface({ content, documentId, onChange, onCopy, 
           <span>Source</span>`;
         tableBlock.appendChild(button);
       });
-      if (readOnly) {
-        host.querySelectorAll("span[data-type='math_inline']").forEach((math) => {
+      host.querySelectorAll("span[data-type='math_inline']").forEach((math) => {
+        if (readOnly) {
           math.classList.add("tether-reading-math");
           math.tabIndex = 0;
           math.setAttribute("role", "button");
           math.setAttribute("aria-label", "Copy inline formula");
           math.setAttribute("title", "Copy formula");
-        });
-        host.querySelectorAll(".milkdown-code-block .cm-content").forEach((content) => {
-          content.setAttribute("contenteditable", "false");
-        });
-        host.querySelectorAll(".milkdown-code-block .cm-editor, .milkdown-code-block .language-button").forEach((control) => {
-          control.setAttribute("tabindex", "-1");
-        });
-      }
+        } else {
+          math.classList.remove("tether-reading-math");
+          math.removeAttribute("tabindex");
+          math.removeAttribute("role");
+          math.removeAttribute("aria-label");
+          math.removeAttribute("title");
+          math.removeAttribute("data-copy-state");
+        }
+      });
+      host.querySelectorAll(".milkdown-code-block .cm-content").forEach((content) => {
+        content.setAttribute("contenteditable", readOnly ? "false" : "true");
+      });
+      host.querySelectorAll(".milkdown-code-block .cm-editor, .milkdown-code-block .language-button").forEach((control) => {
+        if (readOnly) control.setAttribute("tabindex", "-1");
+        else control.removeAttribute("tabindex");
+      });
     };
+    refreshWidgetsRef.current = prepareMarkdownWidgets;
     const previewObserver = new MutationObserver(prepareMarkdownWidgets);
     host.addEventListener("paste", blockTransientImage, true);
     host.addEventListener("drop", blockTransientImage, true);
@@ -260,16 +316,13 @@ export default function WysiwygSurface({ content, documentId, onChange, onCopy, 
       root: host,
       defaultValue: initialMarkdown
     });
-    if (!readOnly) crepe.addFeature(cursor);
-    crepe.addFeature(listItem);
-    if (!readOnly) {
-      crepe
-        .addFeature(linkTooltip)
-        .addFeature(blockEdit)
-        .addFeature(placeholder, { text: "Start writing…", mode: "doc" })
-        .addFeature(toolbar);
-    }
     crepe
+      .addFeature(cursor)
+      .addFeature(listItem)
+      .addFeature(linkTooltip)
+      .addFeature(blockEdit)
+      .addFeature(placeholder, { text: "Start writing…", mode: "doc" })
+      .addFeature(toolbar)
       .addFeature(codeMirror, {
         extensions: tetherCodeExtensions,
         languages: tetherCodeLanguages,
@@ -280,17 +333,23 @@ export default function WysiwygSurface({ content, documentId, onChange, onCopy, 
       })
       .addFeature(table)
       .addFeature(latex);
-    if (readOnly) {
-      crepe.setReadonly(true);
-    } else {
-      crepe.editor.use(markdownSyntaxPlugin);
-    }
+    crepe.setReadonly(readOnlyRef.current);
+    crepe.editor.use(markdownSyntaxPlugin);
+    crepe.editor.config((ctx) => {
+      ctx.update(remarkStringifyOptionsCtx, (options) => tetherStringifyOptions(options));
+    });
 
     crepe.on((listener) => {
-      listener.markdownUpdated((_ctx, markdown) => {
+      listener.markdownUpdated((_ctx, rawMarkdown) => {
+        const markdown = normalizeSerializedMarkdown(rawMarkdown);
         lastMarkdownRef.current = markdown;
         if (applyingExternalRef.current) return;
         if (!hasUserChangeRef.current && markdown === baselineMarkdownRef.current) return;
+        if (markdown === baselineMarkdownRef.current) {
+          hasUserChangeRef.current = false;
+          onChangeRef.current?.(baselineSourceRef.current);
+          return;
+        }
         hasUserChangeRef.current = true;
         onChangeRef.current?.(markdown);
       });
@@ -307,16 +366,17 @@ export default function WysiwygSurface({ content, documentId, onChange, onCopy, 
 
         crepeRef.current = crepe;
         const editor = host.querySelector(".ProseMirror");
-        editor?.setAttribute("aria-label", readOnly ? "Markdown reading view" : "Markdown document editor");
+        editor?.setAttribute("aria-label", readOnlyRef.current ? "Markdown reading view" : "Markdown document editor");
         editor?.setAttribute("lang", "en");
-        editor?.setAttribute("spellcheck", readOnly ? "false" : "true");
+        editor?.setAttribute("spellcheck", readOnlyRef.current ? "false" : "true");
         prepareMarkdownWidgets();
         const latestMarkdown = contentRef.current || "";
         if (latestMarkdown !== initialMarkdown) {
           crepe.editor.action(replaceAll(latestMarkdown));
         }
         lastMarkdownRef.current = latestMarkdown;
-        baselineMarkdownRef.current = crepe.getMarkdown();
+        baselineMarkdownRef.current = normalizeSerializedMarkdown(crepe.getMarkdown());
+        baselineSourceRef.current = latestMarkdown;
         hasUserChangeRef.current = false;
         applyingExternalRef.current = false;
         setState("ready");
@@ -342,11 +402,35 @@ export default function WysiwygSurface({ content, documentId, onChange, onCopy, 
       host.removeEventListener("mousedown", activateFencedSource, true);
       host.removeEventListener("keydown", activateFencedSource, true);
       previewObserver.disconnect();
+      if (refreshWidgetsRef.current === prepareMarkdownWidgets) refreshWidgetsRef.current = null;
       if (copyFeedbackTimer) window.clearTimeout(copyFeedbackTimer);
       if (crepeRef.current === crepe) crepeRef.current = null;
       if (created) void crepe.destroy();
     };
-  }, [documentId, readOnly]);
+  }, [documentId]);
+
+  // Reading <-> editing flips in place: the same editor instance stays mounted,
+  // preserving scroll position, cursor, and the rendered DOM.
+  useEffect(() => {
+    const crepe = crepeRef.current;
+    const host = hostRef.current;
+    if (!crepe || !host || state !== "ready") return;
+    if (readOnly) {
+      try {
+        const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
+        flushActiveMarkdownSource(view.dom);
+      } catch {
+        // The editor is mid-teardown; nothing to flush.
+      }
+    }
+    crepe.setReadonly(readOnly);
+    const editor = host.querySelector(".ProseMirror");
+    editor?.setAttribute("aria-label", readOnly ? "Markdown reading view" : "Markdown document editor");
+    editor?.setAttribute("spellcheck", readOnly ? "false" : "true");
+    // Re-run the widget pass so reading affordances (math copy targets, table
+    // source buttons, code block focus) match the new mode.
+    refreshWidgetsRef.current?.();
+  }, [readOnly, state]);
 
   useEffect(() => {
     const crepe = crepeRef.current;
@@ -357,7 +441,8 @@ export default function WysiwygSurface({ content, documentId, onChange, onCopy, 
     applyingExternalRef.current = true;
     crepe.editor.action(replaceAll(nextMarkdown));
     lastMarkdownRef.current = nextMarkdown;
-    baselineMarkdownRef.current = crepe.getMarkdown();
+    baselineMarkdownRef.current = normalizeSerializedMarkdown(crepe.getMarkdown());
+    baselineSourceRef.current = nextMarkdown;
     hasUserChangeRef.current = false;
     queueMicrotask(() => {
       applyingExternalRef.current = false;

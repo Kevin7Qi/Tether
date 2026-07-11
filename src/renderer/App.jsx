@@ -74,7 +74,7 @@ import {
 } from "./lib/format.js";
 import { createDocumentState, documentReducer } from "./lib/documentState.js";
 import { PAGE_WIDTH_DEFAULT, clampPageWidth, hotkey } from "./lib/constants.js";
-import { EDITOR_MODE_READING, EDITOR_MODE_SOURCE, EDITOR_MODE_WYSIWYG } from "./lib/editorModes.js";
+import { EDITOR_MODE_READING, EDITOR_MODE_SOURCE, EDITOR_MODE_WYSIWYG, normalizeEditorMode } from "./lib/editorModes.js";
 import { parseOutline } from "./lib/outline.js";
 import { isConnectionLostError, connectionLostMessage } from "./lib/connection.js";
 import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, rekeyTabsForSource, selectNeighborTab } from "./lib/tabs.js";
@@ -110,12 +110,15 @@ const SIDEBAR_MAX_WIDTH = 520;
 const SIDEBAR_DEFAULT_WIDTH = 256;
 const COPY_NOTICE_TIMEOUT_MS = 1800;
 const THEME_OPTIONS = ["system", "dark", "light"];
+const TEXT_ALIGNMENT_OPTIONS = ["smart", "justify", "left"];
 const defaultPreferences = {
   theme: "system",
   accent: "phosphor",
   readingFont: "sans",
   pageWidthPx: PAGE_WIDTH_DEFAULT,
-  sidebarCollapsed: false
+  sidebarCollapsed: false,
+  textAlignment: "smart",
+  editorMode: EDITOR_MODE_WYSIWYG
 };
 const initialSampleMarkdown = getInitialSampleMarkdown();
 const initialNativeUiState = getInitialNativeUiState();
@@ -324,7 +327,7 @@ export default function App() {
   const [preferences, setPreferences] = useState(initialPreferences);
   const [fontsReady, setFontsReady] = useState(initialFontsReady);
   const [systemTheme, setSystemTheme] = useState(getSystemTheme);
-  const [viewMode, setViewMode] = useState(EDITOR_MODE_WYSIWYG);
+  const [viewMode, setViewMode] = useState(initialPreferences.editorMode);
   const [editorModeMenuOpen, setEditorModeMenuOpen] = useState(false);
   const [editorModeMenuDismissed, setEditorModeMenuDismissed] = useState(false);
   const [zenMode, setZenMode] = useState(false);
@@ -365,6 +368,10 @@ export default function App() {
   const resolvedTheme = preferences.theme === "system" ? systemTheme : preferences.theme;
   const previewRef = useRef(null);
   const scrollRatioRef = useRef(0);
+  const editorApiRef = useRef(null);
+  const lastSurfaceModeRef = useRef(
+    initialPreferences.editorMode === EDITOR_MODE_READING ? EDITOR_MODE_READING : EDITOR_MODE_WYSIWYG
+  );
   // Mirror `dirty`/`selectedPath` into refs so the remote-update listeners
   // (subscribed once) can read the latest values without re-subscribing on every
   // keystroke or tab switch.
@@ -622,11 +629,19 @@ export default function App() {
 
       if ((event.ctrlKey || event.metaKey) && key === "f") {
         event.preventDefault();
-        if (documentSourceRef.current !== "none") setFindOpen(true);
+        if (documentSourceRef.current === "none") return;
+        if (findOpen) {
+          // Re-invoking find re-focuses the query for a fresh search.
+          findInputRef.current?.focus();
+          findInputRef.current?.select();
+        } else {
+          setFindOpen(true);
+        }
         return;
       }
 
-      if (event.key === "F3" && findOpen) {
+      // Cmd/Ctrl+G and F3 both step through matches (Shift reverses).
+      if ((event.key === "F3" || ((event.ctrlKey || event.metaKey) && key === "g")) && findOpen) {
         event.preventDefault();
         setFindActiveIndex((current) => current + (event.shiftKey ? -1 : 1));
         return;
@@ -671,9 +686,19 @@ export default function App() {
           setFindOpen(false);
           return;
         }
-        if (connectionPaletteOpen) setConnectionPaletteOpen(false);
-        if (settingsPanelOpen) setSettingsPanelOpen(false);
-        if (sidebarPeeking) setSidebarPeeking(false);
+        // One layer per Escape: dismiss only the top-most surface.
+        if (connectionPaletteOpen) {
+          setConnectionPaletteOpen(false);
+          return;
+        }
+        if (settingsPanelOpen) {
+          setSettingsPanelOpen(false);
+          return;
+        }
+        if (sidebarPeeking) {
+          setSidebarPeeking(false);
+          return;
+        }
         if (zenMode) setZenMode(false);
       }
     }
@@ -796,14 +821,14 @@ export default function App() {
           ? "Local sample"
           : "No source";
   const sidebarVisible = !zenMode;
-  const canSave =
-    dirty &&
+  const saveTargetReady =
     !conflict &&
     ((documentSource === "sample" && selectedPath === sampleEntry.path) ||
       (documentSource === "local" && localFile?.path) ||
       // A remote save needs a live connection; while disconnected the document
       // stays "remote" (so its tab/place are kept) but saving waits for reconnect.
       (documentSource === "remote" && selectedPath && connected));
+  const canSave = dirty && saveTargetReady;
   const canRefreshDocument = documentSource === "remote" && selectedPath && connected;
   const canCopyDocument = documentSource !== "none" && Boolean(editorContent || content);
   const canDownloadDocument = documentSource === "remote" && selectedPath;
@@ -953,13 +978,15 @@ export default function App() {
       return;
     }
 
+    const flushed = flushInlineEdits();
+    const outgoingDoc = flushed != null ? documentReducer(documentState, { type: "EDIT", value: flushed }) : documentState;
     captureScrollRatio(previewRef, scrollRatioRef);
     const outgoingScrollRatio = scrollRatioRef.current;
     setTabs((prev) => {
       const snapshotted =
         activeTabId && activeTabId !== id
           ? patchTab(prev, activeTabId, {
-              doc: documentState,
+              doc: outgoingDoc,
               metadata: fileMetadata,
               refreshedAt: lastRefresh,
               scrollRatio: outgoingScrollRatio
@@ -994,6 +1021,8 @@ export default function App() {
     if (id === activeTabId) return;
     const target = tabs.find((tab) => tab.id === id);
     if (!target) return;
+    const flushed = flushInlineEdits();
+    const outgoingDoc = flushed != null ? documentReducer(documentState, { type: "EDIT", value: flushed }) : documentState;
     captureScrollRatio(previewRef, scrollRatioRef);
     const outgoingScrollRatio = scrollRatioRef.current;
     if (watching) {
@@ -1003,7 +1032,7 @@ export default function App() {
     if (activeTabId) {
       setTabs((prev) =>
         patchTab(prev, activeTabId, {
-          doc: documentState,
+          doc: outgoingDoc,
           metadata: fileMetadata,
           refreshedAt: lastRefresh,
           scrollRatio: outgoingScrollRatio
@@ -1017,7 +1046,9 @@ export default function App() {
     const tab = tabs.find((existing) => existing.id === id);
     if (!tab) return;
     const isActive = id === activeTabId;
-    const tabDirty = isActive ? dirty : Boolean(tab.doc && tab.doc.dirty);
+    const flushed = isActive ? flushInlineEdits() : null;
+    const activeDoc = flushed != null ? documentReducer(documentState, { type: "EDIT", value: flushed }) : documentState;
+    const tabDirty = isActive ? activeDoc.dirty : Boolean(tab.doc && tab.doc.dirty);
     if (tabDirty && !window.confirm("Discard unsaved edits and close this tab?")) return;
 
     if (!isActive) {
@@ -2287,6 +2318,26 @@ export default function App() {
     dispatchDocument({ type: "EDIT", value });
   }, []);
 
+  // The inline editor reports edits on a debounce, so anything that reads or
+  // snapshots the document (save, tab switch, mode switch) must flush first.
+  // Returns the up-to-date markdown, or null when nothing was pending.
+  function flushInlineEdits() {
+    const flushed = editorApiRef.current?.flushPendingEdits?.();
+    if (typeof flushed !== "string") return null;
+    if (flushed !== editorContent) dispatchDocument({ type: "EDIT", value: flushed });
+    return flushed;
+  }
+
+  function changeViewMode(nextMode) {
+    const normalized = normalizeEditorMode(nextMode);
+    if (normalized === viewMode) return;
+    flushInlineEdits();
+    captureScrollRatio(previewRef, scrollRatioRef);
+    if (normalized !== EDITOR_MODE_SOURCE) lastSurfaceModeRef.current = normalized;
+    setViewMode(normalized);
+    setPreferences((current) => ({ ...current, editorMode: normalized }));
+  }
+
   function useLatestRemote() {
     if (!remoteShadow) return;
     applyFreshFile(remoteShadow);
@@ -2295,6 +2346,7 @@ export default function App() {
   async function keepLocalEditsAndOverwrite() {
     if (!dirty || !conflict || !remoteShadow) return;
 
+    const contentToSave = flushInlineEdits() ?? editorContent;
     setBusy(true);
     setError(null);
 
@@ -2302,13 +2354,13 @@ export default function App() {
       documentSource === "remote"
         ? await remoteApi.saveFile({
             remotePath: selectedPath,
-            content: editorContent,
+            content: contentToSave,
             expectedVersion: remoteShadow.version
           })
         : documentSource === "local" && localFile?.path
           ? await remoteApi.saveLocalFile({
               path: localFile.path,
-              content: editorContent,
+              content: contentToSave,
               expectedVersion: remoteShadow.version
             })
           : null;
@@ -2340,12 +2392,17 @@ export default function App() {
   }
 
   async function saveCurrentFile() {
-    if (!canSave) return;
+    if (!saveTargetReady) return;
+    // Flush before the dirty check: the inline editor reports edits on a
+    // debounce, so a quick Cmd+S right after typing must not miss them.
+    const flushed = flushInlineEdits();
+    const contentToSave = flushed ?? editorContent;
+    if (!dirty && (flushed == null || flushed === content)) return;
     setBusy(true);
     setError(null);
 
     if (documentSource === "sample") {
-      const response = await remoteApi.saveLocalSample(editorContent);
+      const response = await remoteApi.saveLocalSample(contentToSave);
       setBusy(false);
 
       if (!response.ok) {
@@ -2354,7 +2411,7 @@ export default function App() {
         return;
       }
 
-      setLocalSampleContent(editorContent);
+      setLocalSampleContent(contentToSave);
       applyFreshFile(response.file);
       setStatus({ state: "idle", message: "Saved local sample", checkedAt: null, metadata: response.file.metadata });
       return;
@@ -2363,7 +2420,7 @@ export default function App() {
     if (documentSource === "local") {
       const response = await remoteApi.saveLocalFile({
         path: localFile.path,
-        content: editorContent,
+        content: contentToSave,
         expectedVersion: fileVersion
       });
       setBusy(false);
@@ -2389,7 +2446,7 @@ export default function App() {
 
     const response = await remoteApi.saveFile({
       remotePath: selectedPath,
-      content: editorContent,
+      content: contentToSave,
       expectedVersion: fileVersion
     });
 
@@ -2518,8 +2575,9 @@ export default function App() {
     }
 
     if (viewMode === EDITOR_MODE_SOURCE) {
-      // The inline surface must be mounted before an outline target can scroll.
-      setViewMode(EDITOR_MODE_WYSIWYG);
+      // The inline surface must be mounted before an outline target can scroll;
+      // return to whichever rendered mode (reading/editing) was last active.
+      changeViewMode(lastSurfaceModeRef.current);
       window.requestAnimationFrame(() => window.requestAnimationFrame(performScroll));
     } else {
       performScroll();
@@ -2554,7 +2612,9 @@ export default function App() {
   // Keep the latest save action in a ref so the global Cmd/Ctrl+S handler can
   // invoke the current closure without re-subscribing the keydown listener.
   saveActionRef.current = () => {
-    if (canSave && !busy) saveCurrentFile();
+    // saveCurrentFile flushes debounced inline edits and re-checks for changes
+    // itself, so gate only on a usable target (not on the possibly-stale dirty).
+    if (saveTargetReady && !busy) saveCurrentFile();
   };
   openFileActionRef.current = () => {
     if (busy) return;
@@ -2730,13 +2790,13 @@ export default function App() {
                       <ChevronDown className="editor-mode-chevron" size={10} />
                     </button>
                       <div className={`editor-mode-popover ${editorModeMenuOpen ? "is-open" : ""}`} role="menu" aria-label="Document mode">
-                        <button title="Browse without editing" role="menuitemradio" aria-checked={viewMode === EDITOR_MODE_READING} onClick={() => { setViewMode(EDITOR_MODE_READING); setEditorModeMenuOpen(false); setEditorModeMenuDismissed(true); }}>
+                        <button title="Browse without editing" role="menuitemradio" aria-checked={viewMode === EDITOR_MODE_READING} onClick={() => { changeViewMode(EDITOR_MODE_READING); setEditorModeMenuOpen(false); setEditorModeMenuDismissed(true); }}>
                           <BookOpen size={14} /><span>Reading</span>
                         </button>
-                        <button title="Inline Markdown editor" role="menuitemradio" aria-checked={viewMode === EDITOR_MODE_WYSIWYG} onClick={() => { setViewMode(EDITOR_MODE_WYSIWYG); setEditorModeMenuOpen(false); setEditorModeMenuDismissed(true); }}>
+                        <button title="Inline Markdown editor" role="menuitemradio" aria-checked={viewMode === EDITOR_MODE_WYSIWYG} onClick={() => { changeViewMode(EDITOR_MODE_WYSIWYG); setEditorModeMenuOpen(false); setEditorModeMenuDismissed(true); }}>
                           <PenLine size={14} /><span>Editing</span>
                         </button>
-                        <button title="Raw Markdown text" role="menuitemradio" aria-checked={viewMode === EDITOR_MODE_SOURCE} onClick={() => { setViewMode(EDITOR_MODE_SOURCE); setEditorModeMenuOpen(false); setEditorModeMenuDismissed(true); }}>
+                        <button title="Raw Markdown text" role="menuitemradio" aria-checked={viewMode === EDITOR_MODE_SOURCE} onClick={() => { changeViewMode(EDITOR_MODE_SOURCE); setEditorModeMenuOpen(false); setEditorModeMenuDismissed(true); }}>
                           <Code2 size={14} /><span>Source</span>
                         </button>
                       </div>
@@ -2842,7 +2902,7 @@ export default function App() {
           </header>
         )}
 
-        {!zenMode && findOpen && documentSource !== "none" && (
+        {findOpen && documentSource !== "none" && (
           <FindBar
             activeIndex={findActiveIndex}
             inputRef={findInputRef}
@@ -2898,6 +2958,7 @@ export default function App() {
             dirty={dirty}
             documentId={activeTabId || `${documentSource}:${selectedPath || documentTitle}`}
             documentEyebrow={documentEyebrow}
+            editorApiRef={editorApiRef}
             editorContent={editorContent}
             LoadingGlyph={TetherGlyph}
             loading={Boolean(sourceOpening)}
@@ -3415,7 +3476,11 @@ function getInitialPreferences() {
       sidebarCollapsed:
         typeof storedPreferences.sidebarCollapsed === "boolean"
           ? storedPreferences.sidebarCollapsed
-          : defaultPreferences.sidebarCollapsed
+          : defaultPreferences.sidebarCollapsed,
+      textAlignment: TEXT_ALIGNMENT_OPTIONS.includes(storedPreferences.textAlignment)
+        ? storedPreferences.textAlignment
+        : defaultPreferences.textAlignment,
+      editorMode: normalizeEditorMode(storedPreferences.editorMode)
     };
   } catch {
     return defaultPreferences;
@@ -3486,7 +3551,9 @@ function savePreferences(preferences) {
     accent: preferences.accent,
     readingFont: preferences.readingFont,
     pageWidthPx: clampPageWidth(preferences.pageWidthPx),
-    sidebarCollapsed: preferences.sidebarCollapsed
+    sidebarCollapsed: preferences.sidebarCollapsed,
+    textAlignment: preferences.textAlignment,
+    editorMode: normalizeEditorMode(preferences.editorMode)
   };
   try {
     window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(normalizedPreferences));

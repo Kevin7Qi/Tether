@@ -31,17 +31,45 @@ export function parseOutline(markdown) {
     }
     if (inFence) continue;
 
-    const match = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/);
-    if (!match) continue;
-    const text = cleanHeadingText(match[2]);
-    if (!text) continue;
+    // Headings inside blockquotes render as real headings, so they must be in
+    // the outline for the rendered-heading order to stay index-aligned.
+    const quote = line.match(/^\s{0,3}((?:>\s?)+)(.*)$/);
+    const content = quote ? quote[2] : line;
 
-    headings.push({
-      level: match[1].length,
-      text,
-      line: index + 1,
-      id: `tether-h-${index + 1}`
-    });
+    const match = content.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if (match) {
+      const text = cleanHeadingText(match[2]);
+      if (!text) continue;
+      headings.push({
+        level: match[1].length,
+        text,
+        line: index + 1,
+        id: `tether-h-${index + 1}`
+      });
+      continue;
+    }
+
+    // Setext: a line of "=" or "-" promotes the preceding plain paragraph
+    // line into a heading, exactly as the renderer does.
+    if (!quote && index > 0) {
+      const setext = line.match(/^\s{0,3}(=+|-+)\s*$/);
+      if (!setext) continue;
+      const previous = lines[index - 1];
+      const previousIsPlainText =
+        previous &&
+        previous.trim() &&
+        !/^\s{0,3}(?:[-+*]\s|\d+[.)]\s|#{1,6}\s|>|`{3,}|~{3,}|\|)/.test(previous) &&
+        !/^\s{0,3}(?:=+|-+)\s*$/.test(previous);
+      if (!previousIsPlainText) continue;
+      const text = cleanHeadingText(previous.trim());
+      if (!text) continue;
+      headings.push({
+        level: setext[1][0] === "=" ? 1 : 2,
+        text,
+        line: index,
+        id: `tether-h-${index}`
+      });
+    }
   }
 
   return headings;

@@ -197,17 +197,7 @@ function serializeInlineRange(state, from, to, serializer) {
 function serializeBlockNode(schema, node, serializer) {
   if (!node) return "";
   const doc = schema.nodes.doc.create(null, [node]);
-  let source = serializer(doc).trimEnd();
-  const isSimpleList = ["bullet_list", "ordered_list"].includes(node.type.name)
-    && [...Array(node.childCount).keys()].every((index) => {
-      const item = node.child(index);
-      return item.childCount === 1 && item.firstChild?.type.name === "paragraph";
-    });
-  if (isSimpleList) {
-    source = source.replace(/\n\n(?=\s*(?:[-+*]|\d+[.)])\s)/g, "\n");
-    if (node.type.name === "bullet_list") source = source.replace(/^(\s*)\*\s/gm, "$1- ");
-  }
-  return source;
+  return serializer(doc).trimEnd();
 }
 
 export function continuousMarkdownSource(state, unit, serializer) {
@@ -275,9 +265,19 @@ export function sourceCaretOffset(
   return source.length;
 }
 
+// Refocus the document only when nothing else took focus in the meantime, so
+// closing a source editor never steals focus from e.g. the find input.
+function refocusView(view) {
+  if (!view.dom.isConnected) return;
+  const active = view.dom.ownerDocument?.activeElement || null;
+  if (!active || active === view.dom.ownerDocument?.body || view.dom.contains(active)) {
+    view.focus();
+  }
+}
+
 function closeSourceEditor(view) {
   view.dispatch(view.state.tr.setMeta(markdownSyntaxKey, "close"));
-  requestAnimationFrame(() => view.focus());
+  requestAnimationFrame(() => refocusView(view));
 }
 
 function selectionAfter(transaction, position) {
@@ -285,16 +285,20 @@ function selectionAfter(transaction, position) {
   return transaction.setSelection(Selection.near(transaction.doc.resolve(resolvedPosition), 1));
 }
 
-function dispatchSourceReplacement(view, transaction, afterCommit) {
+function dispatchSourceReplacement(view, transaction, afterCommit, sync = false) {
   const mapping = transaction.mapping;
   view.dispatch(transaction.scrollIntoView());
+  if (sync) {
+    if (afterCommit) afterCommit(mapping);
+    return;
+  }
   requestAnimationFrame(() => {
     if (afterCommit) afterCommit(mapping);
-    else view.focus();
+    else refocusView(view);
   });
 }
 
-function replaceInlineSource(view, parser, unit, source, afterCommit = null) {
+function replaceInlineSource(view, parser, unit, source, afterCommit = null, sync = false) {
   const parsed = parser(source);
   const firstBlock = parsed?.firstChild;
   const replacement = firstBlock?.isTextblock
@@ -305,17 +309,17 @@ function replaceInlineSource(view, parser, unit, source, afterCommit = null) {
   let transaction = view.state.tr.replaceWith(unit.from, unit.to, replacement);
   transaction = selectionAfter(transaction, unit.from + replacement.size);
   transaction.setMeta(markdownSyntaxKey, "close");
-  dispatchSourceReplacement(view, transaction, afterCommit);
+  dispatchSourceReplacement(view, transaction, afterCommit, sync);
 }
 
-function replaceBlockSource(view, parser, unit, source, afterCommit = null) {
+function replaceBlockSource(view, parser, unit, source, afterCommit = null, sync = false) {
   const parsed = parser(source);
   const fallback = view.state.schema.nodes.paragraph.create();
   const replacement = parsed?.content?.size ? parsed.content : Fragment.from(fallback);
   let transaction = view.state.tr.replace(unit.from, unit.to, new Slice(replacement, 0, 0));
   transaction = selectionAfter(transaction, unit.from + replacement.size);
   transaction.setMeta(markdownSyntaxKey, "close");
-  dispatchSourceReplacement(view, transaction, afterCommit);
+  dispatchSourceReplacement(view, transaction, afterCommit, sync);
 }
 
 function continuousSourceEditor(
@@ -379,19 +383,26 @@ function continuousSourceEditor(
   };
   let finished = false;
   let blurTimer = 0;
-  const finish = (commit, afterFinish = null) => {
+  const finish = (commit, afterFinish = null, sync = false) => {
     if (finished) return;
     finished = true;
     if (blurTimer) clearTimeout(blurTimer);
     const value = editor.value;
-    requestAnimationFrame(() => {
+    const run = () => {
       setActiveControl(null);
-      if (commit) onCommit(value, afterFinish);
+      // Committing an untouched value would still rewrite the block through the
+      // parser (dirtying the document and polluting undo); treat it as a cancel.
+      if (commit && value !== source) onCommit(value, afterFinish, sync);
       else {
         onCancel();
-        if (afterFinish) requestAnimationFrame(() => afterFinish(null));
+        if (afterFinish) {
+          if (sync) afterFinish(null);
+          else requestAnimationFrame(() => afterFinish(null));
+        }
       }
-    });
+    };
+    if (sync) run();
+    else requestAnimationFrame(run);
   };
   setActiveControl({ element: editor, finish });
 
@@ -474,7 +485,10 @@ function geometryDistance(rect, event, edgeX) {
     : event.clientY > rect.bottom
       ? event.clientY - rect.bottom
       : 0;
-  return Math.abs(event.clientX - edgeX) + verticalDistance * 4;
+  // Vertical distance dominates so a click in the empty space beside a short
+  // wrapped line lands on that line, never on a longer neighboring line whose
+  // right edge happens to be horizontally closer.
+  return Math.abs(event.clientX - edgeX) + verticalDistance * 1000;
 }
 
 function textblockPositionFromGeometry(view, root, event) {
@@ -745,23 +759,61 @@ export function mappedPosition(mapping, position, assoc = 1) {
   return mapping ? mapping.map(position, assoc) : position;
 }
 
+const inlineWordChar = /[\p{L}\p{N}_]/u;
 const completedInlinePatterns = [
-  /\*\*[^*\n]+\*\*$/,
-  /__[^_\n]+__$/,
-  /~~[^~\n]+~~$/,
-  /`[^`\n]+`$/,
-  /\[[^\]\n]+\]\([^\s)]+(?:\s+"[^"]*")?\)$/,
-  /\$[^$\n]+\$$/,
-  /(?<!\*)\*[^*\n]+\*$/,
-  /(?<!_)_[^_\n]+_$/
+  { pattern: /\*\*[^*\n]+\*\*$/ },
+  { pattern: /__[^_\n]+__$/, wordBoundary: true },
+  { pattern: /~~[^~\n]+~~$/ },
+  { pattern: /`[^`\n]+`$/ },
+  { pattern: /\[[^\]\n]+\]\([^\s)]+(?:\s+"[^"]*")?\)$/, wordBoundary: true },
+  { pattern: /\$(?!\s)[^$\n]*[^$\s]\$$/, noDigitAfter: true },
+  { pattern: /(?<!\*)\*[^*\n]+\*$/ },
+  { pattern: /(?<!_)_[^_\n]+_$/, wordBoundary: true }
 ];
 
-export function completedInlineMarkdownSource(text) {
-  const matches = completedInlinePatterns
-    .map((pattern) => text.match(pattern))
-    .filter(Boolean);
+export function completedInlineMarkdownSource(text, nextChar = "") {
+  const matches = [];
+  for (const { pattern, wordBoundary, noDigitAfter } of completedInlinePatterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    // Delimiters glued to surrounding word characters stay literal text, so
+    // snake_case identifiers and index-call shapes like arr[i](x) never
+    // auto-format; a "$" closing right before a digit is a price, not math.
+    const charBefore = match.index > 0 ? text[match.index - 1] : "";
+    if (wordBoundary && (inlineWordChar.test(charBefore) || (nextChar && inlineWordChar.test(nextChar)))) continue;
+    if (noDigitAfter && nextChar && /\d/.test(nextChar)) continue;
+    matches.push(match);
+  }
   if (!matches.length) return null;
   return matches.reduce((best, match) => match.index < best.index ? match : best);
+}
+
+// The Crepe latex feature's input rule converts any "$...$" pair, which
+// hijacks prose like "costs $5 and $10". Real inline math never carries
+// whitespace at its edges, so such conversions are reverted to literal text.
+export function invalidInlineMathValue(value) {
+  return !value || value !== value.trim();
+}
+
+function revertInvalidInlineMath(state) {
+  const fixes = [];
+  state.doc.descendants((node, position) => {
+    if (node.type.name === "math_inline" && invalidInlineMathValue(node.attrs.value ?? "")) {
+      fixes.push({ position, size: node.nodeSize, value: node.attrs.value ?? "" });
+    }
+  });
+  if (!fixes.length) return null;
+
+  let transaction = state.tr;
+  for (const fix of fixes.reverse()) {
+    transaction = transaction.replaceWith(
+      fix.position,
+      fix.position + fix.size,
+      state.schema.text(`$${fix.value}$`)
+    );
+  }
+  transaction.setMeta(markdownSyntaxKey, { action: "smart-input" });
+  return transaction;
 }
 
 function smartInlineInputTransaction(state, parser) {
@@ -784,7 +836,8 @@ function smartInlineInputTransaction(state, parser) {
 
   const localCaret = cursorOffset - activeOffset;
   const prefix = activeText.text.slice(0, localCaret);
-  const match = completedInlineMarkdownSource(prefix);
+  const nextChar = activeText.text.slice(localCaret, localCaret + 1);
+  const match = completedInlineMarkdownSource(prefix, nextChar);
   if (!match) return null;
 
   const source = match[0];
@@ -868,6 +921,16 @@ export function markdownDeletionTarget(state, direction) {
   };
 }
 
+// Live source controls per editor root, so the host component can commit an
+// in-progress raw-Markdown edit synchronously before a save, mode change, or
+// tab switch tears the surface down.
+const liveSourceControls = new WeakMap();
+
+export function flushActiveMarkdownSource(viewDom) {
+  const control = viewDom ? liveSourceControls.get(viewDom) : null;
+  if (control?.element?.isConnected) control.finish(true, null, true);
+}
+
 export const markdownSyntaxPlugin = $prose((ctx) => {
   let editorView = null;
   let pendingActivation = false;
@@ -926,12 +989,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     appendTransaction(transactions, _oldState, newState) {
       if (!transactions.some((transaction) => transaction.docChanged)) return null;
       if (transactions.some((transaction) => transaction.getMeta(markdownSyntaxKey)?.action === "smart-input")) return null;
-      const transaction = smartInlineInputTransaction(newState, ctx.get(parserCtx));
-      return transaction;
+      const mathRevert = revertInvalidInlineMath(newState);
+      if (mathRevert) return mathRevert;
+      return smartInlineInputTransaction(newState, ctx.get(parserCtx));
     },
     view(view) {
       editorView = view;
       const captureSourceHandoff = (event) => {
+        if (!view.editable) return;
         const targetElement = event.target instanceof Element ? event.target : null;
         if (targetElement?.closest(".tether-continuous-source")) return;
         const sourceToFinish = activeSourceControl?.element?.isConnected ? activeSourceControl : null;
@@ -960,6 +1025,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     props: {
       handleDOMEvents: {
         mousedown(view, event) {
+          if (!view.editable) return false;
           if (event.target instanceof Element && event.target.closest(".tether-continuous-source")) return false;
           const sourceToFinish = activeSourceControl?.element?.isConnected ? activeSourceControl : null;
           const target = capturedTargetAtPointer(view, event);
@@ -979,6 +1045,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return target.atomPosition != null;
         },
         keydown(_view, event) {
+          if (!_view.editable) return false;
           if (["Backspace", "Delete"].includes(event.key) && !activeSourceControl?.element?.isConnected) {
             const direction = event.key === "Backspace" ? "backward" : "forward";
             const target = markdownDeletionTarget(_view.state, direction);
@@ -1033,11 +1100,11 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           pluginState.sourceOffset,
           serializer
         );
-        const commit = (value, afterCommit = null) => {
+        const commit = (value, afterCommit = null, sync = false) => {
           if (!editorView) return;
           const parser = ctx.get(parserCtx);
-          if (unit.kind === "inline") replaceInlineSource(editorView, parser, unit, value, afterCommit);
-          else replaceBlockSource(editorView, parser, unit, value, afterCommit);
+          if (unit.kind === "inline") replaceInlineSource(editorView, parser, unit, value, afterCommit, sync);
+          else replaceBlockSource(editorView, parser, unit, value, afterCommit, sync);
         };
         const editorDecoration = Decoration.widget(unit.from, () => continuousSourceEditor(
           source,
@@ -1051,6 +1118,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           () => true,
           (control) => {
             activeSourceControl = control;
+            if (editorView) {
+              if (control) liveSourceControls.set(editorView.dom, control);
+              else liveSourceControls.delete(editorView.dom);
+            }
           }
         ), {
           key: `tether-source:${unit.kind}:${unit.from}:${unit.to}:${sourceName}:${source}`,

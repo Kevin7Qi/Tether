@@ -12,6 +12,7 @@ function DocumentSurface({
   dirty,
   documentId,
   documentEyebrow,
+  editorApiRef,
   editorContent,
   LoadingGlyph,
   loading,
@@ -222,7 +223,8 @@ function DocumentSurface({
             <div className={`wysiwyg-alignment alignment-${textAlignment}`}>
               <WysiwygSurface
                 content={editorContent}
-                documentId={`${documentId}:${readingMode ? "reading" : "editing"}`}
+                documentId={documentId}
+                editorApiRef={editorApiRef}
                 onChange={onEditorChange}
                 onCopy={copyText}
                 onNotice={onNotice}
@@ -238,7 +240,7 @@ function DocumentSurface({
 
 function DocumentLoading({ LoadingGlyph, loadingMessage, loadingTitle, previewRef }) {
   return (
-    <div className="document-grid mode-preview is-loading">
+    <div className="document-grid mode-wysiwyg is-loading">
       <section ref={previewRef} className="preview-pane preview-loading-pane" aria-label="Opening document">
         <article className="document-loading" role="status" aria-live="polite">
           <span className="loading-mark" aria-hidden="true">
