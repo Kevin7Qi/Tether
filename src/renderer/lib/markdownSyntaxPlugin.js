@@ -10,17 +10,26 @@ const supportedMarks = ["inlineCode", "link", "strike_through", "strong", "empha
 const sourceBlockNames = new Set(["bullet_list", "ordered_list", "blockquote", "footnote_definition"]);
 const tableNames = new Set(["table", "table_row", "table_cell", "table_header"]);
 const sourceAtomNames = new Set(["image", "hr", "footnote_reference", "html", "math_inline"]);
+const sourceDeletionBlockNames = new Set(["code_block", "heading", ...sourceBlockNames]);
 
 const inactivePluginState = () => ({
   active: false,
   atomPosition: null,
   clickPosition: null,
   sourceOffset: null,
+  explicitUnitPosition: null,
+  initialDeleteDirection: null,
   focusLock: false
 });
 
 export function activateMarkdownSourceAt(view, position, options = {}) {
-  const { atomPosition = null, sourceOffset = null, focusLock = false } = options;
+  const {
+    atomPosition = null,
+    explicitUnitPosition = null,
+    sourceOffset = null,
+    initialDeleteDirection = null,
+    focusLock = false
+  } = options;
   const resolved = view.state.doc.resolve(Math.min(position, view.state.doc.content.size));
   view.dispatch(
     view.state.tr
@@ -28,12 +37,51 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
       .setMeta(markdownSyntaxKey, {
         action: "activate",
         atomPosition,
+        explicitUnitPosition,
         clickPosition: resolved.pos,
         sourceOffset,
+        initialDeleteDirection,
         focusLock
       })
   );
   view.focus();
+}
+
+function blockSyntaxAtPosition(state, position, allowedNames) {
+  const bounded = Math.max(0, Math.min(position, state.doc.content.size));
+  const direct = state.doc.nodeAt(bounded);
+  if (direct && allowedNames.has(direct.type.name)) {
+    return {
+      from: bounded,
+      to: bounded + direct.nodeSize,
+      kind: "block",
+      name: direct.type.name
+    };
+  }
+
+  const resolved = state.doc.resolve(bounded);
+  for (let depth = resolved.depth; depth > 0; depth -= 1) {
+    const node = resolved.node(depth);
+    if (!allowedNames.has(node.type.name)) continue;
+    return {
+      from: resolved.before(depth),
+      to: resolved.after(depth),
+      kind: "block",
+      name: node.type.name
+    };
+  }
+  return null;
+}
+
+export function markdownTableSyntaxAt(state, position) {
+  return blockSyntaxAtPosition(state, position, new Set(["table"]));
+}
+
+export function activateMarkdownTableSourceAt(view, position) {
+  const unit = markdownTableSyntaxAt(view.state, position);
+  if (!unit) return false;
+  activateMarkdownSourceAt(view, unit.from, { explicitUnitPosition: unit.from });
+  return true;
 }
 
 export function activeMarkdownSyntax(state) {
@@ -276,6 +324,7 @@ function continuousSourceEditor(
   name,
   label,
   initialCaret,
+  initialDeleteDirection,
   onCommit,
   onCancel,
   shouldFocus,
@@ -290,6 +339,13 @@ function continuousSourceEditor(
   editor.setAttribute("autocomplete", "off");
   editor.setAttribute("autocapitalize", "off");
   editor.setAttribute("spellcheck", "false");
+  let startingCaret = Math.max(0, Math.min(editor.value.length, initialCaret));
+  if (initialDeleteDirection === "backward" && startingCaret > 0) {
+    editor.value = `${editor.value.slice(0, startingCaret - 1)}${editor.value.slice(startingCaret)}`;
+    startingCaret -= 1;
+  } else if (initialDeleteDirection === "forward" && startingCaret < editor.value.length) {
+    editor.value = `${editor.value.slice(0, startingCaret)}${editor.value.slice(startingCaret + 1)}`;
+  }
 
   const resize = () => {
     if (isBlock) {
@@ -371,7 +427,7 @@ function continuousSourceEditor(
     resize();
     if (!shouldFocus()) return;
     editor.focus();
-    const caret = Math.max(0, Math.min(editor.value.length, initialCaret));
+    const caret = Math.max(0, Math.min(editor.value.length, startingCaret));
     editor.setSelectionRange(caret, caret);
   });
   return editor;
@@ -382,18 +438,8 @@ function pointerDocumentPosition(view, event) {
   const targetElement = event.target instanceof Element ? event.target : null;
   const textblock = targetElement?.closest("p, h1, h2, h3, h4, h5, h6");
   if (textblock && view.dom.contains(textblock)) {
-    const textOffset = textOffsetFromGeometry(textblock, event) ?? textOffsetAtPoint(textblock, event);
-    if (Number.isFinite(textOffset)) {
-      try {
-        const contentStart = view.posAtDOM(textblock, 0, 1);
-        return Math.max(
-          0,
-          Math.min(view.state.doc.content.size, contentStart + textOffset)
-        );
-      } catch {
-        // Fall through to the browser caret APIs below.
-      }
-    }
+    const exactPosition = textblockPositionFromGeometry(view, textblock, event);
+    if (Number.isFinite(exactPosition)) return exactPosition;
   }
   let node = null;
   let offset = null;
@@ -420,6 +466,70 @@ function pointerDocumentPosition(view, event) {
 
   const hit = view.posAtCoords({ left: event.clientX, top: event.clientY });
   return hit ? hit.pos : null;
+}
+
+function geometryDistance(rect, event, edgeX) {
+  const verticalDistance = event.clientY < rect.top
+    ? rect.top - event.clientY
+    : event.clientY > rect.bottom
+      ? event.clientY - rect.bottom
+      : 0;
+  return Math.abs(event.clientX - edgeX) + verticalDistance * 4;
+}
+
+function textblockPositionFromGeometry(view, root, event) {
+  const ownerDocument = root.ownerDocument || document;
+  const candidates = [];
+  const walker = ownerDocument.createTreeWalker(root, 4);
+
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    if (parent?.closest("button, input, textarea, .katex, [data-type='math_inline']")) continue;
+    const text = node.nodeValue || "";
+    for (let index = 0; index < text.length; index += 1) {
+      const range = ownerDocument.createRange();
+      range.setStart(node, index);
+      range.setEnd(node, index + 1);
+      const rect = range.getBoundingClientRect();
+      if (!rect.height) continue;
+      try {
+        candidates.push({
+          position: view.posAtDOM(node, index, -1),
+          distance: geometryDistance(rect, event, rect.left)
+        });
+        candidates.push({
+          position: view.posAtDOM(node, index + 1, 1),
+          distance: geometryDistance(rect, event, rect.right)
+        });
+      } catch {
+        // Ignore visual-only text that is outside ProseMirror's content DOM.
+      }
+    }
+  }
+
+  root.querySelectorAll("span[data-type='math_inline']").forEach((math) => {
+    const rect = math.getBoundingClientRect();
+    if (!rect.height) return;
+    try {
+      const atomPosition = view.posAtDOM(math, 0, -1);
+      candidates.push({
+        position: atomPosition,
+        distance: geometryDistance(rect, event, rect.left)
+      });
+      candidates.push({
+        position: atomPosition + 1,
+        distance: geometryDistance(rect, event, rect.right)
+      });
+    } catch {
+      // Ignore an atom while its node view is being replaced.
+    }
+  });
+
+  if (!candidates.length) return null;
+  const nearest = candidates.reduce((best, candidate) =>
+    candidate.distance < best.distance ? candidate : best
+  );
+  return Math.max(0, Math.min(view.state.doc.content.size, nearest.position));
 }
 
 function textOffsetFromGeometry(root, event) {
@@ -541,9 +651,30 @@ function capturedCodeBlockTarget(view, block, event) {
 }
 
 function capturedTargetAtPointer(view, event) {
-  const math = event.target instanceof Element
+  let math = event.target instanceof Element
     ? event.target.closest('span[data-type="math_inline"]')
     : null;
+  let adjacentMathEdge = null;
+  if (!math && event.target instanceof Element) {
+    const textblock = event.target.closest("p, h1, h2, h3, h4, h5, h6");
+    const nearby = [...(textblock?.querySelectorAll('span[data-type="math_inline"]') || [])]
+      .map((candidate) => ({ candidate, rect: candidate.getBoundingClientRect() }))
+      .filter(({ rect }) => event.clientY >= rect.top - 3 && event.clientY <= rect.bottom + 3)
+      .map(({ candidate, rect }) => ({
+        candidate,
+        rect,
+        distance: event.clientX < rect.left
+          ? rect.left - event.clientX
+          : event.clientX > rect.right
+            ? event.clientX - rect.right
+            : 0
+      }))
+      .sort((left, right) => left.distance - right.distance)[0];
+    if (nearby?.distance <= 10) {
+      math = nearby.candidate;
+      adjacentMathEdge = event.clientX >= nearby.rect.right ? "after" : "before";
+    }
+  }
   if (!math) {
     const codeBlock = event.target instanceof Element
       ? event.target.closest(".milkdown-code-block")
@@ -583,6 +714,15 @@ function capturedTargetAtPointer(view, event) {
 
   try {
     const atomPosition = view.posAtDOM(math, 0, -1);
+    if (adjacentMathEdge) {
+      const value = math.getAttribute("data-value") || "";
+      return {
+        position: atomPosition,
+        atomPosition,
+        sourceOffset: adjacentMathEdge === "after" ? value.length + 1 : 1,
+        assoc: adjacentMathEdge === "after" ? 1 : -1
+      };
+    }
     return {
       position: atomPosition,
       atomPosition,
@@ -605,6 +745,66 @@ export function mappedPosition(mapping, position, assoc = 1) {
   return mapping ? mapping.map(position, assoc) : position;
 }
 
+const completedInlinePatterns = [
+  /\*\*[^*\n]+\*\*$/,
+  /__[^_\n]+__$/,
+  /~~[^~\n]+~~$/,
+  /`[^`\n]+`$/,
+  /\[[^\]\n]+\]\([^\s)]+(?:\s+"[^"]*")?\)$/,
+  /\$[^$\n]+\$$/,
+  /(?<!\*)\*[^*\n]+\*$/,
+  /(?<!_)_[^_\n]+_$/
+];
+
+export function completedInlineMarkdownSource(text) {
+  const matches = completedInlinePatterns
+    .map((pattern) => text.match(pattern))
+    .filter(Boolean);
+  if (!matches.length) return null;
+  return matches.reduce((best, match) => match.index < best.index ? match : best);
+}
+
+function smartInlineInputTransaction(state, parser) {
+  const { selection } = state;
+  const { $from } = selection;
+  if (!selection.empty || !$from.parent.isTextblock || $from.parent.type.name === "code_block") return null;
+
+  const cursorOffset = $from.parentOffset;
+  let activeText = null;
+  let activeOffset = 0;
+  $from.parent.forEach((node, offset) => {
+    if (activeText || !node.isText || node.marks.length) return;
+    const end = offset + node.nodeSize;
+    if (cursorOffset > offset && cursorOffset <= end) {
+      activeText = node;
+      activeOffset = offset;
+    }
+  });
+  if (!activeText) return null;
+
+  const localCaret = cursorOffset - activeOffset;
+  const prefix = activeText.text.slice(0, localCaret);
+  const match = completedInlineMarkdownSource(prefix);
+  if (!match) return null;
+
+  const source = match[0];
+  const parsed = parser(source);
+  const block = parsed?.firstChild;
+  if (!block?.isTextblock || block.type.name !== "paragraph" || !block.content.size) return null;
+  const unchangedPlainText = block.childCount === 1
+    && block.firstChild?.isText
+    && block.firstChild.text === source
+    && block.firstChild.marks.length === 0;
+  if (unchangedPlainText) return null;
+
+  const from = $from.start() + activeOffset + match.index;
+  const to = $from.start() + activeOffset + localCaret;
+  let transaction = state.tr.replaceWith(from, to, block.content);
+  transaction = selectionAfter(transaction, from + block.content.size);
+  transaction.setMeta(markdownSyntaxKey, { action: "smart-input" });
+  return transaction;
+}
+
 function activateCapturedTarget(view, target, mapping = null) {
   const position = mappedPosition(mapping, target.position, target.assoc ?? 1);
   const atomPosition = target.atomPosition == null
@@ -621,6 +821,53 @@ function activateCapturedTarget(view, target, mapping = null) {
   requestAnimationFrame(activate);
 }
 
+export function markdownDeletionTarget(state, direction) {
+  const { selection } = state;
+  if (selection.node) {
+    const atom = markdownAtomSyntaxAt(state, selection.from);
+    const block = sourceDeletionBlockNames.has(selection.node.type.name)
+      ? {
+          from: selection.from,
+          to: selection.to,
+          kind: "block",
+          name: selection.node.type.name
+        }
+      : null;
+    const unit = atom || block;
+    if (!unit) return null;
+    return {
+      position: unit.from,
+      atomPosition: atom ? unit.from : null,
+      explicitUnitPosition: block ? unit.from : null,
+      edge: direction === "backward" ? "end" : "start"
+    };
+  }
+  if (!selection.empty) return null;
+
+  const adjacentNode = direction === "backward" ? selection.$from.nodeBefore : selection.$from.nodeAfter;
+  if (!adjacentNode) return null;
+  const position = direction === "backward"
+    ? selection.from - adjacentNode.nodeSize
+    : selection.from;
+  const atom = markdownAtomSyntaxAt(state, position);
+  const block = sourceDeletionBlockNames.has(adjacentNode.type.name)
+    ? {
+        from: position,
+        to: position + adjacentNode.nodeSize,
+        kind: "block",
+        name: adjacentNode.type.name
+      }
+    : null;
+  const unit = atom || block;
+  if (!unit) return null;
+  return {
+    position: unit.from,
+    atomPosition: atom ? unit.from : null,
+    explicitUnitPosition: block ? unit.from : null,
+    edge: direction === "backward" ? "end" : "start"
+  };
+}
+
 export const markdownSyntaxPlugin = $prose((ctx) => {
   let editorView = null;
   let pendingActivation = false;
@@ -635,12 +882,15 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       apply(transaction, pluginState) {
         const meta = transaction.getMeta(markdownSyntaxKey);
         if (meta === "close") return inactivePluginState();
+        if (meta?.action === "smart-input") return inactivePluginState();
         if (meta?.action === "activate") {
           return {
             active: true,
             atomPosition: meta.atomPosition ?? null,
+            explicitUnitPosition: meta.explicitUnitPosition ?? null,
             clickPosition: meta.clickPosition ?? transaction.selection.from,
             sourceOffset: meta.sourceOffset ?? null,
+            initialDeleteDirection: meta.initialDeleteDirection ?? null,
             focusLock: Boolean(meta.focusLock)
           };
         }
@@ -649,8 +899,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return {
             active: true,
             atomPosition: null,
+            explicitUnitPosition: null,
             clickPosition: transaction.selection.from,
             sourceOffset: null,
+            initialDeleteDirection: null,
             focusLock: false
           };
         }
@@ -661,13 +913,21 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return {
             active: true,
             atomPosition: null,
+            explicitUnitPosition: null,
             clickPosition: transaction.selection.from,
             sourceOffset: null,
+            initialDeleteDirection: null,
             focusLock: false
           };
         }
         return pluginState;
       }
+    },
+    appendTransaction(transactions, _oldState, newState) {
+      if (!transactions.some((transaction) => transaction.docChanged)) return null;
+      if (transactions.some((transaction) => transaction.getMeta(markdownSyntaxKey)?.action === "smart-input")) return null;
+      const transaction = smartInlineInputTransaction(newState, ctx.get(parserCtx));
+      return transaction;
     },
     view(view) {
       editorView = view;
@@ -719,6 +979,25 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return target.atomPosition != null;
         },
         keydown(_view, event) {
+          if (["Backspace", "Delete"].includes(event.key) && !activeSourceControl?.element?.isConnected) {
+            const direction = event.key === "Backspace" ? "backward" : "forward";
+            const target = markdownDeletionTarget(_view.state, direction);
+            if (target) {
+              const unit = target.atomPosition == null
+                ? blockSyntaxAtPosition(_view.state, target.explicitUnitPosition, sourceDeletionBlockNames)
+                : markdownAtomSyntaxAt(_view.state, target.atomPosition);
+              const serializer = ctx.get(serializerCtx);
+              const source = continuousMarkdownSource(_view.state, unit, serializer);
+              event.preventDefault();
+              activateMarkdownSourceAt(_view, target.position, {
+                atomPosition: target.atomPosition,
+                explicitUnitPosition: target.explicitUnitPosition,
+                sourceOffset: target.edge === "end" ? source.length : 0,
+                initialDeleteDirection: direction
+              });
+              return true;
+            }
+          }
           if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
             pendingActivation = true;
           }
@@ -734,6 +1013,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const unit = (pluginState.atomPosition == null
           ? null
           : markdownAtomSyntaxAt(state, pluginState.atomPosition))
+          || (pluginState.explicitUnitPosition == null
+            ? null
+            : markdownTableSyntaxAt(state, pluginState.explicitUnitPosition)
+              || blockSyntaxAtPosition(state, pluginState.explicitUnitPosition, sourceDeletionBlockNames))
           || activeMarkdownSyntax(state)
           || activeMarkdownAtomSyntax(state)
           || activeMarkdownBlockSyntax(state);
@@ -762,6 +1045,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           sourceName,
           `${unit.name || unit.names?.join(" ") || "Markdown"} source`,
           initialCaret,
+          pluginState.initialDeleteDirection,
           commit,
           () => editorView && closeSourceEditor(editorView),
           () => true,

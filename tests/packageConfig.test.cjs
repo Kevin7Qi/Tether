@@ -52,3 +52,19 @@ test("the saved text-alignment preference reaches the inline editor", () => {
   assert.match(surface, /alignment-\$\{textAlignment\}/);
   assert.match(dialogs, /ariaLabel="Text alignment"/);
 });
+
+test("reading view mounts the Markdown surface in readonly mode", () => {
+  const app = fs.readFileSync(path.join(root, "src", "renderer", "App.jsx"), "utf8");
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "DocumentSurface.jsx"), "utf8");
+  const wysiwyg = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
+  assert.match(app, /EDITOR_MODE_READING/);
+  assert.match(surface, /readOnly=\{readingMode\}/);
+  assert.match(wysiwyg, /crepe\.setReadonly\(true\)/);
+  assert.match(wysiwyg, /if \(readOnly\) return;/);
+  assert.match(wysiwyg, /beforeinput", blockReadingCodeInteraction, true/);
+  assert.match(wysiwyg, /const label = "Copy formula"/);
+  assert.match(wysiwyg, /aria-label", "Copy inline formula"/);
+  assert.match(wysiwyg, /aria-label", "Edit table Markdown source"/);
+  assert.match(wysiwyg, /tether-content-copy/);
+  assert.match(wysiwyg, /copyIcon,\s*copyText: "Copy",\s*onCopy:/s);
+});

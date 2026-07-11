@@ -1127,7 +1127,15 @@ textarea:focus-visible,
   gap: 6px;
 }
 
+.editor-mode-menu {
+  position: relative;
+}
+
 .editor-mode-switch {
+  width: auto;
+  min-width: 34px;
+  gap: 1px;
+  padding-inline: 7px 5px;
   color: var(--ink2);
 }
 
@@ -1135,6 +1143,88 @@ textarea:focus-visible,
   border-color: var(--line);
   background: var(--bg);
   color: var(--accent);
+}
+
+.editor-mode-chevron {
+  color: var(--ink3);
+  transition: transform 120ms ease;
+}
+
+.editor-mode-switch[aria-expanded="true"] .editor-mode-chevron {
+  transform: rotate(180deg);
+}
+
+.editor-mode-popover {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 4px);
+  right: 0;
+  display: flex;
+  gap: 2px;
+  width: max-content;
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 12px 30px -18px var(--shadow), 0 3px 10px var(--shadow);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 100ms ease, transform 100ms ease, visibility 100ms;
+}
+
+.editor-mode-menu:hover .editor-mode-popover,
+.editor-mode-popover.is-open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.editor-mode-menu.is-dismissed .editor-mode-popover {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-2px);
+}
+
+.editor-mode-popover::before {
+  content: "";
+  position: absolute;
+  inset: -5px 0 auto;
+  height: 5px;
+}
+
+.editor-mode-popover button {
+  min-width: 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink2);
+  padding: 6px 7px 5px;
+  text-align: center;
+}
+
+.editor-mode-popover button:hover,
+.editor-mode-popover button[aria-checked="true"] {
+  background: var(--code);
+  color: var(--ink);
+}
+
+.editor-mode-popover button[aria-checked="true"] > svg {
+  color: var(--accent);
+}
+
+.editor-mode-popover button span {
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
 }
 
 .theme-switch {
@@ -1598,6 +1688,7 @@ textarea:focus-visible,
 }
 
 .document-grid.mode-wysiwyg .editor-pane,
+.document-grid.mode-reading .editor-pane,
 .document-grid.mode-source .wysiwyg-pane {
   display: none;
 }
@@ -1612,7 +1703,8 @@ textarea:focus-visible,
 
 .document-grid.mode-source .editor-pane,
 .document-grid.mode-preview .preview-pane,
-.document-grid.mode-wysiwyg .wysiwyg-pane {
+.document-grid.mode-wysiwyg .wysiwyg-pane,
+.document-grid.mode-reading .wysiwyg-pane {
   flex: 1;
 }
 
@@ -1825,9 +1917,7 @@ textarea:focus-visible,
 .wysiwyg-alignment.alignment-justify .ProseMirror p,
 .wysiwyg-alignment.alignment-justify .ProseMirror li,
 .wysiwyg-alignment.alignment-justify .ProseMirror blockquote,
-.wysiwyg-alignment.alignment-smart .ProseMirror p,
-.wysiwyg-alignment.alignment-smart .ProseMirror li,
-.wysiwyg-alignment.alignment-smart .ProseMirror blockquote {
+.wysiwyg-alignment.alignment-smart .ProseMirror .smart-justify {
   text-align: justify;
   text-justify: inter-word;
 }
@@ -1835,7 +1925,9 @@ textarea:focus-visible,
 .wysiwyg-alignment.alignment-left .ProseMirror p,
 .wysiwyg-alignment.alignment-left .ProseMirror li,
 .wysiwyg-alignment.alignment-left .ProseMirror blockquote,
-.wysiwyg-alignment.alignment-smart .ProseMirror .loose-justify,
+.wysiwyg-alignment.alignment-smart .ProseMirror p,
+.wysiwyg-alignment.alignment-smart .ProseMirror li,
+.wysiwyg-alignment.alignment-smart .ProseMirror blockquote,
 .wysiwyg-alignment .ProseMirror table p,
 .wysiwyg-alignment .ProseMirror .milkdown-code-block p {
   text-align: left;
@@ -2061,12 +2153,157 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror blockquote {
   margin-left: 0;
   border-left: 2px solid var(--accent);
+  box-shadow: none;
   color: var(--ink2);
   padding: 1px 0 1px 18px;
 }
 
+.tether-wysiwyg .ProseMirror blockquote::before {
+  content: none;
+  display: none;
+}
+
 .tether-wysiwyg .ProseMirror blockquote > :last-child {
   margin-bottom: 0;
+}
+
+.tether-wysiwyg.is-reading .ProseMirror {
+  caret-color: transparent;
+  cursor: default;
+}
+
+.tether-wysiwyg.is-reading .milkdown-toolbar,
+.tether-wysiwyg.is-reading .milkdown-slash-menu,
+.tether-wysiwyg.is-reading .milkdown-link-preview,
+.tether-wysiwyg.is-reading .milkdown-block-handle {
+  display: none !important;
+}
+
+.tether-wysiwyg.is-reading .milkdown-code-block .language-button {
+  pointer-events: none;
+}
+
+.tether-wysiwyg.is-reading .milkdown-code-block:not(:has(.preview-panel)) .cm-editor,
+.tether-wysiwyg.is-reading .milkdown-code-block:not(:has(.preview-panel)) .cm-content {
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.tether-wysiwyg.is-reading .milkdown-code-block .cm-cursor,
+.tether-wysiwyg.is-reading .milkdown-code-block .cm-selectionBackground,
+.tether-wysiwyg.is-reading .milkdown-code-block .cm-focused .cm-selectionBackground {
+  display: none !important;
+}
+
+.tether-wysiwyg.is-reading .tether-reading-math {
+  position: relative;
+  border-radius: 4px;
+  cursor: copy;
+  transition: background 100ms ease;
+}
+
+.tether-wysiwyg.is-reading .tether-reading-math:hover,
+.tether-wysiwyg.is-reading .tether-reading-math:focus-visible {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  outline: none;
+}
+
+.tether-wysiwyg.is-reading .tether-reading-math::after {
+  content: "Copy formula";
+  position: absolute;
+  z-index: 20;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  box-shadow: 0 5px 16px var(--shadow);
+  color: var(--ink2);
+  font-family: var(--ui);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 2px);
+  transition: opacity 100ms ease, transform 100ms ease;
+}
+
+.tether-wysiwyg.is-reading .tether-reading-math:hover::after,
+.tether-wysiwyg.is-reading .tether-reading-math:focus-visible::after,
+.tether-wysiwyg.is-reading .tether-reading-math[data-copy-state]::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.tether-wysiwyg.is-reading .tether-reading-math[data-copy-state="copied"]::after {
+  content: "Copied";
+  color: var(--accent);
+}
+
+.tether-wysiwyg.is-reading .tether-reading-math[data-copy-state="failed"]::after {
+  content: "Copy failed";
+  color: var(--warn);
+}
+
+.tether-wysiwyg .tether-content-copy {
+  position: absolute;
+  z-index: 8;
+  top: 8px;
+  right: 8px;
+  min-width: 26px;
+  height: 25px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--ink2);
+  padding: 0 7px;
+  font-family: var(--ui);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  opacity: 0;
+  cursor: copy;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--shadow) 60%, transparent);
+  transition: opacity 100ms ease, color 100ms ease, border-color 100ms ease, background 100ms ease;
+}
+
+.tether-wysiwyg .tether-content-copy svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.tether-wysiwyg .milkdown-code-block:hover > .tether-content-copy,
+.tether-wysiwyg .milkdown-code-block:focus-within > .tether-content-copy,
+.tether-wysiwyg .preview-panel:hover > .tether-content-copy,
+.tether-wysiwyg .tether-content-copy:focus-visible,
+.tether-wysiwyg .tether-content-copy[data-copy-state] {
+  opacity: 1;
+}
+
+.tether-wysiwyg .tether-content-copy:hover,
+.tether-wysiwyg .tether-content-copy[data-copy-state="copied"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong));
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.tether-wysiwyg .tether-content-copy[data-copy-state="failed"] {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line-strong));
+  color: var(--warn);
 }
 
 .tether-wysiwyg .ProseMirror hr {
@@ -2076,8 +2313,69 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-table-block {
+  position: relative;
   margin: 6px 0 26px;
   --default-cell-min-width: 72px;
+}
+
+.tether-wysiwyg .tether-table-source {
+  position: absolute;
+  z-index: 7;
+  top: 7px;
+  right: 8px;
+  height: 25px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  color: var(--ink2);
+  padding: 0 7px;
+  font-family: var(--ui);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  opacity: 0;
+  cursor: text;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--shadow) 60%, transparent);
+  transition: opacity 100ms ease, color 100ms ease, border-color 100ms ease;
+}
+
+.tether-wysiwyg .tether-table-source > svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.tether-wysiwyg .tether-table-source > span {
+  color: var(--ink3);
+  font-weight: 500;
+}
+
+.tether-wysiwyg .milkdown-table-block:hover > .tether-table-source,
+.tether-wysiwyg .tether-table-source:focus-visible {
+  opacity: 1;
+}
+
+.tether-wysiwyg .tether-table-source:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong));
+  color: var(--accent);
+}
+
+.tether-wysiwyg .tether-table-source:hover > span {
+  color: inherit;
+}
+
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-table {
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--code) 64%, var(--surface));
+  padding: 10px 12px;
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-table-block .tableWrapper {
@@ -2142,6 +2440,7 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .milkdown-code-block {
+  position: relative;
   margin: 2px 0 28px;
   overflow: hidden;
   border: 1px solid var(--line-strong);
@@ -2216,6 +2515,60 @@ textarea:focus-visible,
   border-color: var(--line);
   background: var(--surface);
   color: var(--ink);
+}
+
+/* CodeMirror already supplies its own copy action. Keep that single native
+   control and bring it into the same visual system as formula copying. */
+.tether-wysiwyg .milkdown-code-block .tools .copy-button {
+  min-width: 26px;
+  height: 25px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--ink2);
+  padding: 0 7px;
+  font-family: var(--ui);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0;
+  cursor: copy;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--shadow) 60%, transparent);
+  transition: opacity 100ms ease, color 100ms ease, border-color 100ms ease, background 100ms ease;
+}
+
+.tether-wysiwyg .milkdown-code-block .tools .copy-button svg {
+  width: 13px;
+  height: 13px;
+  fill: none !important;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.tether-wysiwyg .milkdown-code-block .tools .copy-button svg path,
+.tether-wysiwyg .milkdown-code-block .tools .copy-button svg rect {
+  fill: none !important;
+  stroke: currentColor !important;
+}
+
+.tether-wysiwyg .milkdown-code-block:hover .tools .copy-button,
+.tether-wysiwyg .milkdown-code-block:focus-within .tools .copy-button,
+.tether-wysiwyg .milkdown-code-block .tools .copy-button:focus-visible {
+  opacity: 1;
+}
+
+.tether-wysiwyg .milkdown-code-block .tools .copy-button:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong));
+  background: var(--surface);
+  color: var(--accent);
 }
 
 .tether-wysiwyg .milkdown-code-block .cm-editor,

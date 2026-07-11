@@ -6,8 +6,11 @@ import {
   activeMarkdownAtomSyntax,
   activeMarkdownBlockSyntax,
   activeMarkdownSyntax,
+  completedInlineMarkdownSource,
   enclosingCodeBlock,
   markdownAtomSyntaxAt,
+  markdownDeletionTarget,
+  markdownTableSyntaxAt,
   mappedPosition,
   sourceCaretOffset
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
@@ -38,6 +41,14 @@ test("activeMarkdownSyntax exposes one continuous strong source range", () => {
   assert.deepEqual(syntax.names, ["strong"]);
   assert.equal(syntax.kind, "inline");
   assert.equal(syntax.to - syntax.from, "marked".length);
+});
+
+test("completed inline Markdown is detected at the typing caret", () => {
+  assert.equal(completedInlineMarkdownSource("Write **bold**")?.[0], "**bold**");
+  assert.equal(completedInlineMarkdownSource("Use `code`")?.[0], "`code`");
+  assert.equal(completedInlineMarkdownSource("Math $E=mc^2$")?.[0], "$E=mc^2$");
+  assert.equal(completedInlineMarkdownSource("Read [docs](https://example.com)")?.[0], "[docs](https://example.com)");
+  assert.equal(completedInlineMarkdownSource("unfinished **bold"), null);
 });
 
 test("activeMarkdownSyntax treats nested bold and italic as one source range", () => {
@@ -106,6 +117,9 @@ const blockSchema = new Schema({
         label: { default: "•" }
       }
     },
+    table: { content: "table_row+", group: "block" },
+    table_row: { content: "(table_header|table_cell)+" },
+    table_header: { content: "paragraph+" },
     table_cell: { content: "paragraph+", group: "block" },
     hr: { group: "block", atom: true },
     image: {
@@ -230,6 +244,28 @@ test("activeMarkdownBlockSyntax leaves table cells visual even inside a blockquo
   assert.equal(syntax, null);
 });
 
+test("markdownTableSyntaxAt exposes a table only through the explicit table path", () => {
+  const header = blockSchema.node("table_header", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Name")])
+  ]);
+  const cell = blockSchema.node("table_cell", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Tether")])
+  ]);
+  const table = blockSchema.node("table", null, [
+    blockSchema.node("table_row", null, [header]),
+    blockSchema.node("table_row", null, [cell])
+  ]);
+  const doc = blockSchema.node("doc", null, [table]);
+  const cellTextPosition = 1 + table.firstChild.nodeSize + 2;
+
+  assert.deepEqual(markdownTableSyntaxAt(docState(doc), cellTextPosition), {
+    from: 0,
+    to: table.nodeSize,
+    kind: "block",
+    name: "table"
+  });
+});
+
 test("activeMarkdownAtomSyntax exposes selectable image, math, and rule source", () => {
   const image = blockSchema.node("image", { src: "image.png", alt: "Alt", title: "Title" });
   const imageDoc = blockSchema.node("doc", null, [blockSchema.node("paragraph", null, [image])]);
@@ -259,4 +295,26 @@ test("activeMarkdownAtomSyntax exposes selectable image, math, and rule source",
     selection: NodeSelection.create(ruleDoc, 0)
   }));
   assert.deepEqual(ruleSyntax, { from: 0, to: 1, kind: "block", name: "hr" });
+});
+
+test("Backspace at a rendered math boundary targets its Markdown source", () => {
+  const math = blockSchema.node("math_inline", { value: "E=mc^2" });
+  const paragraph = blockSchema.node("paragraph", null, [
+    blockSchema.text("Before "),
+    math,
+    blockSchema.text(" after")
+  ]);
+  const doc = blockSchema.node("doc", null, [paragraph]);
+  const mathPosition = 1 + "Before ".length;
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, mathPosition + math.nodeSize)
+  });
+
+  assert.deepEqual(markdownDeletionTarget(state, "backward"), {
+    position: mathPosition,
+    atomPosition: mathPosition,
+    explicitUnitPosition: null,
+    edge: "end"
+  });
 });

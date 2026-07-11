@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import WysiwygSurface from "./WysiwygSurface.jsx";
+import { EDITOR_MODE_READING, EDITOR_MODE_SOURCE } from "./lib/editorModes.js";
 import { parseOutline } from "./lib/outline.js";
 
 const DOM_SHOW_TEXT = 4;
@@ -7,6 +8,7 @@ const DOM_FILTER_ACCEPT = 1;
 const DOM_FILTER_REJECT = 2;
 
 function DocumentSurface({
+  copyText,
   dirty,
   documentId,
   documentEyebrow,
@@ -28,8 +30,9 @@ function DocumentSurface({
 }) {
   const gutterRef = useRef(null);
   const textareaRef = useRef(null);
-  const showSource = viewMode === "source";
+  const showSource = viewMode === EDITOR_MODE_SOURCE;
   const showWysiwyg = !showSource;
+  const readingMode = viewMode === EDITOR_MODE_READING;
   const showEyebrow = documentEyebrow && documentEyebrow !== "No source";
   const lineNumbers = useMemo(() => {
     const lineCount = Math.max(editorContent.split(/\r\n|\r|\n/).length, 1);
@@ -73,7 +76,7 @@ function DocumentSurface({
     let raf = 0;
     function run() {
       raf = 0;
-      markLooseJustification(editor, textAlignment);
+      markSmartJustification(editor, textAlignment);
     }
     function schedule() {
       if (raf) window.cancelAnimationFrame(raf);
@@ -91,7 +94,7 @@ function DocumentSurface({
       if (raf) window.cancelAnimationFrame(raf);
       observer?.disconnect();
       window.removeEventListener("resize", schedule);
-      clearLooseJustification(editor);
+      clearSmartJustification(editor);
     };
   }, [editorContent, loading, previewRef, showWysiwyg, textAlignment]);
 
@@ -150,7 +153,10 @@ function DocumentSurface({
   }
 
   function handleWysiwygContextMenu(event) {
-    onContextMenu?.(event, { surface: "wysiwyg", selectedText: getWindowSelectionText() });
+    onContextMenu?.(event, {
+      surface: readingMode ? "reading" : "wysiwyg",
+      selectedText: getWindowSelectionText()
+    });
   }
 
   function handleSourceContextMenu(event) {
@@ -201,8 +207,8 @@ function DocumentSurface({
       {showWysiwyg && (
         <section
           ref={previewRef}
-          className="preview-pane wysiwyg-pane"
-          aria-label="Inline Markdown editor"
+          className={`preview-pane wysiwyg-pane ${readingMode ? "reading-pane" : ""}`}
+          aria-label={readingMode ? "Markdown reading view" : "Inline Markdown editor"}
           onContextMenu={handleWysiwygContextMenu}
         >
           <div className="wysiwyg-document-shell">
@@ -216,9 +222,11 @@ function DocumentSurface({
             <div className={`wysiwyg-alignment alignment-${textAlignment}`}>
               <WysiwygSurface
                 content={editorContent}
-                documentId={documentId}
+                documentId={`${documentId}:${readingMode ? "reading" : "editing"}`}
                 onChange={onEditorChange}
+                onCopy={copyText}
                 onNotice={onNotice}
+                readOnly={readingMode}
               />
             </div>
           </div>
@@ -331,39 +339,40 @@ function getWindowSelectionText() {
   }
 }
 
-function markLooseJustification(editor, textAlignment) {
-  clearLooseJustification(editor);
+function markSmartJustification(editor, textAlignment) {
+  clearSmartJustification(editor);
   if (textAlignment !== "smart") return;
 
-  for (const block of editor.querySelectorAll("p, li, blockquote")) {
-    if (block.closest("pre, .milkdown-code-block, table")) continue;
-    if (blockHasLooseJustification(block)) block.classList.add("loose-justify");
+  for (const block of editor.querySelectorAll("p")) {
+    if (block.closest("li, blockquote, pre, .milkdown-code-block, table")) continue;
+    if (blockSupportsSmartJustification(block)) block.classList.add("smart-justify");
   }
 }
 
-function clearLooseJustification(editor) {
-  editor?.querySelectorAll(".loose-justify").forEach((node) => node.classList.remove("loose-justify"));
+function clearSmartJustification(editor) {
+  editor?.querySelectorAll(".smart-justify").forEach((node) => node.classList.remove("smart-justify"));
 }
 
-function blockHasLooseJustification(block) {
-  if ((block.textContent || "").trim().length < 80) return false;
+function blockSupportsSmartJustification(block) {
+  const text = (block.textContent || "").replace(/\s+/g, " ").trim();
+  if (text.length < 160 || block.querySelector("code, .katex, [data-type='math_inline']")) return false;
 
   const rects = collectWordRects(block);
-  if (rects.length < 6) return false;
+  if (rects.length < 18) return false;
 
   const blockWidth = block.getBoundingClientRect().width;
-  const fontSize = Number.parseFloat(window.getComputedStyle(block).fontSize) || 16;
-  const gapLimit = Math.max(20, Math.min(44, fontSize * 1.55));
+  if (blockWidth < 420) return false;
   const lines = groupRectsByLine(rects);
+  if (lines.length < 2) return false;
 
-  return lines.some((line) => {
-    if (line.length < 3) return false;
-    const sorted = line.sort((left, right) => left.left - right.left);
-    if (sorted[sorted.length - 1].right - sorted[0].left < blockWidth * 0.62) return false;
-    return sorted.some((rect, index) => {
-      const next = sorted[index + 1];
-      return next ? next.left - rect.right > gapLimit : false;
-    });
+  // Measure the paragraph in its natural left-aligned state. Only justify
+  // lines that are already dense enough; sparse lines, lists, quotes and
+  // inline code remain left aligned instead of being stretched apart.
+  return lines.slice(0, -1).every((line) => {
+    if (line.length < 5) return false;
+    const sorted = [...line].sort((left, right) => left.left - right.left);
+    const occupiedWidth = sorted[sorted.length - 1].right - sorted[0].left;
+    return occupiedWidth >= blockWidth * 0.72;
   });
 }
 

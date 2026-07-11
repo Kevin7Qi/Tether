@@ -1,10 +1,16 @@
 export const EDITOR_MODE_WYSIWYG = "wysiwyg";
 export const EDITOR_MODE_SOURCE = "source";
+export const EDITOR_MODE_READING = "reading";
 
 export function normalizeEditorMode(value) {
-  return value === EDITOR_MODE_SOURCE ? EDITOR_MODE_SOURCE : EDITOR_MODE_WYSIWYG;
+  if (value === EDITOR_MODE_SOURCE) return EDITOR_MODE_SOURCE;
+  if (value === EDITOR_MODE_READING) return EDITOR_MODE_READING;
+  return EDITOR_MODE_WYSIWYG;
 }
 
 export function editorModeLabel(value) {
-  return normalizeEditorMode(value) === EDITOR_MODE_SOURCE ? "Markdown source" : "Inline editor";
+  const mode = normalizeEditorMode(value);
+  if (mode === EDITOR_MODE_SOURCE) return "Markdown source";
+  if (mode === EDITOR_MODE_READING) return "Reading view";
+  return "Inline editor";
 }

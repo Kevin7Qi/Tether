@@ -1,6 +1,7 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   AlertTriangle,
+  BookOpen,
   ChevronDown,
   ChevronUp,
   Code2,
@@ -73,7 +74,7 @@ import {
 } from "./lib/format.js";
 import { createDocumentState, documentReducer } from "./lib/documentState.js";
 import { PAGE_WIDTH_DEFAULT, clampPageWidth, hotkey } from "./lib/constants.js";
-import { EDITOR_MODE_SOURCE, EDITOR_MODE_WYSIWYG } from "./lib/editorModes.js";
+import { EDITOR_MODE_READING, EDITOR_MODE_SOURCE, EDITOR_MODE_WYSIWYG } from "./lib/editorModes.js";
 import { parseOutline } from "./lib/outline.js";
 import { isConnectionLostError, connectionLostMessage } from "./lib/connection.js";
 import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, rekeyTabsForSource, selectNeighborTab } from "./lib/tabs.js";
@@ -324,6 +325,8 @@ export default function App() {
   const [fontsReady, setFontsReady] = useState(initialFontsReady);
   const [systemTheme, setSystemTheme] = useState(getSystemTheme);
   const [viewMode, setViewMode] = useState(EDITOR_MODE_WYSIWYG);
+  const [editorModeMenuOpen, setEditorModeMenuOpen] = useState(false);
+  const [editorModeMenuDismissed, setEditorModeMenuDismissed] = useState(false);
   const [zenMode, setZenMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialPreferences.sidebarCollapsed);
   const [sidebarPeeking, setSidebarPeeking] = useState(false);
@@ -381,6 +384,16 @@ export default function App() {
   const openFileActionRef = useRef(null);
   const openFolderActionRef = useRef(null);
   const findInputRef = useRef(null);
+  const editorModeMenuRef = useRef(null);
+
+  useEffect(() => {
+    if (!editorModeMenuOpen) return undefined;
+    function closeEditorModeMenu(event) {
+      if (!editorModeMenuRef.current?.contains(event.target)) setEditorModeMenuOpen(false);
+    }
+    document.addEventListener("mousedown", closeEditorModeMenu);
+    return () => document.removeEventListener("mousedown", closeEditorModeMenu);
+  }, [editorModeMenuOpen]);
 
   useEffect(() => {
     remoteApi.getDefaultPrivateKeyPath().then((response) => {
@@ -646,6 +659,10 @@ export default function App() {
       }
 
       if (event.key === "Escape") {
+        if (editorModeMenuOpen) {
+          setEditorModeMenuOpen(false);
+          return;
+        }
         if (contextMenu) {
           setContextMenu(null);
           return;
@@ -676,7 +693,7 @@ export default function App() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [connectionPaletteOpen, contextMenu, findOpen, settingsPanelOpen, sidebarPeeking, zenMode]);
+  }, [connectionPaletteOpen, contextMenu, editorModeMenuOpen, findOpen, settingsPanelOpen, sidebarPeeking, zenMode]);
 
   useEffect(() => {
     if (!resizingSidebar) return undefined;
@@ -2693,16 +2710,37 @@ export default function App() {
             <div className="toolbar-actions">
               {documentSource !== "none" && (
                 <>
-                  <button
-                    className="icon-button compact toolbar-icon-action editor-mode-switch"
-                    aria-label={viewMode === EDITOR_MODE_WYSIWYG ? "Open Markdown source" : "Return to inline editor"}
-                    title={viewMode === EDITOR_MODE_WYSIWYG ? "Markdown source" : "Inline editor"}
-                    onClick={() =>
-                      setViewMode(viewMode === EDITOR_MODE_WYSIWYG ? EDITOR_MODE_SOURCE : EDITOR_MODE_WYSIWYG)
-                    }
+                  <div
+                    ref={editorModeMenuRef}
+                    className={`editor-mode-menu ${editorModeMenuDismissed ? "is-dismissed" : ""}`}
+                    onMouseLeave={() => setEditorModeMenuDismissed(false)}
                   >
-                    {viewMode === EDITOR_MODE_WYSIWYG ? <Code2 size={15} /> : <PenLine size={15} />}
-                  </button>
+                    <button
+                      className={`icon-button compact toolbar-icon-action editor-mode-switch ${editorModeMenuOpen ? "active" : ""}`}
+                      aria-expanded={editorModeMenuOpen}
+                      aria-haspopup="menu"
+                      aria-label={`Document mode: ${viewMode === EDITOR_MODE_READING ? "Reading" : viewMode === EDITOR_MODE_SOURCE ? "Source" : "Editing"}`}
+                      title="Document mode"
+                      onClick={() => {
+                        setEditorModeMenuDismissed(false);
+                        setEditorModeMenuOpen((open) => !open);
+                      }}
+                    >
+                      {viewMode === EDITOR_MODE_READING ? <BookOpen size={15} /> : viewMode === EDITOR_MODE_SOURCE ? <Code2 size={15} /> : <PenLine size={15} />}
+                      <ChevronDown className="editor-mode-chevron" size={10} />
+                    </button>
+                      <div className={`editor-mode-popover ${editorModeMenuOpen ? "is-open" : ""}`} role="menu" aria-label="Document mode">
+                        <button title="Browse without editing" role="menuitemradio" aria-checked={viewMode === EDITOR_MODE_READING} onClick={() => { setViewMode(EDITOR_MODE_READING); setEditorModeMenuOpen(false); setEditorModeMenuDismissed(true); }}>
+                          <BookOpen size={14} /><span>Reading</span>
+                        </button>
+                        <button title="Inline Markdown editor" role="menuitemradio" aria-checked={viewMode === EDITOR_MODE_WYSIWYG} onClick={() => { setViewMode(EDITOR_MODE_WYSIWYG); setEditorModeMenuOpen(false); setEditorModeMenuDismissed(true); }}>
+                          <PenLine size={14} /><span>Editing</span>
+                        </button>
+                        <button title="Raw Markdown text" role="menuitemradio" aria-checked={viewMode === EDITOR_MODE_SOURCE} onClick={() => { setViewMode(EDITOR_MODE_SOURCE); setEditorModeMenuOpen(false); setEditorModeMenuDismissed(true); }}>
+                          <Code2 size={14} /><span>Source</span>
+                        </button>
+                      </div>
+                  </div>
                   <div className="toolbar-divider" />
                 </>
               )}
@@ -2793,7 +2831,7 @@ export default function App() {
                 </button>
               )}
               {documentSource !== "none" && (
-                <button className="icon-button compact" title="Zen reading" aria-label="Zen reading" onClick={() => setZenMode(true)}>
+                <button className="icon-button compact" title="Zen mode" aria-label="Open zen mode" onClick={() => { setEditorModeMenuOpen(false); setZenMode(true); }}>
                   <Maximize2 size={14} />
                 </button>
               )}
@@ -2866,6 +2904,7 @@ export default function App() {
             loadingMessage={sourceOpening?.message}
             loadingTitle={sourceOpening?.title}
             onContextMenu={handleDocumentContextMenu}
+            copyText={copyCodeText}
             onEditorChange={onEditorChange}
             onNotice={showCopyNotice}
             onSearchResultCount={handleSearchResultCount}
@@ -2874,7 +2913,7 @@ export default function App() {
             searchQuery={findOpen ? findQuery : ""}
             sourceLabel={sourceLabel}
             textAlignment={preferences.textAlignment}
-            viewMode={zenMode ? EDITOR_MODE_WYSIWYG : viewMode}
+            viewMode={viewMode}
           />
         </React.Suspense>
         )}
