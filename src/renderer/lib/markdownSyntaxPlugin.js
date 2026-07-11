@@ -15,11 +15,12 @@ const inactivePluginState = () => ({
   active: false,
   atomPosition: null,
   clickPosition: null,
-  sourceOffset: null
+  sourceOffset: null,
+  focusLock: false
 });
 
 export function activateMarkdownSourceAt(view, position, options = {}) {
-  const { atomPosition = null, sourceOffset = null } = options;
+  const { atomPosition = null, sourceOffset = null, focusLock = false } = options;
   const resolved = view.state.doc.resolve(Math.min(position, view.state.doc.content.size));
   view.dispatch(
     view.state.tr
@@ -28,7 +29,8 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
         action: "activate",
         atomPosition,
         clickPosition: resolved.pos,
-        sourceOffset
+        sourceOffset,
+        focusLock
       })
   );
   view.focus();
@@ -144,10 +146,9 @@ function serializeInlineRange(state, from, to, serializer) {
   return serializer(doc).trimEnd();
 }
 
-function serializeBlockRange(state, from, serializer) {
-  const node = state.doc.nodeAt(from);
+function serializeBlockNode(schema, node, serializer) {
   if (!node) return "";
-  const doc = state.schema.nodes.doc.create(null, [node]);
+  const doc = schema.nodes.doc.create(null, [node]);
   let source = serializer(doc).trimEnd();
   const isSimpleList = ["bullet_list", "ordered_list"].includes(node.type.name)
     && [...Array(node.childCount).keys()].every((index) => {
@@ -165,16 +166,48 @@ export function continuousMarkdownSource(state, unit, serializer) {
   if (!unit) return "";
   return unit.kind === "inline"
     ? serializeInlineRange(state, unit.from, unit.to, serializer)
-    : serializeBlockRange(state, unit.from, serializer);
+    : serializeBlockNode(state.schema, state.doc.nodeAt(unit.from), serializer);
 }
 
-export function sourceCaretOffset(state, unit, source, clickPosition, explicitOffset = null) {
+function serializedCaretOffset(state, unit, source, position, serializer) {
+  if (unit.kind === "block" && position <= unit.from) return 0;
+  let marker = "\uE000";
+  while (source.includes(marker)) marker += "\uE001";
+
+  const transaction = state.tr.insertText(marker, position, position);
+  const markedState = { schema: state.schema, doc: transaction.doc };
+  const markedUnit = {
+    ...unit,
+    to: unit.kind === "inline" ? unit.to + marker.length : unit.to
+  };
+  const markedSource = continuousMarkdownSource(markedState, markedUnit, serializer);
+  const markerOffset = markedSource.indexOf(marker);
+  return markerOffset >= 0 ? markerOffset : null;
+}
+
+export function sourceCaretOffset(
+  state,
+  unit,
+  source,
+  clickPosition,
+  explicitOffset = null,
+  serializer = null
+) {
   if (Number.isFinite(explicitOffset)) {
     return Math.max(0, Math.min(source.length, explicitOffset));
   }
   if (!Number.isFinite(clickPosition)) return source.length;
 
   const position = Math.max(0, Math.min(clickPosition, state.doc.content.size));
+  if (serializer && position >= unit.from && position <= unit.to) {
+    try {
+      const serializedOffset = serializedCaretOffset(state, unit, source, position, serializer);
+      if (serializedOffset != null) return serializedOffset;
+    } catch {
+      // Fall through to the text-based mapping for unusual custom nodes.
+    }
+  }
+
   if (unit.kind === "inline" && position >= unit.from && position <= unit.to) {
     const plainText = state.doc.textBetween(unit.from, unit.to, "", "");
     const sourceStart = plainText ? source.indexOf(plainText) : -1;
@@ -204,7 +237,16 @@ function selectionAfter(transaction, position) {
   return transaction.setSelection(Selection.near(transaction.doc.resolve(resolvedPosition), 1));
 }
 
-function replaceInlineSource(view, parser, unit, source) {
+function dispatchSourceReplacement(view, transaction, afterCommit) {
+  const mapping = transaction.mapping;
+  view.dispatch(transaction.scrollIntoView());
+  requestAnimationFrame(() => {
+    if (afterCommit) afterCommit(mapping);
+    else view.focus();
+  });
+}
+
+function replaceInlineSource(view, parser, unit, source, afterCommit = null) {
   const parsed = parser(source);
   const firstBlock = parsed?.firstChild;
   const replacement = firstBlock?.isTextblock
@@ -215,19 +257,17 @@ function replaceInlineSource(view, parser, unit, source) {
   let transaction = view.state.tr.replaceWith(unit.from, unit.to, replacement);
   transaction = selectionAfter(transaction, unit.from + replacement.size);
   transaction.setMeta(markdownSyntaxKey, "close");
-  view.dispatch(transaction.scrollIntoView());
-  requestAnimationFrame(() => view.focus());
+  dispatchSourceReplacement(view, transaction, afterCommit);
 }
 
-function replaceBlockSource(view, parser, unit, source) {
+function replaceBlockSource(view, parser, unit, source, afterCommit = null) {
   const parsed = parser(source);
   const fallback = view.state.schema.nodes.paragraph.create();
   const replacement = parsed?.content?.size ? parsed.content : Fragment.from(fallback);
   let transaction = view.state.tr.replace(unit.from, unit.to, new Slice(replacement, 0, 0));
   transaction = selectionAfter(transaction, unit.from + replacement.size);
   transaction.setMeta(markdownSyntaxKey, "close");
-  view.dispatch(transaction.scrollIntoView());
-  requestAnimationFrame(() => view.focus());
+  dispatchSourceReplacement(view, transaction, afterCommit);
 }
 
 function continuousSourceEditor(
@@ -282,15 +322,19 @@ function continuousSourceEditor(
     return nearest;
   };
   let finished = false;
+  let blurTimer = 0;
   const finish = (commit, afterFinish = null) => {
     if (finished) return;
     finished = true;
+    if (blurTimer) clearTimeout(blurTimer);
     const value = editor.value;
     requestAnimationFrame(() => {
       setActiveControl(null);
-      if (commit) onCommit(value);
-      else onCancel();
-      if (afterFinish) requestAnimationFrame(afterFinish);
+      if (commit) onCommit(value, afterFinish);
+      else {
+        onCancel();
+        if (afterFinish) requestAnimationFrame(() => afterFinish(null));
+      }
     });
   };
   setActiveControl({ element: editor, finish });
@@ -303,7 +347,12 @@ function continuousSourceEditor(
       if (!finished && editor.isConnected) editor.setSelectionRange(caret, caret);
     });
   });
-  editor.addEventListener("blur", () => finish(true));
+  editor.addEventListener("blur", () => {
+    blurTimer = setTimeout(() => {
+      blurTimer = 0;
+      finish(true);
+    }, 120);
+  });
   editor.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -328,6 +377,250 @@ function continuousSourceEditor(
   return editor;
 }
 
+function pointerDocumentPosition(view, event) {
+  const ownerDocument = view.dom.ownerDocument || document;
+  const targetElement = event.target instanceof Element ? event.target : null;
+  const textblock = targetElement?.closest("p, h1, h2, h3, h4, h5, h6");
+  if (textblock && view.dom.contains(textblock)) {
+    const textOffset = textOffsetFromGeometry(textblock, event) ?? textOffsetAtPoint(textblock, event);
+    if (Number.isFinite(textOffset)) {
+      try {
+        const contentStart = view.posAtDOM(textblock, 0, 1);
+        return Math.max(
+          0,
+          Math.min(view.state.doc.content.size, contentStart + textOffset)
+        );
+      } catch {
+        // Fall through to the browser caret APIs below.
+      }
+    }
+  }
+  let node = null;
+  let offset = null;
+
+  if (typeof ownerDocument.caretPositionFromPoint === "function") {
+    const caret = ownerDocument.caretPositionFromPoint(event.clientX, event.clientY);
+    node = caret?.offsetNode || null;
+    offset = caret?.offset ?? null;
+  } else if (typeof ownerDocument.caretRangeFromPoint === "function") {
+    const range = ownerDocument.caretRangeFromPoint(event.clientX, event.clientY);
+    node = range?.startContainer || null;
+    offset = range?.startOffset ?? null;
+  }
+
+  const nodeElement = node?.nodeType === 1 ? node : node?.parentElement;
+  if (node && Number.isFinite(offset) && nodeElement && view.dom.contains(nodeElement)) {
+    try {
+      return Math.max(0, Math.min(view.state.doc.content.size, view.posAtDOM(node, offset, -1)));
+    } catch {
+      // Some rendered widgets (notably KaTeX and CodeMirror) are outside the
+      // ProseMirror content DOM. Fall back to its coordinate mapper below.
+    }
+  }
+
+  const hit = view.posAtCoords({ left: event.clientX, top: event.clientY });
+  return hit ? hit.pos : null;
+}
+
+function textOffsetFromGeometry(root, event) {
+  const ownerDocument = root.ownerDocument || document;
+  const walker = ownerDocument.createTreeWalker(root, 4);
+  let cumulativeOffset = 0;
+  let bestOffset = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = node.nodeValue || "";
+    for (let index = 0; index < text.length; index += 1) {
+      const range = ownerDocument.createRange();
+      range.setStart(node, index);
+      range.setEnd(node, index + 1);
+      const rect = range.getBoundingClientRect();
+      if (!rect.height) continue;
+
+      const verticalDistance = event.clientY < rect.top
+        ? rect.top - event.clientY
+        : event.clientY > rect.bottom
+          ? event.clientY - rect.bottom
+          : 0;
+      const leftDistance = Math.abs(event.clientX - rect.left) + verticalDistance * 4;
+      const rightDistance = Math.abs(event.clientX - rect.right) + verticalDistance * 4;
+      if (leftDistance < bestDistance) {
+        bestDistance = leftDistance;
+        bestOffset = cumulativeOffset + index;
+      }
+      if (rightDistance < bestDistance) {
+        bestDistance = rightDistance;
+        bestOffset = cumulativeOffset + index + 1;
+      }
+    }
+    cumulativeOffset += text.length;
+  }
+
+  return bestOffset;
+}
+
+function textOffsetAtPoint(root, event) {
+  const ownerDocument = root.ownerDocument || document;
+  const caret = typeof ownerDocument.caretPositionFromPoint === "function"
+    ? ownerDocument.caretPositionFromPoint(event.clientX, event.clientY)
+    : null;
+  const fallbackRange = !caret && typeof ownerDocument.caretRangeFromPoint === "function"
+    ? ownerDocument.caretRangeFromPoint(event.clientX, event.clientY)
+    : null;
+  const node = caret?.offsetNode || fallbackRange?.startContainer || null;
+  const offset = caret?.offset ?? fallbackRange?.startOffset ?? null;
+  const nodeElement = node?.nodeType === 1 ? node : node?.parentElement;
+  if (!node || !Number.isFinite(offset) || !nodeElement || !root.contains(nodeElement)) return null;
+
+  try {
+    const range = ownerDocument.createRange();
+    range.setStart(root, 0);
+    range.setEnd(node, offset);
+    return range.toString().length;
+  } catch {
+    return null;
+  }
+}
+
+export function enclosingCodeBlock(doc, position) {
+  let blockPosition = Math.max(0, Math.min(position, doc.content.size));
+  let node = doc.nodeAt(blockPosition);
+  if (node?.type.name === "code_block") return { position: blockPosition, node };
+
+  const resolved = doc.resolve(blockPosition);
+  for (let depth = resolved.depth; depth > 0; depth -= 1) {
+    if (resolved.node(depth).type.name !== "code_block") continue;
+    return { position: resolved.before(depth), node: resolved.node(depth) };
+  }
+  return null;
+}
+
+function capturedCodeBlockTarget(view, block, event) {
+  let domPosition;
+  try {
+    domPosition = view.posAtDOM(block, 0, -1);
+  } catch {
+    return null;
+  }
+  const codeBlock = enclosingCodeBlock(view.state.doc, domPosition);
+  if (!codeBlock) return null;
+  const { position: blockPosition, node } = codeBlock;
+
+  const line = event.target instanceof Element ? event.target.closest(".cm-line") : null;
+  if (line && block.contains(line)) {
+    const lines = [...block.querySelectorAll(".cm-line")];
+    const lineIndex = lines.indexOf(line);
+    if (lineIndex >= 0) {
+      // CodeMirror's content DOM is outside ProseMirror and WebKit does not
+      // consistently expose it through caretPositionFromPoint. Character
+      // rectangles give us the same exact boundary mapping used by ordinary
+      // rendered text, including syntax-highlighted spans.
+      const lineOffset = textOffsetFromGeometry(line, event) ?? textOffsetAtPoint(line, event);
+      const priorLength = lines
+        .slice(0, lineIndex)
+        .reduce((length, item) => length + (item.textContent || "").length + 1, 0);
+      const contentOffset = Math.max(0, Math.min(node.textContent.length, priorLength + (lineOffset ?? 0)));
+      return { position: blockPosition + 1 + contentOffset, assoc: 1 };
+    }
+  }
+
+  const preview = event.target instanceof Element ? event.target.closest(".preview-panel") : null;
+  if (preview && block.contains(preview)) {
+    const rect = preview.getBoundingClientRect();
+    const ratio = rect.width > 0
+      ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+      : 0;
+    return {
+      position: blockPosition + 1 + Math.round(ratio * node.textContent.length),
+      assoc: 1
+    };
+  }
+
+  return { position: blockPosition + 1, assoc: 1 };
+}
+
+function capturedTargetAtPointer(view, event) {
+  const math = event.target instanceof Element
+    ? event.target.closest('span[data-type="math_inline"]')
+    : null;
+  if (!math) {
+    const codeBlock = event.target instanceof Element
+      ? event.target.closest(".milkdown-code-block")
+      : null;
+    if (codeBlock) return capturedCodeBlockTarget(view, codeBlock, event);
+    const position = pointerDocumentPosition(view, event);
+    return Number.isFinite(position) ? { position, assoc: 1 } : null;
+  }
+
+  const value = math.getAttribute("data-value") || "";
+  const rect = math.getBoundingClientRect();
+  const ratio = rect.width > 0
+    ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+    : 1;
+  const clickedText = event.target instanceof Element
+    ? (event.target.textContent || "").trim()
+    : "";
+  let valueOffset = Math.round(ratio * value.length);
+  if (clickedText && clickedText.length <= 3) {
+    const candidates = [];
+    let candidate = value.indexOf(clickedText);
+    while (candidate >= 0) {
+      candidates.push(candidate);
+      candidate = value.indexOf(clickedText, candidate + 1);
+    }
+    if (candidates.length) {
+      const targetOffset = ratio * value.length;
+      valueOffset = candidates.reduce((nearest, current) =>
+        Math.abs(current - targetOffset) < Math.abs(nearest - targetOffset) ? current : nearest
+      );
+      const targetRect = event.target instanceof Element
+        ? event.target.getBoundingClientRect()
+        : rect;
+      if (event.clientX > targetRect.left + targetRect.width / 2) valueOffset += clickedText.length;
+    }
+  }
+
+  try {
+    const atomPosition = view.posAtDOM(math, 0, -1);
+    return {
+      position: atomPosition,
+      atomPosition,
+      sourceOffset: 1 + valueOffset,
+      assoc: 1
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function activateMarkdownSourceFromPointer(view, event) {
+  const target = capturedTargetAtPointer(view, event);
+  if (!target) return false;
+  activateCapturedTarget(view, target);
+  return true;
+}
+
+export function mappedPosition(mapping, position, assoc = 1) {
+  return mapping ? mapping.map(position, assoc) : position;
+}
+
+function activateCapturedTarget(view, target, mapping = null) {
+  const position = mappedPosition(mapping, target.position, target.assoc ?? 1);
+  const atomPosition = target.atomPosition == null
+    ? null
+    : mappedPosition(mapping, target.atomPosition, target.assoc ?? 1);
+  const activate = () => {
+    if (!view.dom.isConnected) return;
+    activateMarkdownSourceAt(view, position, {
+      atomPosition,
+      sourceOffset: target.sourceOffset ?? null,
+      focusLock: Boolean(mapping)
+    });
+  };
+  requestAnimationFrame(activate);
+}
+
 export const markdownSyntaxPlugin = $prose((ctx) => {
   let editorView = null;
   let pendingActivation = false;
@@ -347,7 +640,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             active: true,
             atomPosition: meta.atomPosition ?? null,
             clickPosition: meta.clickPosition ?? transaction.selection.from,
-            sourceOffset: meta.sourceOffset ?? null
+            sourceOffset: meta.sourceOffset ?? null,
+            focusLock: Boolean(meta.focusLock)
           };
         }
         if (transaction.selectionSet && pendingActivation) {
@@ -356,15 +650,20 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             active: true,
             atomPosition: null,
             clickPosition: transaction.selection.from,
-            sourceOffset: null
+            sourceOffset: null,
+            focusLock: false
           };
+        }
+        if (transaction.selectionSet && pluginState.active && pluginState.focusLock) {
+          return { ...pluginState, focusLock: false };
         }
         if (transaction.selectionSet && pluginState.active) {
           return {
             active: true,
             atomPosition: null,
             clickPosition: transaction.selection.from,
-            sourceOffset: null
+            sourceOffset: null,
+            focusLock: false
           };
         }
         return pluginState;
@@ -372,11 +671,28 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     },
     view(view) {
       editorView = view;
+      const captureSourceHandoff = (event) => {
+        const targetElement = event.target instanceof Element ? event.target : null;
+        if (targetElement?.closest(".tether-continuous-source")) return;
+        const sourceToFinish = activeSourceControl?.element?.isConnected ? activeSourceControl : null;
+        if (!sourceToFinish) return;
+
+        const target = capturedTargetAtPointer(view, event);
+        if (!target) return;
+        event.preventDefault();
+        event.stopPropagation();
+        pendingActivation = false;
+        sourceToFinish.finish(true, (mapping) => {
+          if (editorView) activateCapturedTarget(editorView, target, mapping);
+        });
+      };
+      view.dom.addEventListener("mousedown", captureSourceHandoff, true);
       return {
         update(nextView) {
           editorView = nextView;
         },
         destroy() {
+          view.dom.removeEventListener("mousedown", captureSourceHandoff, true);
           editorView = null;
         }
       };
@@ -386,74 +702,21 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         mousedown(view, event) {
           if (event.target instanceof Element && event.target.closest(".tether-continuous-source")) return false;
           const sourceToFinish = activeSourceControl?.element?.isConnected ? activeSourceControl : null;
-          const math = event.target instanceof Element
-            ? event.target.closest('span[data-type="math_inline"]')
-            : null;
-          if (math) {
-            const value = math.getAttribute("data-value") || "";
-            const rect = math.getBoundingClientRect();
-            const ratio = rect.width > 0
-              ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-              : 1;
-            const clickedText = event.target instanceof Element
-              ? (event.target.textContent || "").trim()
-              : "";
-            let valueOffset = Math.round(ratio * value.length);
-            if (clickedText && clickedText.length <= 3) {
-              const candidates = [];
-              let candidate = value.indexOf(clickedText);
-              while (candidate >= 0) {
-                candidates.push(candidate);
-                candidate = value.indexOf(clickedText, candidate + 1);
-              }
-              if (candidates.length) {
-                const targetOffset = ratio * value.length;
-                valueOffset = candidates.reduce((nearest, current) =>
-                  Math.abs(current - targetOffset) < Math.abs(nearest - targetOffset) ? current : nearest
-                );
-                const targetRect = event.target instanceof Element
-                  ? event.target.getBoundingClientRect()
-                  : rect;
-                if (event.clientX > targetRect.left + targetRect.width / 2) valueOffset += clickedText.length;
-              }
-            }
-            const activateMath = () => {
-              if (!editorView) return;
-              const currentMath = math.isConnected
-                ? math
-                : document.elementFromPoint(event.clientX, event.clientY)?.closest?.('span[data-type="math_inline"]');
-              if (!currentMath) return;
-              let atomPosition;
-              try {
-                atomPosition = editorView.posAtDOM(currentMath, 0, -1);
-              } catch {
-                return;
-              }
-              activateMarkdownSourceAt(editorView, atomPosition, {
-                atomPosition,
-                sourceOffset: 1 + valueOffset
-              });
-            };
-            event.preventDefault();
-            if (sourceToFinish) sourceToFinish.finish(true, activateMath);
-            else requestAnimationFrame(activateMath);
-            return true;
-          }
-          const coordinates = { left: event.clientX, top: event.clientY };
-          const activateAtCoordinates = () => {
+          const target = capturedTargetAtPointer(view, event);
+          if (!target) return false;
+          const activateCapturedPosition = (mapping = null) => {
             if (!editorView) return;
-            const hit = editorView.posAtCoords(coordinates);
-            if (!hit) return;
             pendingActivation = false;
-            activateMarkdownSourceAt(editorView, hit.pos);
+            activateCapturedTarget(editorView, target, mapping);
           };
           if (sourceToFinish) {
             event.preventDefault();
-            sourceToFinish.finish(true, activateAtCoordinates);
+            sourceToFinish.finish(true, activateCapturedPosition);
             return true;
           }
-          requestAnimationFrame(activateAtCoordinates);
-          return false;
+          activateCapturedPosition();
+          if (target.atomPosition != null) event.preventDefault();
+          return target.atomPosition != null;
         },
         keydown(_view, event) {
           if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
@@ -484,13 +747,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           unit,
           source,
           pluginState.clickPosition,
-          pluginState.sourceOffset
+          pluginState.sourceOffset,
+          serializer
         );
-        const commit = (value) => {
+        const commit = (value, afterCommit = null) => {
           if (!editorView) return;
           const parser = ctx.get(parserCtx);
-          if (unit.kind === "inline") replaceInlineSource(editorView, parser, unit, value);
-          else replaceBlockSource(editorView, parser, unit, value);
+          if (unit.kind === "inline") replaceInlineSource(editorView, parser, unit, value, afterCommit);
+          else replaceBlockSource(editorView, parser, unit, value, afterCommit);
         };
         const editorDecoration = Decoration.widget(unit.from, () => continuousSourceEditor(
           source,
@@ -505,6 +769,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             activeSourceControl = control;
           }
         ), {
+          key: `tether-source:${unit.kind}:${unit.from}:${unit.to}:${sourceName}:${source}`,
           side: -1,
           ignoreSelection: true,
           stopEvent: () => true

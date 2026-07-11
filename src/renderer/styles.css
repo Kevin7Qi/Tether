@@ -1753,7 +1753,7 @@ textarea:focus-visible,
   width: min(var(--page-width), 100%);
   min-height: 100%;
   margin: 0 auto;
-  padding: 52px clamp(60px, 7vw, 88px) 120px;
+  padding: 52px clamp(44px, 6vw, 72px) 120px;
 }
 
 .tether-wysiwyg {
@@ -1822,10 +1822,32 @@ textarea:focus-visible,
   text-wrap: pretty;
 }
 
+.wysiwyg-alignment.alignment-justify .ProseMirror p,
+.wysiwyg-alignment.alignment-justify .ProseMirror li,
+.wysiwyg-alignment.alignment-justify .ProseMirror blockquote,
+.wysiwyg-alignment.alignment-smart .ProseMirror p,
+.wysiwyg-alignment.alignment-smart .ProseMirror li,
+.wysiwyg-alignment.alignment-smart .ProseMirror blockquote {
+  text-align: justify;
+  text-justify: inter-word;
+}
+
+.wysiwyg-alignment.alignment-left .ProseMirror p,
+.wysiwyg-alignment.alignment-left .ProseMirror li,
+.wysiwyg-alignment.alignment-left .ProseMirror blockquote,
+.wysiwyg-alignment.alignment-smart .ProseMirror .loose-justify,
+.wysiwyg-alignment .ProseMirror table p,
+.wysiwyg-alignment .ProseMirror .milkdown-code-block p {
+  text-align: left;
+  text-justify: auto;
+}
+
 .tether-wysiwyg .ProseMirror h1,
 .tether-wysiwyg .ProseMirror h2,
 .tether-wysiwyg .ProseMirror h3,
-.tether-wysiwyg .ProseMirror h4 {
+.tether-wysiwyg .ProseMirror h4,
+.tether-wysiwyg .ProseMirror h5,
+.tether-wysiwyg .ProseMirror h6 {
   position: relative;
   color: var(--ink);
   font-family: var(--ui);
@@ -1854,10 +1876,31 @@ textarea:focus-visible,
   font-size: 18px;
 }
 
+.tether-wysiwyg .ProseMirror h4 {
+  margin: 21px 0 7px;
+  font-size: 16.5px;
+}
+
+.tether-wysiwyg .ProseMirror h5 {
+  margin: 19px 0 6px;
+  color: var(--ink2);
+  font-size: 15px;
+}
+
+.tether-wysiwyg .ProseMirror h6 {
+  margin: 18px 0 6px;
+  color: var(--ink2);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .tether-wysiwyg .ProseMirror h1::before,
 .tether-wysiwyg .ProseMirror h2::before,
 .tether-wysiwyg .ProseMirror h3::before,
-.tether-wysiwyg .ProseMirror h4::before {
+.tether-wysiwyg .ProseMirror h4::before,
+.tether-wysiwyg .ProseMirror h5::before,
+.tether-wysiwyg .ProseMirror h6::before {
   position: absolute;
   left: -22px;
   opacity: 0;
@@ -1874,7 +1917,9 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror h1:hover::before,
 .tether-wysiwyg .ProseMirror h2:hover::before,
 .tether-wysiwyg .ProseMirror h3:hover::before,
-.tether-wysiwyg .ProseMirror h4:hover::before {
+.tether-wysiwyg .ProseMirror h4:hover::before,
+.tether-wysiwyg .ProseMirror h5:hover::before,
+.tether-wysiwyg .ProseMirror h6:hover::before {
   opacity: 1;
 }
 
@@ -1882,6 +1927,8 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror h2::before { content: "H2" / ""; top: 5px; }
 .tether-wysiwyg .ProseMirror h3::before { content: "H3" / ""; top: 4px; }
 .tether-wysiwyg .ProseMirror h4::before { content: "H4" / ""; top: 3px; }
+.tether-wysiwyg .ProseMirror h5::before { content: "H5" / ""; top: 2px; }
+.tether-wysiwyg .ProseMirror h6::before { content: "H6" / ""; top: 1px; }
 
 .tether-wysiwyg .ProseMirror p,
 .tether-wysiwyg .ProseMirror blockquote {
@@ -1893,10 +1940,30 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror ol {
   margin-top: 0;
   margin-bottom: 18px;
+  padding-left: 24px;
 }
 
-.tether-wysiwyg .ProseMirror .list-item {
-  min-height: 28px;
+.tether-wysiwyg .ProseMirror ul ul,
+.tether-wysiwyg .ProseMirror ul ol,
+.tether-wysiwyg .ProseMirror ol ul,
+.tether-wysiwyg .ProseMirror ol ol {
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block > .list-item {
+  min-height: 26px;
+  gap: 8px;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label-wrapper,
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label {
+  width: 22px;
+  height: 26px;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label {
+  padding: 1px 0;
 }
 
 .tether-wysiwyg .ProseMirror .list-item .content-dom > p {
@@ -1905,7 +1972,7 @@ textarea:focus-visible,
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block + .milkdown-list-item-block,
 .tether-wysiwyg .ProseMirror li + li {
-  margin-top: 3px;
+  margin-top: 2px;
 }
 
 .tether-wysiwyg .ProseMirror a {
@@ -1995,7 +2062,11 @@ textarea:focus-visible,
   margin-left: 0;
   border-left: 2px solid var(--accent);
   color: var(--ink2);
-  padding-left: 18px;
+  padding: 1px 0 1px 18px;
+}
+
+.tether-wysiwyg .ProseMirror blockquote > :last-child {
+  margin-bottom: 0;
 }
 
 .tether-wysiwyg .ProseMirror hr {
@@ -2005,34 +2076,64 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-table-block {
-  margin: 4px 0 24px;
+  margin: 6px 0 26px;
+  --default-cell-min-width: 72px;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-table-block .tableWrapper {
+  overflow-x: auto;
+  padding: 1px;
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-table-block table {
+  width: 100%;
   margin: 0;
-  font-size: 14px;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-size: 14.5px;
+  line-height: 1.45;
+  text-align: left;
+  text-wrap: auto;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-table-block table:not(:has([data-colwidth])) col {
+  width: auto !important;
+  min-width: 0 !important;
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-table-block th,
 .tether-wysiwyg .ProseMirror .milkdown-table-block td {
-  border-color: var(--line-strong) !important;
+  min-width: 72px;
+  border: 1px solid var(--line-strong) !important;
+  padding: 9px 12px;
+  vertical-align: top;
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-table-block th {
-  background: color-mix(in srgb, var(--code) 72%, var(--surface));
+  border-bottom-color: color-mix(in srgb, var(--ink3) 70%, var(--line-strong)) !important;
+  background: color-mix(in srgb, var(--code) 82%, var(--surface));
   color: var(--ink);
+  font-family: var(--ui);
+  font-size: 12.5px;
   font-weight: 600;
+  letter-spacing: 0.025em;
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-table-block tr:hover td {
-  background: color-mix(in srgb, var(--code) 44%, transparent);
+  background: color-mix(in srgb, var(--code) 56%, transparent);
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-table-block td p,
 .tether-wysiwyg .ProseMirror .milkdown-table-block th p {
   margin: 0;
-  padding: 2px 0;
+  padding: 0;
   line-height: 1.45;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-table-block .column-resize-handle {
+  width: 3px;
+  right: -2px;
+  background: var(--accent);
 }
 
 .tether-wysiwyg .ProseMirror img {
@@ -2179,10 +2280,15 @@ textarea:focus-visible,
 
 .tether-wysiwyg .milkdown-code-block:has(.preview-panel) {
   position: relative;
-  margin: 2px 0 22px;
+  margin: -8px 0 14px;
   border-color: transparent;
   background: transparent;
   padding: 0;
+}
+
+.tether-wysiwyg .ProseMirror p:has(+ .milkdown-code-block > .milkdown-code-block:has(.preview-panel)),
+.tether-wysiwyg .ProseMirror p:has(+ .milkdown-code-block:has(.preview-panel)) {
+  margin-bottom: 6px;
 }
 
 .tether-wysiwyg .milkdown-code-block:has(.preview-panel) .tools {
@@ -2190,13 +2296,13 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .milkdown-code-block:has(.preview-panel) .preview-panel {
-  min-height: 42px;
+  min-height: 36px;
   display: grid;
   place-items: center;
   border: 1px solid transparent;
   border-radius: 5px;
   background: transparent;
-  padding: 4px 32px;
+  padding: 0 24px;
   overflow-x: auto;
   cursor: text;
   transition:
@@ -2280,6 +2386,7 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .milkdown-toolbar {
+  gap: 0;
   padding: 2px;
 }
 

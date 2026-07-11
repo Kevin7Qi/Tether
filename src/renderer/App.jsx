@@ -2873,6 +2873,7 @@ export default function App() {
             searchActiveIndex={findActiveIndex}
             searchQuery={findOpen ? findQuery : ""}
             sourceLabel={sourceLabel}
+            textAlignment={preferences.textAlignment}
             viewMode={zenMode ? EDITOR_MODE_WYSIWYG : viewMode}
           />
         </React.Suspense>

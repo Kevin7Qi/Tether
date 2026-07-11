@@ -452,6 +452,20 @@ export function SettingsPanel({ open, preferences, onClose, onUpdate }) {
           </div>
 
           <div className="settings-row">
+            <strong className="settings-key">alignment</strong>
+            <SegmentedControl
+              ariaLabel="Text alignment"
+              options={[
+                { label: "smart", value: "smart" },
+                { label: "justify", value: "justify" },
+                { label: "left", value: "left" }
+              ]}
+              value={preferences.textAlignment}
+              onChange={(value) => onUpdate("textAlignment", value)}
+            />
+          </div>
+
+          <div className="settings-row">
             <strong className="settings-key">width</strong>
             <PageWidthControl
               value={preferences.pageWidthPx}

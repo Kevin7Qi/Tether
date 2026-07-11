@@ -37,3 +37,18 @@ test("document loading uses the centered preview-pane layout contract", () => {
   assert.ok(start >= 0 && end > start);
   assert.match(source.slice(start, end), /document-grid mode-preview is-loading/);
 });
+
+test("WYSIWYG tables use content-driven columns instead of equal fixed widths", () => {
+  const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
+  assert.match(styles, /milkdown-table-block table\s*\{[^}]*table-layout:\s*auto/s);
+  assert.match(styles, /table:not\(:has\(\[data-colwidth\]\)\) col\s*\{[^}]*width:\s*auto !important/s);
+});
+
+test("the saved text-alignment preference reaches the inline editor", () => {
+  const app = fs.readFileSync(path.join(root, "src", "renderer", "App.jsx"), "utf8");
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "DocumentSurface.jsx"), "utf8");
+  const dialogs = fs.readFileSync(path.join(root, "src", "renderer", "components", "dialogs.jsx"), "utf8");
+  assert.match(app, /textAlignment=\{preferences\.textAlignment\}/);
+  assert.match(surface, /alignment-\$\{textAlignment\}/);
+  assert.match(dialogs, /ariaLabel="Text alignment"/);
+});

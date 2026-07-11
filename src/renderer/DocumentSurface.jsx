@@ -23,6 +23,7 @@ function DocumentSurface({
   searchActiveIndex = 0,
   searchQuery = "",
   sourceLabel,
+  textAlignment = "smart",
   viewMode
 }) {
   const gutterRef = useRef(null);
@@ -63,6 +64,36 @@ function DocumentSurface({
       if (raf) window.cancelAnimationFrame(raf);
     };
   }, [editorContent, loading, previewRef, showWysiwyg]);
+
+  useEffect(() => {
+    if (!showWysiwyg || loading) return undefined;
+    const editor = previewRef?.current?.querySelector(".ProseMirror");
+    if (!editor) return undefined;
+
+    let raf = 0;
+    function run() {
+      raf = 0;
+      markLooseJustification(editor, textAlignment);
+    }
+    function schedule() {
+      if (raf) window.cancelAnimationFrame(raf);
+      raf = window.requestAnimationFrame(() => {
+        raf = window.requestAnimationFrame(run);
+      });
+    }
+
+    schedule();
+    const observer = window.ResizeObserver ? new ResizeObserver(schedule) : null;
+    observer?.observe(editor);
+    window.addEventListener("resize", schedule);
+
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf);
+      observer?.disconnect();
+      window.removeEventListener("resize", schedule);
+      clearLooseJustification(editor);
+    };
+  }, [editorContent, loading, previewRef, showWysiwyg, textAlignment]);
 
   useEffect(() => {
     if (loading) return undefined;
@@ -182,12 +213,14 @@ function DocumentSurface({
                 <span>{sourceLabel}</span>
               </div>
             )}
-            <WysiwygSurface
-              content={editorContent}
-              documentId={documentId}
-              onChange={onEditorChange}
-              onNotice={onNotice}
-            />
+            <div className={`wysiwyg-alignment alignment-${textAlignment}`}>
+              <WysiwygSurface
+                content={editorContent}
+                documentId={documentId}
+                onChange={onEditorChange}
+                onNotice={onNotice}
+              />
+            </div>
           </div>
         </section>
       )}
@@ -296,6 +329,83 @@ function getWindowSelectionText() {
   } catch {
     return "";
   }
+}
+
+function markLooseJustification(editor, textAlignment) {
+  clearLooseJustification(editor);
+  if (textAlignment !== "smart") return;
+
+  for (const block of editor.querySelectorAll("p, li, blockquote")) {
+    if (block.closest("pre, .milkdown-code-block, table")) continue;
+    if (blockHasLooseJustification(block)) block.classList.add("loose-justify");
+  }
+}
+
+function clearLooseJustification(editor) {
+  editor?.querySelectorAll(".loose-justify").forEach((node) => node.classList.remove("loose-justify"));
+}
+
+function blockHasLooseJustification(block) {
+  if ((block.textContent || "").trim().length < 80) return false;
+
+  const rects = collectWordRects(block);
+  if (rects.length < 6) return false;
+
+  const blockWidth = block.getBoundingClientRect().width;
+  const fontSize = Number.parseFloat(window.getComputedStyle(block).fontSize) || 16;
+  const gapLimit = Math.max(20, Math.min(44, fontSize * 1.55));
+  const lines = groupRectsByLine(rects);
+
+  return lines.some((line) => {
+    if (line.length < 3) return false;
+    const sorted = line.sort((left, right) => left.left - right.left);
+    if (sorted[sorted.length - 1].right - sorted[0].left < blockWidth * 0.62) return false;
+    return sorted.some((rect, index) => {
+      const next = sorted[index + 1];
+      return next ? next.left - rect.right > gapLimit : false;
+    });
+  });
+}
+
+function collectWordRects(root) {
+  const rects = [];
+  const walker = document.createTreeWalker(root, DOM_SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue || !node.nodeValue.trim()) return DOM_FILTER_REJECT;
+      if (node.parentElement?.closest(".katex, button, input, textarea, .tether-continuous-source")) {
+        return DOM_FILTER_REJECT;
+      }
+      return DOM_FILTER_ACCEPT;
+    }
+  });
+
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const pattern = /\S+/g;
+    let match;
+    while ((match = pattern.exec(node.nodeValue || ""))) {
+      const range = document.createRange();
+      range.setStart(node, match.index);
+      range.setEnd(node, match.index + match[0].length);
+      for (const rect of range.getClientRects()) {
+        if (rect.width > 0 && rect.height > 0) {
+          rects.push({ top: rect.top, left: rect.left, right: rect.right });
+        }
+      }
+      range.detach?.();
+    }
+  }
+
+  return rects.sort((left, right) => left.top - right.top || left.left - right.left);
+}
+
+function groupRectsByLine(rects) {
+  const lines = [];
+  for (const rect of rects) {
+    const line = lines.find((candidate) => Math.abs(candidate.top - rect.top) < 3);
+    if (line) line.rects.push(rect);
+    else lines.push({ top: rect.top, rects: [rect] });
+  }
+  return lines.map((line) => line.rects);
 }
 
 export default React.memo(DocumentSurface);

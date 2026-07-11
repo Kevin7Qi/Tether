@@ -12,7 +12,11 @@ import { toolbar } from "@milkdown/crepe/feature/toolbar";
 import { editorViewCtx } from "@milkdown/kit/core";
 import { replaceAll } from "@milkdown/kit/utils";
 import { tetherCodeExtensions, tetherCodeLanguages } from "./lib/codeEditor.js";
-import { activateMarkdownSourceAt, markdownSyntaxPlugin } from "./lib/markdownSyntaxPlugin.js";
+import {
+  activateMarkdownSourceAt,
+  activateMarkdownSourceFromPointer,
+  markdownSyntaxPlugin
+} from "./lib/markdownSyntaxPlugin.js";
 
 export default function WysiwygSurface({ content, documentId, onChange, onNotice }) {
   const hostRef = useRef(null);
@@ -50,10 +54,17 @@ export default function WysiwygSurface({ content, documentId, onChange, onNotice
       const target = event.target instanceof Element ? event.target : null;
       const block = target?.closest(".milkdown-code-block");
       if (!block || target.closest(".tether-continuous-source")) return;
-      if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
+      if (host.querySelector(".tether-continuous-source")) return;
 
       const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
       if (!view) return;
+      if (event.type === "mousedown") {
+        if (!activateMarkdownSourceFromPointer(view, event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (!["Enter", " "].includes(event.key)) return;
       let position;
       try {
         position = view.posAtDOM(block, 0, -1);
