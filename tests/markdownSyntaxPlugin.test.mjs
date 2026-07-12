@@ -1,18 +1,48 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Schema } from "@milkdown/kit/prose/model";
-import { EditorState, NodeSelection, TextSelection } from "@milkdown/kit/prose/state";
+import { AllSelection, EditorState, NodeSelection, TextSelection } from "@milkdown/kit/prose/state";
 import {
   activeMarkdownAtomSyntax,
   activeMarkdownBlockSyntax,
   activeMarkdownSyntax,
+  activateMarkdownBlockSourceAt,
+  blockSourceVerticalDirection,
   completedInlineMarkdownSource,
+  continuousMarkdownSource,
+  documentSelectionFromCodeBoundary,
+  downgradeAtxHeadingAtCursor,
   enclosingCodeBlock,
+  inlineSourceBoundaryDeleteDirection,
+  inlineSourceBoundaryDirection,
+  inlineSourceBoundarySelectionDirection,
+  inlineSourceContentOffset,
+  inlineSourceVerticalDirection,
+  isSourceInputComposing,
+  hardbreakBoundaryBackspaceTransaction,
+  hardbreakSourceReplacement,
+  liftListMarkerAtCursor,
+  liftStructuralMarkerAtCursor,
   markdownAtomSyntaxAt,
+  markdownBoundarySourceTarget,
+  markdownDeletionSourceUnit,
   markdownDeletionTarget,
   markdownTableSyntaxAt,
   mappedPosition,
-  sourceCaretOffset
+  sourceCaretOffset,
+  sourceBoundarySelectionRange,
+  sourceInitialSelectionRange,
+  sourceAtomNearPosition,
+  sourceAwareClipboardText,
+  sourceNewlineClipboardText,
+  sourceNewlineDeletionTransaction,
+  sourceNewlineSelectionInfo,
+  structuralBoundarySourceTarget,
+  structuralSourceHandoffTarget,
+  sourceFaithfulHeadingKeymapConfig,
+  sourceFaithfulListItemKeymapConfig,
+  textSelectionAcrossBoundary,
+  usesContinuousSourceEditor
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
 const schema = new Schema({
@@ -51,6 +81,30 @@ test("completed inline Markdown is detected at the typing caret", () => {
   assert.equal(completedInlineMarkdownSource("unfinished **bold"), null);
 });
 
+test("inline code waits for a closing fence with the same backtick length", () => {
+  assert.equal(completedInlineMarkdownSource("Use ``code`")?.[0], undefined);
+  assert.equal(completedInlineMarkdownSource("Use ``code``")?.[0], "``code``");
+  assert.equal(
+    completedInlineMarkdownSource("Use ``code with ` inside``")?.[0],
+    "``code with ` inside``"
+  );
+  assert.equal(completedInlineMarkdownSource("Use ```code``")?.[0], undefined);
+  assert.equal(completedInlineMarkdownSource("Use ```code```")?.[0], "```code```");
+});
+
+test("escaped inline delimiters stay literal until an unescaped source pair is typed", () => {
+  assert.equal(completedInlineMarkdownSource("Write \\*literal*"), null);
+  assert.equal(completedInlineMarkdownSource("Write *literal\\*"), null);
+  assert.equal(completedInlineMarkdownSource("Write \\**literal**"), null);
+  assert.equal(completedInlineMarkdownSource("Use \\`literal`"), null);
+  assert.equal(completedInlineMarkdownSource("Math \\$E=mc^2$"), null);
+  assert.equal(completedInlineMarkdownSource("Read \\[docs](https://example.com)"), null);
+
+  // An escaped backslash leaves the following delimiter active in Markdown.
+  assert.equal(completedInlineMarkdownSource("Write \\\\*italic*")?.[0], "*italic*");
+  assert.equal(completedInlineMarkdownSource("Use \\\\`code`")?.[0], "`code`");
+});
+
 test("prose that merely resembles Markdown stays literal while typing", () => {
   // Dollar amounts are prices, not math: the "$..$" span here wraps text with
   // whitespace at its edges, and a digit can follow the closing "$".
@@ -73,6 +127,25 @@ test("activeMarkdownSyntax treats nested bold and italic as one source range", (
   assert.equal(syntax.to - syntax.from, "marked".length);
 });
 
+test("nested formatting exposes a balanced outer source span instead of an invented intersection", () => {
+  const strong = schema.marks.strong.create();
+  const emphasis = schema.marks.emphasis.create();
+  const doc = schema.node("doc", null, [schema.node("paragraph", null, [
+    schema.text("outer ", [strong]),
+    schema.text("inner", [strong, emphasis]),
+    schema.text(" tail", [strong])
+  ])]);
+  const innerPosition = 1 + "outer ".length + 2;
+  const syntax = activeMarkdownSyntax(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, innerPosition)
+  }));
+
+  assert.deepEqual(syntax.names, ["strong", "emphasis"]);
+  assert.equal(syntax.from, 1);
+  assert.equal(syntax.to, 1 + "outer inner tail".length);
+});
+
 test("activeMarkdownSyntax treats inline code as an opaque Markdown token", () => {
   const syntax = activeMarkdownSyntax(stateWithMarks(["inlineCode", "emphasis"]));
   assert.deepEqual(syntax.names, ["inlineCode"]);
@@ -84,6 +157,68 @@ test("activeMarkdownSyntax exposes a link destination around its active label", 
   const syntax = activeMarkdownSyntax(EditorState.create({ doc, selection: TextSelection.create(doc, 3) }));
   assert.deepEqual(syntax.names, ["link"]);
   assert.equal(syntax.to - syntax.from, "guide".length);
+});
+
+test("boundary deletion targets the adjacent formatted source delimiter, not visible text", () => {
+  const strong = schema.marks.strong.create();
+  const emphasis = schema.marks.emphasis.create();
+  const doc = schema.node("doc", null, [schema.node("paragraph", null, [
+    schema.text("plain "),
+    schema.text("bold", [strong]),
+    schema.text("ital", [emphasis]),
+    schema.text(" tail")
+  ])]);
+  const strongUnit = activeMarkdownSyntax(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, 1 + "plain ".length + 1)
+  }));
+  const emphasisUnit = activeMarkdownSyntax(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, strongUnit.to + 1)
+  }));
+  const boundary = strongUnit.to;
+  const backwardState = EditorState.create({ doc, selection: TextSelection.create(doc, boundary) });
+  const forwardState = EditorState.create({ doc, selection: TextSelection.create(doc, boundary) });
+  const backward = markdownDeletionTarget(backwardState, "backward");
+  const forward = markdownDeletionTarget(forwardState, "forward");
+
+  assert.deepEqual(markdownBoundarySourceTarget(backwardState, "backward"), backward);
+  assert.deepEqual(markdownBoundarySourceTarget(forwardState, "forward"), forward);
+  assert.equal(backward.edge, "end");
+  assert.equal(backward.inlinePosition, boundary - 1);
+  assert.deepEqual(markdownDeletionSourceUnit(backwardState, backward), strongUnit);
+  assert.equal(forward.edge, "start");
+  assert.equal(forward.inlinePosition, boundary + 1);
+  assert.deepEqual(markdownDeletionSourceUnit(forwardState, forward), emphasisUnit);
+});
+
+test("entering rendered inline source with shift-arrow selects its nearest delimiter", () => {
+  assert.deepEqual(sourceBoundarySelectionRange(8, 0, "forward"), {
+    start: 0,
+    end: 1,
+    direction: "forward"
+  });
+  assert.deepEqual(sourceBoundarySelectionRange(8, 8, "backward"), {
+    start: 7,
+    end: 8,
+    direction: "backward"
+  });
+  assert.deepEqual(sourceBoundarySelectionRange(0, 0, "forward"), {
+    start: 0,
+    end: 0,
+    direction: "none"
+  });
+});
+
+test("formatted-source deletion targeting does not intercept an interior character", () => {
+  const strong = schema.marks.strong.create();
+  const doc = schema.node("doc", null, [schema.node("paragraph", null, [
+    schema.text("bold", [strong])
+  ])]);
+  const interior = EditorState.create({ doc, selection: TextSelection.create(doc, 3) });
+
+  assert.equal(markdownDeletionTarget(interior, "backward"), null);
+  assert.equal(markdownDeletionTarget(interior, "forward"), null);
 });
 
 test("sourceCaretOffset preserves the clicked character inside inline Markdown", () => {
@@ -114,7 +249,10 @@ const blockSchema = new Schema({
     heading: {
       content: "inline*",
       group: "block",
-      attrs: { level: { default: 1 } }
+      attrs: {
+        level: { default: 1 },
+        markdownStyle: { default: "atx" }
+      }
     },
     code_block: {
       content: "text*",
@@ -125,8 +263,13 @@ const blockSchema = new Schema({
     },
     blockquote: { content: "block+", group: "block" },
     bullet_list: { content: "list_item+", group: "block" },
+    ordered_list: {
+      content: "list_item+",
+      group: "block",
+      attrs: { start: { default: 1 } }
+    },
     list_item: {
-      content: "paragraph+",
+      content: "paragraph block*",
       attrs: {
         checked: { default: null },
         listType: { default: "bullet" },
@@ -138,11 +281,26 @@ const blockSchema = new Schema({
     table_header: { content: "paragraph+" },
     table_cell: { content: "paragraph+", group: "block" },
     hr: { group: "block", atom: true },
+    link_definition: {
+      group: "block",
+      atom: true,
+      attrs: { definitionSource: { default: "" } }
+    },
     image: {
       inline: true,
       group: "inline",
       atom: true,
       attrs: { src: { default: "" }, alt: { default: "" }, title: { default: "" } }
+    },
+    hardbreak: {
+      inline: true,
+      group: "inline",
+      atom: true,
+      selectable: false,
+      attrs: {
+        isInline: { default: false },
+        markdownMarker: { default: "\\" }
+      }
     },
     footnote_reference: {
       inline: true,
@@ -157,6 +315,10 @@ const blockSchema = new Schema({
       attrs: { value: { default: "" } }
     },
     text: { group: "inline" }
+  },
+  marks: {
+    strong: {},
+    emphasis: {}
   }
 });
 
@@ -170,6 +332,14 @@ function textSelection(doc, needle) {
 
 function docState(doc) {
   return EditorState.create({ doc });
+}
+
+function paragraphStart(doc, text) {
+  let position = null;
+  doc.descendants((node, pos) => {
+    if (position == null && node.type.name === "paragraph" && node.textContent === text) position = pos + 1;
+  });
+  return position;
 }
 
 test("activeMarkdownBlockSyntax exposes the complete heading as one block", () => {
@@ -199,7 +369,9 @@ test("sourceCaretOffset maps the clicked code character past the fence prefix", 
   const state = docState(doc);
   const unit = { from: 0, to: doc.firstChild.nodeSize, kind: "block", name: "code_block" };
   const serializer = (partialDoc) => `\`\`\`js\n${partialDoc.firstChild.textContent}\n\`\`\``;
+  assert.equal(sourceCaretOffset(state, unit, `\`\`\`js\n${code}\n\`\`\``, 1, null, serializer), 6);
   assert.equal(sourceCaretOffset(state, unit, `\`\`\`js\n${code}\n\`\`\``, 1 + 6, null, serializer), 12);
+  assert.equal(sourceCaretOffset(state, unit, `\`\`\`js\n${code}\n\`\`\``, 1 + code.length, null, serializer), 6 + code.length);
 });
 
 test("enclosingCodeBlock recovers the code node from an inner DOM position", () => {
@@ -218,6 +390,432 @@ test("activeMarkdownBlockSyntax exposes the complete list as one multiline block
   const doc = blockSchema.node("doc", null, [blockSchema.node("bullet_list", null, [item])]);
   const syntax = activeMarkdownBlockSyntax(EditorState.create({ doc, selection: textSelection(doc, "Done") }));
   assert.deepEqual(syntax, { from: 0, to: doc.firstChild.nodeSize, kind: "block", name: "bullet_list" });
+});
+
+test("nested structural content exposes its outer physical source container", () => {
+  const nestedItem = blockSchema.node("list_item", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Nested")])
+  ]);
+  const outerItem = blockSchema.node("list_item", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Outer")]),
+    blockSchema.node("bullet_list", null, [nestedItem])
+  ]);
+  const doc = blockSchema.node("doc", null, [
+    blockSchema.node("blockquote", null, [
+      blockSchema.node("bullet_list", null, [outerItem])
+    ])
+  ]);
+  const syntax = activeMarkdownBlockSyntax(EditorState.create({
+    doc,
+    selection: textSelection(doc, "Nested")
+  }));
+  assert.deepEqual(syntax, {
+    from: 0,
+    to: doc.firstChild.nodeSize,
+    kind: "block",
+    name: "blockquote"
+  });
+});
+
+test("structural boundary arrows expose hidden heading, list, and quote source only at text edges", () => {
+  const headingDoc = blockSchema.node("doc", null, [
+    blockSchema.node("heading", { level: 2 }, [blockSchema.text("Heading")])
+  ]);
+  const headingStart = EditorState.create({
+    doc: headingDoc,
+    selection: TextSelection.create(headingDoc, 1)
+  });
+  const headingEnd = EditorState.create({
+    doc: headingDoc,
+    selection: TextSelection.create(headingDoc, 1 + "Heading".length)
+  });
+  assert.equal(structuralBoundarySourceTarget(headingStart, "ArrowLeft")?.unit.name, "heading");
+  assert.equal(structuralBoundarySourceTarget(headingEnd, "ArrowRight")?.direction, "forward");
+  assert.equal(structuralBoundarySourceTarget(headingStart, "ArrowRight"), null);
+
+  const item = blockSchema.node("list_item", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Item")])
+  ]);
+  const listDoc = blockSchema.node("doc", null, [blockSchema.node("bullet_list", null, [item])]);
+  const listStart = EditorState.create({
+    doc: listDoc,
+    selection: TextSelection.create(listDoc, paragraphStart(listDoc, "Item"))
+  });
+  assert.equal(structuralBoundarySourceTarget(listStart, "ArrowLeft")?.unit.name, "bullet_list");
+
+  const quoteDoc = blockSchema.node("doc", null, [
+    blockSchema.node("blockquote", null, [
+      blockSchema.node("paragraph", null, [blockSchema.text("Quote")])
+    ])
+  ]);
+  const quoteStart = EditorState.create({
+    doc: quoteDoc,
+    selection: TextSelection.create(quoteDoc, paragraphStart(quoteDoc, "Quote"))
+  });
+  assert.equal(structuralBoundarySourceTarget(quoteStart, "ArrowLeft")?.unit.name, "blockquote");
+
+  const plainDoc = blockSchema.node("doc", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Plain")])
+  ]);
+  const plainStart = EditorState.create({ doc: plainDoc, selection: TextSelection.create(plainDoc, 1) });
+  assert.equal(structuralBoundarySourceTarget(plainStart, "ArrowLeft"), null);
+});
+
+test("table cell boundary arrows enter the exact hidden pipe source", () => {
+  const header = blockSchema.node("table_header", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Name")])
+  ]);
+  const cell = blockSchema.node("table_cell", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Tether")])
+  ]);
+  const table = blockSchema.node("table", null, [
+    blockSchema.node("table_row", null, [header]),
+    blockSchema.node("table_row", null, [cell])
+  ]);
+  const doc = blockSchema.node("doc", null, [table]);
+  const start = paragraphStart(doc, "Name");
+  const end = paragraphStart(doc, "Tether") + "Tether".length;
+  const backward = structuralBoundarySourceTarget(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, start)
+  }), "ArrowLeft");
+  const forward = structuralBoundarySourceTarget(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, end)
+  }), "ArrowRight");
+
+  assert.deepEqual(backward, {
+    unit: { from: 0, to: table.nodeSize, kind: "block", name: "table" },
+    direction: "backward",
+    position: start
+  });
+  assert.deepEqual(forward, {
+    unit: { from: 0, to: table.nodeSize, kind: "block", name: "table" },
+    direction: "forward",
+    position: end
+  });
+  assert.equal(structuralBoundarySourceTarget(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, start + 1)
+  }), "ArrowRight"), null);
+});
+
+test("inline delimiters precede enclosing structural markers at a textblock edge", () => {
+  const strong = blockSchema.marks.strong.create();
+  const item = blockSchema.node("list_item", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Bold", [strong])])
+  ]);
+  const doc = blockSchema.node("doc", null, [blockSchema.node("bullet_list", null, [item])]);
+  const start = paragraphStart(doc, "Bold");
+  const backwardState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, start)
+  });
+  const forwardState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, start + "Bold".length)
+  });
+  const backward = structuralBoundarySourceTarget(backwardState, "ArrowLeft");
+  const forward = structuralBoundarySourceTarget(forwardState, "ArrowRight");
+  assert.equal(backward?.unit.kind, "inline");
+  assert.deepEqual(backward?.unit.names, ["strong"]);
+  assert.equal(forward?.unit.kind, "inline");
+  assert.deepEqual(forward?.unit.names, ["strong"]);
+});
+
+test("inline source hands directly into enclosing heading source coordinates", () => {
+  const strong = blockSchema.marks.strong.create();
+  const doc = blockSchema.node("doc", null, [
+    blockSchema.node("heading", { level: 2 }, [blockSchema.text("Bold", [strong])])
+  ]);
+  const serialize = (partialDoc) => {
+    const block = partialDoc.firstChild;
+    let inline = "";
+    block.forEach((node) => {
+      inline += node.marks.some((mark) => mark.type.name === "strong")
+        ? `**${node.text}**`
+        : node.text;
+    });
+    return block.type.name === "heading" ? `## ${inline}` : inline;
+  };
+  const start = 1;
+  const end = start + "Bold".length;
+  const backwardState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, start)
+  });
+  const forwardState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, end)
+  });
+
+  const backwardEdge = structuralSourceHandoffTarget(
+    backwardState,
+    start,
+    "backward",
+    serialize
+  );
+  const backwardMove = structuralSourceHandoffTarget(
+    backwardState,
+    start,
+    "backward",
+    serialize,
+    true
+  );
+  const forwardEdge = structuralSourceHandoffTarget(
+    forwardState,
+    end,
+    "forward",
+    serialize
+  );
+  assert.equal(backwardEdge?.source, "## **Bold**");
+  assert.equal(backwardEdge?.sourceOffset, "## ".length);
+  assert.equal(backwardMove?.sourceOffset, "## ".length - 1);
+  assert.equal(forwardEdge, null);
+});
+
+test("Backspace at the first list marker lifts the item without joining the preceding heading", () => {
+  const heading = blockSchema.node("heading", { level: 2 }, [blockSchema.text("Heading")]);
+  const item = (text, attrs = null) => blockSchema.node("list_item", attrs, [
+    blockSchema.node("paragraph", null, [blockSchema.text(text)])
+  ]);
+  const doc = blockSchema.node("doc", null, [
+    heading,
+    blockSchema.node("bullet_list", null, [item("First"), item("Second")])
+  ]);
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, paragraphStart(doc, "First"))
+  });
+  let nextState = state;
+
+  assert.equal(liftListMarkerAtCursor(state, (transaction) => {
+    nextState = state.apply(transaction);
+  }), true);
+  assert.deepEqual(
+    Array.from({ length: nextState.doc.childCount }, (_, index) => nextState.doc.child(index).type.name),
+    ["heading", "paragraph", "bullet_list"]
+  );
+  assert.equal(nextState.doc.child(0).textContent, "Heading");
+  assert.equal(nextState.doc.child(1).textContent, "First");
+  assert.equal(nextState.doc.child(2).textContent, "Second");
+});
+
+test("Backspace at a middle list marker splits around the lifted paragraph", () => {
+  const item = (text) => blockSchema.node("list_item", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text(text)])
+  ]);
+  const doc = blockSchema.node("doc", null, [
+    blockSchema.node("bullet_list", null, [item("First"), item("Middle"), item("Last")])
+  ]);
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, paragraphStart(doc, "Middle"))
+  });
+  let nextState = state;
+
+  assert.equal(liftListMarkerAtCursor(state, (transaction) => {
+    nextState = state.apply(transaction);
+  }), true);
+  assert.deepEqual(
+    Array.from({ length: nextState.doc.childCount }, (_, index) => nextState.doc.child(index).type.name),
+    ["bullet_list", "paragraph", "bullet_list"]
+  );
+  assert.deepEqual(
+    Array.from({ length: nextState.doc.childCount }, (_, index) => nextState.doc.child(index).textContent),
+    ["First", "Middle", "Last"]
+  );
+});
+
+test("Backspace at a nested marker outdents the item by one list level", () => {
+  const paragraph = (text) => blockSchema.node("paragraph", null, [blockSchema.text(text)]);
+  const nestedItem = blockSchema.node("list_item", null, [paragraph("Nested")]);
+  const outerItem = blockSchema.node("list_item", null, [
+    paragraph("Outer"),
+    blockSchema.node("bullet_list", null, [nestedItem])
+  ]);
+  const doc = blockSchema.node("doc", null, [blockSchema.node("bullet_list", null, [outerItem])]);
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, paragraphStart(doc, "Nested"))
+  });
+  let nextState = state;
+
+  assert.equal(liftListMarkerAtCursor(state, (transaction) => {
+    nextState = state.apply(transaction);
+  }), true);
+  const list = nextState.doc.firstChild;
+  assert.equal(list.type.name, "bullet_list");
+  assert.equal(list.childCount, 2);
+  assert.equal(list.child(0).textContent, "Outer");
+  assert.equal(list.child(1).textContent, "Nested");
+});
+
+test("marker lifting works for ordered and checked task items", () => {
+  for (const { listName, attrs } of [
+    { listName: "ordered_list", attrs: null },
+    { listName: "bullet_list", attrs: { checked: true, listType: "bullet", label: "•" } }
+  ]) {
+    const item = blockSchema.node("list_item", attrs, [
+      blockSchema.node("paragraph", null, [blockSchema.text("Item")])
+    ]);
+    const doc = blockSchema.node("doc", null, [blockSchema.node(listName, null, [item])]);
+    const state = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, paragraphStart(doc, "Item"))
+    });
+    let nextState = state;
+
+    assert.equal(liftListMarkerAtCursor(state, (transaction) => {
+      nextState = state.apply(transaction);
+    }), true);
+    assert.equal(nextState.doc.firstChild.type.name, "paragraph");
+    assert.equal(nextState.doc.firstChild.textContent, "Item");
+  }
+});
+
+test("Backspace at a blockquote paragraph start removes the nearest quote marker", () => {
+  const quote = blockSchema.node("blockquote", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Quoted")])
+  ]);
+  const doc = blockSchema.node("doc", null, [quote]);
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, paragraphStart(doc, "Quoted"))
+  });
+  let nextState = null;
+
+  assert.equal(liftStructuralMarkerAtCursor(state, (transaction) => {
+    nextState = state.apply(transaction);
+  }), true);
+  assert.equal(nextState.doc.firstChild.type.name, "paragraph");
+  assert.equal(nextState.doc.textContent, "Quoted");
+});
+
+test("nested quote and list markers lift in nearest-source-marker order", () => {
+  const paragraph = blockSchema.node("paragraph", null, [blockSchema.text("Nested")]);
+  const quoteInList = blockSchema.node("doc", null, [
+    blockSchema.node("bullet_list", null, [
+      blockSchema.node("list_item", { checked: null, listType: "bullet", label: "•" }, [
+        blockSchema.node("paragraph"),
+        blockSchema.node("blockquote", null, [paragraph])
+      ])
+    ])
+  ]);
+  const listInQuote = blockSchema.node("doc", null, [
+    blockSchema.node("blockquote", null, [
+      blockSchema.node("bullet_list", null, [
+        blockSchema.node("list_item", { checked: null, listType: "bullet", label: "•" }, [paragraph])
+      ])
+    ])
+  ]);
+
+  const liftOnce = (doc) => {
+    const state = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, paragraphStart(doc, "Nested"))
+    });
+    let nextState = null;
+    assert.equal(liftStructuralMarkerAtCursor(state, (transaction) => {
+      nextState = state.apply(transaction);
+    }), true);
+    return nextState.doc;
+  };
+
+  const quoteLiftedFirst = liftOnce(quoteInList);
+  assert.equal(quoteLiftedFirst.firstChild.type.name, "bullet_list");
+  assert.equal(quoteLiftedFirst.firstChild.firstChild.firstChild.type.name, "paragraph");
+
+  const listLiftedFirst = liftOnce(listInQuote);
+  assert.equal(listLiftedFirst.firstChild.type.name, "blockquote");
+  assert.equal(listLiftedFirst.firstChild.firstChild.type.name, "paragraph");
+});
+
+test("structural marker lifting leaves headings and non-boundary carets to their native keymaps", () => {
+  const heading = blockSchema.node("heading", { level: 2 }, [blockSchema.text("Heading")]);
+  const quote = blockSchema.node("blockquote", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Quoted")])
+  ]);
+  const headingDoc = blockSchema.node("doc", null, [blockSchema.node("blockquote", null, [heading])]);
+  const quoteDoc = blockSchema.node("doc", null, [quote]);
+
+  assert.equal(liftStructuralMarkerAtCursor(EditorState.create({
+    doc: headingDoc,
+    selection: textSelection(headingDoc, "Heading")
+  })), false);
+  assert.equal(liftStructuralMarkerAtCursor(EditorState.create({
+    doc: quoteDoc,
+    selection: TextSelection.create(quoteDoc, paragraphStart(quoteDoc, "Quoted") + 1)
+  })), false);
+});
+
+test("marker lifting falls through away from a collapsed list-item start", () => {
+  const paragraph = blockSchema.node("paragraph", null, [blockSchema.text("Item")]);
+  const list = blockSchema.node("bullet_list", null, [blockSchema.node("list_item", null, [paragraph])]);
+  const doc = blockSchema.node("doc", null, [list]);
+  const start = paragraphStart(doc, "Item");
+
+  assert.equal(liftListMarkerAtCursor(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, start + 1)
+  })), false);
+  assert.equal(liftListMarkerAtCursor(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, start, start + 1)
+  })), false);
+});
+
+test("the built-in first-item keymap no longer treats forward Delete like marker deletion", () => {
+  const config = {
+    LiftFirstListItem: { shortcuts: ["Backspace", "Delete"], priority: 50 },
+    NextListItem: { shortcuts: "Enter", priority: 50 }
+  };
+  const next = sourceFaithfulListItemKeymapConfig(config);
+
+  assert.equal(next.LiftFirstListItem.shortcuts, "Backspace");
+  assert.equal(next.LiftFirstListItem.priority, 50);
+  assert.deepEqual(next.NextListItem, config.NextListItem);
+  assert.deepEqual(config.LiftFirstListItem.shortcuts, ["Backspace", "Delete"]);
+});
+
+test("the built-in heading keymap yields Backspace to the source-aware handler", () => {
+  const config = {
+    DowngradeHeading: { shortcuts: ["Delete", "Backspace"], priority: 50 },
+    TurnIntoH1: { shortcuts: "Mod-Alt-1", priority: 50 }
+  };
+  const next = sourceFaithfulHeadingKeymapConfig(config);
+
+  assert.deepEqual(next.DowngradeHeading.shortcuts, []);
+  assert.equal(next.DowngradeHeading.priority, 50);
+  assert.deepEqual(next.TurnIntoH1, config.TurnIntoH1);
+  assert.deepEqual(config.DowngradeHeading.shortcuts, ["Delete", "Backspace"]);
+});
+
+test("Backspace downgrades ATX headings but leaves setext line boundaries native", () => {
+  const atx = blockSchema.node("heading", { level: 2, markdownStyle: "atx" }, [blockSchema.text("ATX")]);
+  const atxDoc = blockSchema.node("doc", null, [atx]);
+  const atxState = EditorState.create({ doc: atxDoc, selection: TextSelection.create(atxDoc, 1) });
+  let atxTransaction = null;
+  assert.equal(downgradeAtxHeadingAtCursor(atxState, (transaction) => {
+    atxTransaction = transaction;
+  }), true);
+  assert.equal(atxTransaction.doc.firstChild.type.name, "heading");
+  assert.equal(atxTransaction.doc.firstChild.attrs.level, 1);
+  assert.equal(atxTransaction.doc.firstChild.attrs.markdownStyle, "atx");
+
+  const setext = blockSchema.node("heading", { level: 1, markdownStyle: "setext" }, [blockSchema.text("Setext")]);
+  const setextDoc = blockSchema.node("doc", null, [setext]);
+  const setextState = EditorState.create({ doc: setextDoc, selection: TextSelection.create(setextDoc, 1) });
+  assert.equal(downgradeAtxHeadingAtCursor(setextState), false);
+
+  const h1 = blockSchema.node("heading", { level: 1, markdownStyle: "atx" }, [blockSchema.text("Title")]);
+  const h1Doc = blockSchema.node("doc", null, [h1]);
+  const h1State = EditorState.create({ doc: h1Doc, selection: TextSelection.create(h1Doc, 1) });
+  let h1Transaction = null;
+  assert.equal(downgradeAtxHeadingAtCursor(h1State, (transaction) => {
+    h1Transaction = transaction;
+  }), true);
+  assert.equal(h1Transaction.doc.firstChild.type.name, "paragraph");
 });
 
 test("sourceCaretOffset distinguishes repeated text in separate list items", () => {
@@ -249,6 +847,115 @@ test("mappedPosition follows a captured destination through an earlier edit", ()
   const target = doc.firstChild.nodeSize + 1;
   const transaction = state.tr.insertText(" much longer", 1 + "short".length);
   assert.equal(mappedPosition(transaction.mapping, target), target + " much longer".length);
+});
+
+test("selection across a block boundary represents the source newline without consuming text", () => {
+  const before = blockSchema.node("paragraph", null, [blockSchema.text("before")]);
+  const code = blockSchema.node("code_block", { language: "js" }, [blockSchema.text("code")]);
+  const after = blockSchema.node("paragraph", null, [blockSchema.text("after")]);
+  const doc = blockSchema.node("doc", null, [before, code, after]);
+  const state = docState(doc);
+  const codePosition = before.nodeSize;
+  const backward = textSelectionAcrossBoundary(state, codePosition, "backward");
+  const forward = textSelectionAcrossBoundary(state, codePosition + code.nodeSize, "forward");
+
+  assert.equal(backward.empty, false);
+  assert.equal(backward.anchor > backward.head, true);
+  assert.equal(doc.textBetween(backward.from, backward.to, ""), "");
+  assert.equal(doc.textBetween(backward.from, backward.to, "\n"), "\n");
+  assert.equal(forward.empty, false);
+  assert.equal(forward.anchor < forward.head, true);
+  assert.equal(doc.textBetween(forward.from, forward.to, ""), "");
+  assert.equal(doc.textBetween(forward.from, forward.to, "\n"), "\n");
+  const newlineState = EditorState.create({ doc, selection: forward });
+  assert.equal(sourceNewlineSelectionInfo(newlineState)?.boundary, codePosition + code.nodeSize);
+  assert.equal(sourceNewlineClipboardText(newlineState), "\n");
+
+  const fromInlineEnd = textSelectionAcrossBoundary(
+    state,
+    codePosition + 1 + code.content.size,
+    "forward"
+  );
+  assert.equal(fromInlineEnd.from, forward.from);
+  assert.equal(fromInlineEnd.to, forward.to);
+});
+
+test("selection after an enclosing list source captures only its root separator", () => {
+  const item = blockSchema.node("list_item", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("item")])
+  ]);
+  const list = blockSchema.node("bullet_list", null, [item]);
+  const after = blockSchema.node("paragraph", null, [blockSchema.text("after")]);
+  const doc = blockSchema.node("doc", null, [list, after]);
+  const selection = textSelectionAcrossBoundary(docState(doc), list.nodeSize, "forward");
+
+  assert.equal(selection.anchor < selection.head, true);
+  assert.equal(doc.textBetween(selection.from, selection.to, ""), "");
+  assert.equal(doc.textBetween(selection.from, selection.to, "\n"), "\n");
+});
+
+test("deleting a source newline joins exactly the two blocks it separates", () => {
+  const before = blockSchema.node("paragraph", null, [blockSchema.text("before")]);
+  const code = blockSchema.node("code_block", { language: "js" }, [blockSchema.text("code")]);
+  const after = blockSchema.node("paragraph", null, [blockSchema.text("after")]);
+
+  const forwardDoc = blockSchema.node("doc", null, [code, after]);
+  const forwardState = docState(forwardDoc);
+  const forward = sourceNewlineDeletionTransaction(
+    forwardState,
+    code.nodeSize,
+    "forward"
+  );
+  assert.equal(forward?.doc.childCount, 1);
+  assert.equal(forward?.doc.firstChild.type.name, "code_block");
+  assert.equal(forward?.doc.firstChild.textContent, "codeafter");
+
+  const backwardDoc = blockSchema.node("doc", null, [before, code]);
+  const backwardState = docState(backwardDoc);
+  const backward = sourceNewlineDeletionTransaction(
+    backwardState,
+    before.nodeSize,
+    "backward"
+  );
+  assert.equal(backward?.doc.childCount, 1);
+  assert.equal(backward?.doc.firstChild.type.name, "paragraph");
+  assert.equal(backward?.doc.firstChild.textContent, "beforecode");
+});
+
+test("a separator selection never swallows an intervening atomic block", () => {
+  const before = blockSchema.node("paragraph", null, [blockSchema.text("before")]);
+  const rule = blockSchema.node("hr");
+  const after = blockSchema.node("paragraph", null, [blockSchema.text("after")]);
+  const doc = blockSchema.node("doc", null, [before, rule, after]);
+  const state = docState(doc);
+  const afterRule = before.nodeSize + rule.nodeSize;
+  const selection = textSelectionAcrossBoundary(state, afterRule, "forward");
+
+  assert.equal(doc.textBetween(selection.from, selection.to), "a");
+  assert.equal(sourceNewlineSelectionInfo(EditorState.create({ doc, selection })), null);
+  assert.equal(sourceNewlineClipboardText(EditorState.create({ doc, selection })), null);
+  assert.equal(sourceNewlineDeletionTransaction(state, afterRule, "forward"), null);
+});
+
+test("ordinary code-boundary navigation reaches surrounding text but not a fake document edge", () => {
+  const before = blockSchema.node("paragraph", null, [blockSchema.text("Before")]);
+  const code = blockSchema.node("code_block", { language: "js" }, [blockSchema.text("code")]);
+  const after = blockSchema.node("paragraph", null, [blockSchema.text("After")]);
+  const doc = blockSchema.node("doc", null, [before, code, after]);
+  const state = docState(doc);
+  const codePosition = before.nodeSize;
+
+  const backward = documentSelectionFromCodeBoundary(state, codePosition, "backward");
+  const forward = documentSelectionFromCodeBoundary(state, codePosition + code.nodeSize, "forward");
+  assert.equal(backward.$from.parent.textContent, "Before");
+  assert.equal(backward.$from.parentOffset, "Before".length);
+  assert.equal(forward.$from.parent.textContent, "After");
+  assert.equal(forward.$from.parentOffset, 0);
+
+  const codeOnly = blockSchema.node("doc", null, [code]);
+  const codeOnlyState = docState(codeOnly);
+  assert.equal(documentSelectionFromCodeBoundary(codeOnlyState, 0, "backward"), null);
+  assert.equal(documentSelectionFromCodeBoundary(codeOnlyState, code.nodeSize, "forward"), null);
 });
 
 test("activeMarkdownBlockSyntax leaves table cells visual even inside a blockquote", () => {
@@ -304,6 +1011,7 @@ test("activeMarkdownAtomSyntax exposes selectable image, math, and rule source",
     kind: "inline",
     name: "math_inline"
   });
+  assert.equal(sourceAtomNearPosition(EditorState.create({ doc: imageDoc }), 2)?.name, "image");
 
   const ruleDoc = blockSchema.node("doc", null, [blockSchema.node("hr")]);
   const ruleSyntax = activeMarkdownAtomSyntax(EditorState.create({
@@ -311,6 +1019,63 @@ test("activeMarkdownAtomSyntax exposes selectable image, math, and rule source",
     selection: NodeSelection.create(ruleDoc, 0)
   }));
   assert.deepEqual(ruleSyntax, { from: 0, to: 1, kind: "block", name: "hr" });
+  assert.equal(sourceAtomNearPosition(EditorState.create({ doc: ruleDoc }), 1)?.name, "hr");
+
+  const definition = blockSchema.node("link_definition", {
+    definitionSource: "[docs]: https://example.com"
+  });
+  const definitionDoc = blockSchema.node("doc", null, [definition]);
+  const definitionState = EditorState.create({
+    doc: definitionDoc,
+    selection: NodeSelection.create(definitionDoc, 0)
+  });
+  const definitionSyntax = activeMarkdownAtomSyntax(definitionState);
+  assert.deepEqual(definitionSyntax, {
+    from: 0,
+    to: definition.nodeSize,
+    kind: "block",
+    name: "link_definition"
+  });
+  assert.equal(
+    continuousMarkdownSource(definitionState, definitionSyntax, () => "[docs]: https://example.com\n"),
+    "[docs]: https://example.com"
+  );
+});
+
+test("source-aware clipboard preserves atoms, marks, block nodes, and Select All", () => {
+  const image = blockSchema.node("image", { src: "image.png", alt: "Alt", title: "Title" });
+  const imageDoc = blockSchema.node("doc", null, [blockSchema.node("paragraph", null, [image])]);
+  assert.equal(sourceAwareClipboardText(EditorState.create({
+    doc: imageDoc,
+    selection: NodeSelection.create(imageDoc, 1)
+  }), () => '![Alt](image.png "Title")\n'), '![Alt](image.png "Title")');
+
+  const strong = blockSchema.marks.strong.create();
+  const markedDoc = blockSchema.node("doc", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Bold", [strong])])
+  ]);
+  assert.equal(sourceAwareClipboardText(EditorState.create({
+    doc: markedDoc,
+    selection: TextSelection.create(markedDoc, 1, 5)
+  }), () => "**Bold**\n"), "**Bold**");
+
+  const plainDoc = blockSchema.node("doc", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Plain")])
+  ]);
+  assert.equal(sourceAwareClipboardText(EditorState.create({
+    doc: plainDoc,
+    selection: TextSelection.create(plainDoc, 1, 6)
+  }), () => "Plain\n"), null);
+
+  const ruleDoc = blockSchema.node("doc", null, [blockSchema.node("hr")]);
+  assert.equal(sourceAwareClipboardText(EditorState.create({
+    doc: ruleDoc,
+    selection: NodeSelection.create(ruleDoc, 0)
+  }), () => "---\n"), "---");
+  assert.equal(sourceAwareClipboardText(EditorState.create({
+    doc: markedDoc,
+    selection: new AllSelection(markedDoc)
+  }), () => "**Bold**\n"), "**Bold**\n");
 });
 
 test("Backspace at a rendered math boundary targets its Markdown source", () => {
@@ -327,10 +1092,262 @@ test("Backspace at a rendered math boundary targets its Markdown source", () => 
     selection: TextSelection.create(doc, mathPosition + math.nodeSize)
   });
 
-  assert.deepEqual(markdownDeletionTarget(state, "backward"), {
+  const target = markdownDeletionTarget(state, "backward");
+  assert.deepEqual(target, {
     position: mathPosition,
     atomPosition: mathPosition,
     explicitUnitPosition: null,
     edge: "end"
   });
+  assert.deepEqual(markdownDeletionSourceUnit(state, target), {
+    from: mathPosition,
+    to: mathPosition + math.nodeSize,
+    kind: "inline",
+    name: "math_inline"
+  });
+  const beforeState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, mathPosition)
+  });
+  assert.deepEqual(markdownBoundarySourceTarget(beforeState, "forward"), {
+    position: mathPosition,
+    atomPosition: mathPosition,
+    explicitUnitPosition: null,
+    edge: "start"
+  });
+});
+
+test("hard-break navigation exposes only its hidden marker source", () => {
+  const hardbreak = blockSchema.node("hardbreak", {
+    isInline: false,
+    markdownMarker: "  "
+  });
+  const paragraph = blockSchema.node("paragraph", null, [
+    blockSchema.text("alpha"),
+    hardbreak,
+    blockSchema.text("beta")
+  ]);
+  const doc = blockSchema.node("doc", null, [paragraph]);
+  const state = EditorState.create({ doc });
+  const position = 1 + "alpha".length;
+  const unit = markdownAtomSyntaxAt(state, position);
+
+  assert.deepEqual(unit, {
+    from: position,
+    to: position + hardbreak.nodeSize,
+    kind: "inline",
+    name: "hardbreak"
+  });
+  assert.equal(continuousMarkdownSource(state, unit, () => "ignored"), "  ");
+  assert.deepEqual(markdownBoundarySourceTarget(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, position)
+  }), "forward"), {
+    position,
+    atomPosition: position,
+    explicitUnitPosition: null,
+    edge: "start"
+  });
+
+  const softbreak = blockSchema.node("hardbreak", {
+    isInline: true,
+    markdownMarker: null
+  });
+  const softDoc = blockSchema.node("doc", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("a"), softbreak, blockSchema.text("b")])
+  ]);
+  assert.equal(markdownAtomSyntaxAt(EditorState.create({ doc: softDoc }), 2), null);
+});
+
+test("Backspace after a hard break deletes only the source newline", () => {
+  for (const marker of ["\\", "  ", "   "]) {
+    const hardbreak = blockSchema.node("hardbreak", {
+      isInline: false,
+      markdownMarker: marker
+    });
+    const paragraph = blockSchema.node("paragraph", null, [
+      blockSchema.text("alpha"),
+      hardbreak,
+      blockSchema.text("beta")
+    ]);
+    const doc = blockSchema.node("doc", null, [paragraph]);
+    const afterBreak = 1 + "alpha".length + hardbreak.nodeSize;
+    const state = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, afterBreak)
+    });
+    const transaction = hardbreakBoundaryBackspaceTransaction(state);
+    assert.equal(transaction?.doc.firstChild.textContent, `alpha${marker}beta`);
+    assert.equal(transaction?.selection.from, 1 + "alpha".length + marker.length);
+  }
+});
+
+test("editing a hard-break marker preserves the source newline semantics", () => {
+  const node = blockSchema.node("hardbreak", {
+    isInline: false,
+    markdownMarker: "  "
+  });
+
+  const reduced = hardbreakSourceReplacement(blockSchema, node, " ");
+  assert.equal(reduced.childCount, 2);
+  assert.equal(reduced.firstChild.text, " ");
+  assert.equal(reduced.lastChild.type.name, "hardbreak");
+  assert.equal(reduced.lastChild.attrs.isInline, true);
+  assert.equal(reduced.lastChild.attrs.markdownMarker, null);
+
+  const removed = hardbreakSourceReplacement(blockSchema, node, "");
+  assert.equal(removed.childCount, 1);
+  assert.equal(removed.firstChild.attrs.isInline, true);
+
+  const changed = hardbreakSourceReplacement(blockSchema, node, "\\");
+  assert.equal(changed.childCount, 1);
+  assert.equal(changed.firstChild.attrs.isInline, false);
+  assert.equal(changed.firstChild.attrs.markdownMarker, "\\");
+});
+
+test("structural block boundaries keep native rendered editing", () => {
+  const heading = blockSchema.node("heading", { level: 2 }, [blockSchema.text("Heading")]);
+  const doc = blockSchema.node("doc", null, [heading]);
+  const state = EditorState.create({
+    doc,
+    selection: NodeSelection.create(doc, 0)
+  });
+
+  assert.equal(markdownDeletionTarget(state, "backward"), null);
+});
+
+test("inline source arrows hand off only at an unmodified collapsed boundary", () => {
+  assert.equal(inlineSourceBoundaryDirection("ArrowLeft", 0, 0, 8), "backward");
+  assert.equal(inlineSourceBoundaryDirection("ArrowRight", 8, 8, 8), "forward");
+  assert.equal(inlineSourceBoundaryDirection("ArrowLeft", 1, 1, 8), null);
+  assert.equal(inlineSourceBoundaryDirection("ArrowRight", 7, 7, 8), null);
+  assert.equal(inlineSourceBoundaryDirection("ArrowLeft", 0, 2, 8), null);
+  assert.equal(inlineSourceBoundaryDirection("ArrowRight", 8, 8, 8, true), null);
+});
+
+test("inline and block source deletion hands off only beyond outer delimiters", () => {
+  assert.equal(inlineSourceBoundaryDeleteDirection("Backspace", 0, 0, 8), "backward");
+  assert.equal(inlineSourceBoundaryDeleteDirection("Delete", 8, 8, 8), "forward");
+  assert.equal(inlineSourceBoundaryDeleteDirection("Backspace", 1, 1, 8), null);
+  assert.equal(inlineSourceBoundaryDeleteDirection("Delete", 7, 7, 8), null);
+  assert.equal(inlineSourceBoundaryDeleteDirection("Backspace", 0, 2, 8), null);
+  assert.equal(inlineSourceBoundaryDeleteDirection("Delete", 8, 8, 8, true), null);
+});
+
+test("inline source vertical arrows always return a collapsed caret to the document", () => {
+  assert.equal(inlineSourceVerticalDirection("ArrowUp", 3, 3), "up");
+  assert.equal(inlineSourceVerticalDirection("ArrowDown", 3, 3), "down");
+  assert.equal(inlineSourceVerticalDirection("ArrowLeft", 3, 3), null);
+  assert.equal(inlineSourceVerticalDirection("ArrowUp", 1, 4), null);
+  assert.equal(inlineSourceVerticalDirection("ArrowDown", 3, 3, true), null);
+});
+
+test("block source vertical arrows hand off only from the outer source lines", () => {
+  const source = "$$\nformula\n$$";
+  assert.equal(blockSourceVerticalDirection("ArrowUp", 1, 1, source), "up");
+  assert.equal(blockSourceVerticalDirection("ArrowUp", 4, 4, source), null);
+  assert.equal(blockSourceVerticalDirection("ArrowDown", 10, 10, source), null);
+  assert.equal(blockSourceVerticalDirection("ArrowDown", source.length, source.length, source), "down");
+  assert.equal(blockSourceVerticalDirection("ArrowLeft", 0, 0, source), null);
+  assert.equal(blockSourceVerticalDirection("ArrowDown", source.length, source.length, source, true), null);
+});
+
+test("inline and block source shift-arrows extend selection across an outer boundary", () => {
+  assert.equal(inlineSourceBoundarySelectionDirection("ArrowLeft", 0, 0, 8, true), "backward");
+  assert.equal(inlineSourceBoundarySelectionDirection("ArrowRight", 8, 8, 8, true), "forward");
+  const multilineSource = "| A |\n| - |\n| B |";
+  assert.equal(inlineSourceBoundarySelectionDirection("ArrowLeft", 0, 0, multilineSource.length, true), "backward");
+  assert.equal(
+    inlineSourceBoundarySelectionDirection(
+      "ArrowRight",
+      multilineSource.length,
+      multilineSource.length,
+      multilineSource.length,
+      true
+    ),
+    "forward"
+  );
+  assert.equal(inlineSourceBoundarySelectionDirection("ArrowLeft", 1, 1, 8, true), null);
+  assert.equal(inlineSourceBoundarySelectionDirection("ArrowRight", 7, 7, 8, true), null);
+  assert.equal(inlineSourceBoundarySelectionDirection("ArrowLeft", 0, 2, 8, true), null);
+  assert.equal(inlineSourceBoundarySelectionDirection("ArrowRight", 8, 8, 8, false), null);
+  assert.equal(inlineSourceBoundarySelectionDirection("ArrowRight", 8, 8, 8, true, true), null);
+});
+
+test("fenced source selection crosses hidden newlines and fence lines in source coordinates", () => {
+  const source = "```js\nalpha\n```";
+  const contentStart = "```js\n".length;
+  const contentEnd = contentStart + "alpha".length;
+
+  assert.deepEqual(sourceInitialSelectionRange(source, contentStart, "backward"), {
+    start: contentStart - 1,
+    end: contentStart,
+    direction: "backward"
+  });
+  assert.deepEqual(sourceInitialSelectionRange(source, contentEnd, "forward"), {
+    start: contentEnd,
+    end: contentEnd + 1,
+    direction: "forward"
+  });
+  assert.deepEqual(sourceInitialSelectionRange(source, contentStart + 2, "up"), {
+    start: 2,
+    end: contentStart + 2,
+    direction: "backward"
+  });
+  assert.deepEqual(sourceInitialSelectionRange(source, contentEnd, "down"), {
+    start: contentEnd,
+    end: source.length,
+    direction: "forward"
+  });
+});
+
+test("continuous source controls are reserved for inline, atomic, and explicit source units", () => {
+  const heading = { from: 0, to: 5, kind: "block", name: "heading" };
+  const code = { from: 0, to: 5, kind: "block", name: "code_block" };
+  const rule = { from: 0, to: 1, kind: "block", name: "hr" };
+  const inline = { from: 1, to: 4, kind: "inline", names: ["strong"] };
+  const table = { from: 0, to: 10, kind: "block", name: "table" };
+
+  assert.equal(usesContinuousSourceEditor(heading), false);
+  assert.equal(usesContinuousSourceEditor(heading, heading), true);
+  assert.equal(usesContinuousSourceEditor(code), false);
+  assert.equal(usesContinuousSourceEditor(rule), true);
+  assert.equal(usesContinuousSourceEditor(inline), true);
+  assert.equal(usesContinuousSourceEditor(table, table), true);
+});
+
+test("inline source offsets map through delimiters and syntax-only regions", () => {
+  const inlineParser = (source) => {
+    const code = source.match(/^`([\s\S]*)`$/);
+    const link = source.match(/^\[([^\]]+)\]\(([^)]*)\)$/);
+    const text = code?.[1] ?? link?.[1] ?? source;
+    return schema.node("doc", null, [schema.node("paragraph", null, text ? [schema.text(text)] : [])]);
+  };
+
+  assert.equal(inlineSourceContentOffset("`marked`", 0, inlineParser), 0);
+  assert.equal(inlineSourceContentOffset("`marked`", 4, inlineParser), 3);
+  assert.equal(inlineSourceContentOffset("`marked`", 8, inlineParser), 6);
+  assert.equal(inlineSourceContentOffset("[docs](https://example.com)", 15, inlineParser), 4);
+});
+
+test("source controls leave IME composition keystrokes entirely native", () => {
+  assert.equal(isSourceInputComposing({ isComposing: true, keyCode: 13 }), true);
+  assert.equal(isSourceInputComposing({ isComposing: false, keyCode: 229 }), true);
+  assert.equal(isSourceInputComposing({ isComposing: false, keyCode: 13 }), false);
+});
+
+test("explicit block source activation targets a fenced node without broadening native code editing", () => {
+  const code = blockSchema.node("code_block", { language: "math" }, [blockSchema.text("x^2")]);
+  const doc = blockSchema.node("doc", null, [code]);
+  let transaction = null;
+  const view = {
+    state: docState(doc),
+    dispatch(nextTransaction) {
+      transaction = nextTransaction;
+    },
+    focus() {}
+  };
+
+  assert.equal(activateMarkdownBlockSourceAt(view, 2), true);
+  assert.equal(transaction?.selection.from, 2);
 });

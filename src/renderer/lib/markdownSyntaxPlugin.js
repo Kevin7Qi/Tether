@@ -1,16 +1,32 @@
 import { parserCtx, serializerCtx } from "@milkdown/kit/core";
 import { Fragment, Slice } from "@milkdown/kit/prose/model";
-import { Plugin, PluginKey, Selection } from "@milkdown/kit/prose/state";
+import { joinBackward, joinForward, lift, splitBlock } from "@milkdown/kit/prose/commands";
+import { liftListItem, splitListItem } from "@milkdown/kit/prose/schema-list";
+import { Plugin, PluginKey, Selection, TextSelection } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet } from "@milkdown/kit/prose/view";
-import { $prose } from "@milkdown/kit/utils";
+import { $prose, $shortcut } from "@milkdown/kit/utils";
+import { documentGaps } from "./markdownDocument.js";
 
 const markdownSyntaxKey = new PluginKey("TETHER_MARKDOWN_SYNTAX");
 
-const supportedMarks = ["inlineCode", "link", "strike_through", "strong", "emphasis"];
+const supportedMarks = ["inlineCode", "link", "strike_through", "strong", "emphasis", "html_inline"];
 const sourceBlockNames = new Set(["bullet_list", "ordered_list", "blockquote", "footnote_definition"]);
+const structuralSourceBlockNames = new Set([...sourceBlockNames, "heading"]);
 const tableNames = new Set(["table", "table_row", "table_cell", "table_header"]);
-const sourceAtomNames = new Set(["image", "hr", "footnote_reference", "html", "math_inline"]);
-const sourceDeletionBlockNames = new Set(["code_block", "heading", ...sourceBlockNames]);
+const sourceAtomNames = new Set([
+  "image",
+  "hr",
+  "footnote_reference",
+  "html",
+  "math_inline",
+  "hardbreak",
+  "link_definition"
+]);
+const explicitSourceBlockNames = new Set(["paragraph", "code_block", ...structuralSourceBlockNames]);
+// Structural blocks stay in their rendered node views during ordinary editing.
+// CodeMirror's hidden fence newline is handled separately by the host: only an
+// actual deletion of that syntax opens the complete fenced source temporarily.
+const sourceDeletionBlockNames = new Set();
 
 const inactivePluginState = () => ({
   active: false,
@@ -19,7 +35,9 @@ const inactivePluginState = () => ({
   sourceOffset: null,
   explicitUnitPosition: null,
   initialDeleteDirection: null,
-  focusLock: false
+  initialSelectionDirection: null,
+  focusLock: false,
+  sourceSelection: null
 });
 
 export function activateMarkdownSourceAt(view, position, options = {}) {
@@ -28,6 +46,7 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
     explicitUnitPosition = null,
     sourceOffset = null,
     initialDeleteDirection = null,
+    initialSelectionDirection = null,
     focusLock = false
   } = options;
   const resolved = view.state.doc.resolve(Math.min(position, view.state.doc.content.size));
@@ -41,10 +60,52 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
         clickPosition: resolved.pos,
         sourceOffset,
         initialDeleteDirection,
+        initialSelectionDirection,
         focusLock
       })
   );
   view.focus();
+}
+
+function activateDocumentSourceOffset(
+  view,
+  sourceSelection,
+  sourceOffset,
+  affinity,
+  serializer
+) {
+  const target = documentSourceTarget(view.state, sourceOffset, serializer, affinity);
+  if (!target) return false;
+  if (target.kind === "block") {
+    const options = sourceAtomNames.has(target.node.type.name)
+      ? { atomPosition: target.position, sourceOffset: target.sourceOffset }
+      : { explicitUnitPosition: target.position, sourceOffset: target.sourceOffset };
+    activateMarkdownSourceAt(view, target.position, options);
+    return true;
+  }
+
+  const next = target.documentSource.segments[target.segment.index + 1];
+  if (!next) return false;
+  view.dispatch(
+    view.state.tr.setMeta(markdownSyntaxKey, {
+      action: "source-selection",
+      sourceSelection: {
+        ...sourceSelection,
+        anchor: target.sourceOffset,
+        head: target.sourceOffset,
+        fullSource: target.documentSource.fullSource,
+        boundary: target.position,
+        beforeFrom: target.segment.position,
+        beforeTo: target.position,
+        afterFrom: next.position,
+        afterTo: next.position + next.node.nodeSize,
+        gapStart: target.segment.gapFrom,
+        gapEnd: target.segment.gapTo
+      }
+    })
+  );
+  view.focus();
+  return true;
 }
 
 function blockSyntaxAtPosition(state, position, allowedNames) {
@@ -84,6 +145,13 @@ export function activateMarkdownTableSourceAt(view, position) {
   return true;
 }
 
+export function activateMarkdownBlockSourceAt(view, position) {
+  const unit = blockSyntaxAtPosition(view.state, position, explicitSourceBlockNames);
+  if (!unit) return false;
+  activateMarkdownSourceAt(view, position, { explicitUnitPosition: unit.from });
+  return true;
+}
+
 export function activeMarkdownSyntax(state) {
   const { selection } = state;
   if (!selection.empty || !selection.$from.parent.isTextblock) return null;
@@ -95,27 +163,35 @@ export function activeMarkdownSyntax(state) {
   const activeMarks = marks.some((mark) => mark.type.name === "inlineCode")
     ? marks.filter((mark) => mark.type.name === "inlineCode")
     : marks;
-  const hasAllActiveMarks = (node) =>
-    node.isText && activeMarks.every((mark) => node.marks.some((nodeMark) => nodeMark.eq(mark)));
   const cursorOffset = selection.$from.parentOffset;
-  const runs = [];
-  let current = null;
+  const runForMark = (activeMark) => {
+    const runs = [];
+    let current = null;
+    selection.$from.parent.forEach((node, offset) => {
+      const hasMark = node.isText && node.marks.some((nodeMark) => nodeMark.eq(activeMark));
+      if (!hasMark) {
+        if (current) runs.push(current);
+        current = null;
+        return;
+      }
+      const end = offset + node.nodeSize;
+      if (!current) current = { from: offset, to: end };
+      else current.to = end;
+    });
+    if (current) runs.push(current);
+    return runs.find(({ from, to }) => cursorOffset >= from && cursorOffset <= to) || null;
+  };
+  const activeRuns = activeMarks.map(runForMark);
+  if (activeRuns.some((run) => !run)) return null;
 
-  selection.$from.parent.forEach((node, offset) => {
-    if (!hasAllActiveMarks(node)) {
-      if (current) runs.push(current);
-      current = null;
-      return;
-    }
-
-    const end = offset + node.nodeSize;
-    if (!current) current = { from: offset, to: end };
-    else current.to = end;
-  });
-  if (current) runs.push(current);
-
-  const run = runs.find(({ from, to }) => cursorOffset >= from && cursorOffset <= to);
-  if (!run) return null;
+  // Use the smallest balanced span containing every active mark. Taking only
+  // their intersection invents delimiters for partial nesting—for example the
+  // inner word of `**outer *inner* outer**` would incorrectly become
+  // `***inner***` in the source control.
+  const run = activeRuns.reduce((combined, current) => ({
+    from: Math.min(combined.from, current.from),
+    to: Math.max(combined.to, current.to)
+  }));
 
   const parentStart = selection.$from.start();
   return {
@@ -126,12 +202,19 @@ export function activeMarkdownSyntax(state) {
   };
 }
 
+export function inlineMarkdownSyntaxAtPosition(state, position) {
+  const bounded = Math.max(0, Math.min(position, state.doc.content.size));
+  const selection = TextSelection.create(state.doc, bounded);
+  return activeMarkdownSyntax({ doc: state.doc, selection });
+}
+
 export function activeMarkdownBlockSyntax(state) {
   const { selection } = state;
   const { $from } = selection;
   if (!selection.empty || !$from.parent.isTextblock) return null;
 
-  // A table remains a visual grid. Its pipe grammar is intentionally never exposed.
+  // A table remains a visual grid while the caret is inside cell text. Its
+  // hidden pipe grammar is entered explicitly from a cell boundary below.
   for (let depth = 1; depth <= $from.depth; depth += 1) {
     if (tableNames.has($from.node(depth).type.name)) return null;
   }
@@ -154,10 +237,10 @@ export function activeMarkdownBlockSyntax(state) {
     };
   }
 
-  // Pick the nearest complete Markdown block. For a list this deliberately means
-  // the whole list, which allows marker, task state, numbering, and indentation to
-  // be edited as one continuous multiline source value.
-  for (let depth = $from.depth - 1; depth > 0; depth -= 1) {
+  // Pick the outermost complete source block. A nested list serialized alone
+  // loses the indentation and container prefixes that physically precede its
+  // marker; the outer source block retains those real cursor coordinates.
+  for (let depth = 1; depth < $from.depth; depth += 1) {
     const name = $from.node(depth).type.name;
     if (!sourceBlockNames.has(name)) continue;
     return {
@@ -171,9 +254,43 @@ export function activeMarkdownBlockSyntax(state) {
   return null;
 }
 
+export function structuralBoundarySourceTarget(state, key) {
+  const { selection } = state;
+  if (!selection.empty || !selection.$from.parent.isTextblock) return null;
+  const direction = key === "ArrowLeft"
+    ? selection.$from.parentOffset === 0 ? "backward" : null
+    : key === "ArrowRight" && selection.$from.parentOffset === selection.$from.parent.content.size
+      ? "forward"
+      : null;
+  if (!direction) return null;
+
+  // A formatted run at the visible textblock edge is closer to the caret in
+  // the physical Markdown than an enclosing list/quote marker. Enter that
+  // inline source first so `* **Bold**` traverses the `**` before `* `.
+  const inlineUnit = activeMarkdownSyntax(state);
+  if (
+    inlineUnit
+    && (direction === "backward"
+      ? selection.from === inlineUnit.from
+      : selection.from === inlineUnit.to)
+  ) return { unit: inlineUnit, direction, position: selection.from };
+
+  // Cell text is not physically adjacent across a GFM table boundary: pipes,
+  // padding and sometimes the alignment row sit between visible positions.
+  // Hand into the exact table source so horizontal arrows traverse those real
+  // characters instead of silently sticking to or appending inside the cell.
+  const tableUnit = markdownTableSyntaxAt(state, selection.from);
+  if (tableUnit) return { unit: tableUnit, direction, position: selection.from };
+
+  const unit = activeMarkdownBlockSyntax(state);
+  if (!unit || !structuralSourceBlockNames.has(unit.name)) return null;
+  return { unit, direction, position: selection.from };
+}
+
 export function markdownAtomSyntaxAt(state, position) {
   const node = state.doc.nodeAt(position);
   if (!node || !sourceAtomNames.has(node.type.name)) return null;
+  if (node.type.name === "hardbreak" && node.attrs.isInline) return null;
 
   return {
     from: position,
@@ -181,6 +298,16 @@ export function markdownAtomSyntaxAt(state, position) {
     kind: node.isInline ? "inline" : "block",
     name: node.type.name
   };
+}
+
+export function sourceAtomNearPosition(state, position) {
+  const bounded = Math.max(0, Math.min(position, state.doc.content.size));
+  for (const candidate of [bounded, bounded - 1, bounded + 1]) {
+    if (candidate < 0 || candidate > state.doc.content.size) continue;
+    const atom = markdownAtomSyntaxAt(state, candidate);
+    if (atom) return atom;
+  }
+  return null;
 }
 
 export function activeMarkdownAtomSyntax(state) {
@@ -200,11 +327,60 @@ function serializeBlockNode(schema, node, serializer) {
   return serializer(doc).trimEnd();
 }
 
+export function inlineSourceWithReferenceDefinitions(state, source) {
+  const definitions = [];
+  state.doc.descendants((node) => {
+    if (node.type.name === "link_definition" && node.attrs.definitionSource) {
+      definitions.push(node.attrs.definitionSource);
+    }
+  });
+  return definitions.length ? `${source}\n\n${definitions.join("\n")}` : source;
+}
+
 export function continuousMarkdownSource(state, unit, serializer) {
   if (!unit) return "";
+  if (unit.name === "hardbreak") {
+    const marker = state.doc.nodeAt(unit.from)?.attrs.markdownMarker;
+    return marker === "\\" || /^ {2,}$/.test(marker || "") ? marker : "\\";
+  }
   return unit.kind === "inline"
     ? serializeInlineRange(state, unit.from, unit.to, serializer)
     : serializeBlockNode(state.schema, state.doc.nodeAt(unit.from), serializer);
+}
+
+export function sourceAwareClipboardText(state, serializer) {
+  const { selection } = state;
+  if (selection.empty || typeof serializer !== "function") return null;
+  if (selection.node) {
+    const node = selection.node;
+    return continuousMarkdownSource(state, {
+      from: selection.from,
+      to: selection.to,
+      kind: node.isInline ? "inline" : "block",
+      name: node.type.name
+    }, serializer);
+  }
+  if (selection.from === 0 && selection.to === state.doc.content.size) {
+    return serializer(state.doc);
+  }
+
+  if (!selection.$from.sameParent(selection.$to) || !selection.$from.parent.isTextblock) {
+    const sourceSelection = sourceSelectionFromDocumentSelection(state, serializer);
+    if (sourceSelection) return sourceSelectionText(sourceSelection);
+    const source = serializer(state.doc.cut(selection.from, selection.to));
+    return source.replace(/\r?\n$/, "");
+  }
+  let hasMarkdownSource = false;
+  state.doc.nodesBetween(selection.from, selection.to, (node) => {
+    if (sourceAtomNames.has(node.type.name)) hasMarkdownSource = true;
+    if (node.isText && node.marks.some((mark) => supportedMarks.includes(mark.type.name))) {
+      hasMarkdownSource = true;
+    }
+    return !hasMarkdownSource;
+  });
+  if (!hasMarkdownSource) return null;
+  const source = serializer(state.doc.cut(selection.from, selection.to));
+  return source.replace(/\r?\n$/, "");
 }
 
 function serializedCaretOffset(state, unit, source, position, serializer) {
@@ -223,6 +399,109 @@ function serializedCaretOffset(state, unit, source, position, serializer) {
   return markerOffset >= 0 ? markerOffset : null;
 }
 
+function structuralSourceMetadata(state, unit) {
+  if (unit.kind !== "block") return null;
+  const unitNode = state.doc.nodeAt(unit.from);
+  const attrs = unitNode?.attrs || {};
+  const rawSource = unit.name === "bullet_list" || unit.name === "ordered_list"
+    ? attrs.listSource
+    : unit.name === "blockquote"
+      ? attrs.blockquoteSource
+      : unit.name === "footnote_definition"
+        ? attrs.footnoteDefinitionSource
+        : null;
+  const sourceStart = unit.name === "bullet_list" || unit.name === "ordered_list"
+    ? attrs.listSourceStart
+    : unit.name === "blockquote"
+      ? attrs.blockquoteSourceStart
+      : unit.name === "footnote_definition"
+        ? attrs.footnoteDefinitionSourceStart
+        : null;
+  return { rawSource, sourceStart };
+}
+
+function exactStructuralBoundaryOffset(state, unit, source, position) {
+  const metadata = structuralSourceMetadata(state, unit);
+  if (!metadata) return null;
+  const { rawSource, sourceStart } = metadata;
+  if (rawSource !== source || !Number.isFinite(sourceStart)) return null;
+
+  const resolved = state.doc.resolve(position);
+  const paragraph = resolved.parent;
+  if (paragraph.type.name !== "paragraph") return null;
+  const coordinate = resolved.parentOffset === 0
+    ? paragraph.attrs.markdownSourceStart
+    : resolved.parentOffset === paragraph.content.size
+      ? paragraph.attrs.markdownSourceEnd
+      : null;
+  if (!Number.isFinite(coordinate)) return null;
+  return Math.max(0, Math.min(source.length, coordinate - sourceStart));
+}
+
+export function structuralSourceHandoffTarget(
+  state,
+  position,
+  direction,
+  serializer,
+  moveIntoAdjacentCharacter = false
+) {
+  if (!["backward", "forward"].includes(direction) || typeof serializer !== "function") return null;
+  const bounded = Math.max(0, Math.min(position, state.doc.content.size));
+  const boundaryState = {
+    doc: state.doc,
+    schema: state.schema,
+    selection: TextSelection.create(state.doc, bounded)
+  };
+  const blockUnit = activeMarkdownBlockSyntax(boundaryState);
+  if (!blockUnit || !structuralSourceBlockNames.has(blockUnit.name)) return null;
+
+  const blockSource = continuousMarkdownSource(boundaryState, blockUnit, serializer);
+  let edge = sourceCaretOffset(
+    boundaryState,
+    blockUnit,
+    blockSource,
+    bounded,
+    null,
+    serializer
+  );
+
+  // Raw list/quote/footnote coordinates already point before/after all inline
+  // delimiters. A generated heading source maps the ProseMirror caret inside
+  // those delimiters, so translate it to the outer edge of the inline token.
+  const metadata = structuralSourceMetadata(boundaryState, blockUnit);
+  const hasExactCoordinates = metadata?.rawSource === blockSource
+    && Number.isFinite(metadata?.sourceStart);
+  if (!hasExactCoordinates) {
+    const inlineUnit = activeMarkdownSyntax(boundaryState);
+    if (inlineUnit) {
+      const inlineSource = continuousMarkdownSource(boundaryState, inlineUnit, serializer);
+      const inlineCaret = sourceCaretOffset(
+        boundaryState,
+        inlineUnit,
+        inlineSource,
+        bounded,
+        null,
+        serializer
+      );
+      edge = direction === "backward"
+        ? edge - inlineCaret
+        : edge + inlineSource.length - inlineCaret;
+    }
+  }
+
+  const hasAdjacentSourceCharacter = direction === "backward"
+    ? edge > 0
+    : edge < blockSource.length;
+  if (!hasAdjacentSourceCharacter) return null;
+
+  const assoc = direction === "backward" ? -1 : 1;
+  const sourceOffset = Math.max(
+    0,
+    Math.min(blockSource.length, edge + (moveIntoAdjacentCharacter ? assoc : 0))
+  );
+  return { unit: blockUnit, source: blockSource, sourceOffset };
+}
+
 export function sourceCaretOffset(
   state,
   unit,
@@ -237,6 +516,8 @@ export function sourceCaretOffset(
   if (!Number.isFinite(clickPosition)) return source.length;
 
   const position = Math.max(0, Math.min(clickPosition, state.doc.content.size));
+  const exactBoundary = exactStructuralBoundaryOffset(state, unit, source, position);
+  if (exactBoundary != null) return exactBoundary;
   if (serializer && position >= unit.from && position <= unit.to) {
     try {
       const serializedOffset = serializedCaretOffset(state, unit, source, position, serializer);
@@ -299,13 +580,45 @@ function dispatchSourceReplacement(view, transaction, afterCommit, sync = false)
 }
 
 function replaceInlineSource(view, parser, unit, source, afterCommit = null, sync = false) {
-  const parsed = parser(source);
+  const parsed = parser(inlineSourceWithReferenceDefinitions(view.state, source));
   const firstBlock = parsed?.firstChild;
   const replacement = firstBlock?.isTextblock
     ? firstBlock.content
     : source
       ? Fragment.from(view.state.schema.text(source))
       : Fragment.empty;
+  let transaction = view.state.tr.replaceWith(unit.from, unit.to, replacement);
+  transaction = selectionAfter(transaction, unit.from + replacement.size);
+  transaction.setMeta(markdownSyntaxKey, "close");
+  dispatchSourceReplacement(view, transaction, afterCommit, sync);
+}
+
+export function hardbreakSourceReplacement(schema, node, source) {
+  const isHardbreak = source === "\\" || /^ {2,}$/.test(source);
+  return isHardbreak
+    ? Fragment.from(node.type.create({
+        ...node.attrs,
+        isInline: false,
+        markdownMarker: source
+      }))
+    : Fragment.fromArray([
+        ...(source ? [schema.text(source)] : []),
+        node.type.create({
+          ...node.attrs,
+          isInline: true,
+          markdownMarker: null
+        })
+      ]);
+}
+
+function replaceHardbreakSource(view, parser, unit, source, afterCommit = null, sync = false) {
+  const node = view.state.doc.nodeAt(unit.from);
+  if (!node || node.type.name !== "hardbreak" || source.includes("\n")) {
+    replaceInlineSource(view, parser, unit, source, afterCommit, sync);
+    return;
+  }
+
+  const replacement = hardbreakSourceReplacement(view.state.schema, node, source);
   let transaction = view.state.tr.replaceWith(unit.from, unit.to, replacement);
   transaction = selectionAfter(transaction, unit.from + replacement.size);
   transaction.setMeta(markdownSyntaxKey, "close");
@@ -322,6 +635,855 @@ function replaceBlockSource(view, parser, unit, source, afterCommit = null, sync
   dispatchSourceReplacement(view, transaction, afterCommit, sync);
 }
 
+export function inlineSourceBoundaryDirection(
+  key,
+  selectionStart,
+  selectionEnd,
+  sourceLength,
+  hasModifier = false
+) {
+  if (hasModifier || selectionStart !== selectionEnd) return null;
+  if (key === "ArrowLeft" && selectionStart === 0) return "backward";
+  if (key === "ArrowRight" && selectionEnd === sourceLength) return "forward";
+  return null;
+}
+
+export function inlineSourceBoundaryDeleteDirection(
+  key,
+  selectionStart,
+  selectionEnd,
+  sourceLength,
+  hasModifier = false
+) {
+  if (hasModifier || selectionStart !== selectionEnd) return null;
+  if (key === "Backspace" && selectionStart === 0) return "backward";
+  if (key === "Delete" && selectionEnd === sourceLength) return "forward";
+  return null;
+}
+
+export function inlineSourceVerticalDirection(
+  key,
+  selectionStart,
+  selectionEnd,
+  hasModifier = false
+) {
+  if (hasModifier || selectionStart !== selectionEnd) return null;
+  if (key === "ArrowUp") return "up";
+  if (key === "ArrowDown") return "down";
+  return null;
+}
+
+export function blockSourceVerticalDirection(
+  key,
+  selectionStart,
+  selectionEnd,
+  source,
+  hasModifier = false
+) {
+  if (hasModifier || selectionStart !== selectionEnd) return null;
+  if (key === "ArrowUp" && !source.slice(0, selectionStart).includes("\n")) return "up";
+  if (key === "ArrowDown" && !source.slice(selectionEnd).includes("\n")) return "down";
+  return null;
+}
+
+export function inlineSourceBoundarySelectionDirection(
+  key,
+  selectionStart,
+  selectionEnd,
+  sourceLength,
+  shiftKey = false,
+  hasOtherModifier = false
+) {
+  if (!shiftKey || hasOtherModifier || selectionStart !== selectionEnd) return null;
+  if (key === "ArrowLeft" && selectionStart === 0) return "backward";
+  if (key === "ArrowRight" && selectionEnd === sourceLength) return "forward";
+  return null;
+}
+
+export function sourceBoundarySelectionRange(sourceLength, caret, direction) {
+  const boundedCaret = Math.max(0, Math.min(sourceLength, caret));
+  if (direction === "backward" && boundedCaret > 0) {
+    return { start: boundedCaret - 1, end: boundedCaret, direction: "backward" };
+  }
+  if (direction === "forward" && boundedCaret < sourceLength) {
+    return { start: boundedCaret, end: boundedCaret + 1, direction: "forward" };
+  }
+  return { start: boundedCaret, end: boundedCaret, direction: "none" };
+}
+
+export function sourceInitialSelectionRange(source, caret, direction) {
+  const boundedCaret = Math.max(0, Math.min(source.length, caret));
+  if (["backward", "forward"].includes(direction)) {
+    return sourceBoundarySelectionRange(source.length, boundedCaret, direction);
+  }
+
+  const currentLineStart = source.lastIndexOf("\n", Math.max(0, boundedCaret - 1)) + 1;
+  const currentLineEndIndex = source.indexOf("\n", boundedCaret);
+  const currentLineEnd = currentLineEndIndex < 0 ? source.length : currentLineEndIndex;
+  const column = boundedCaret - currentLineStart;
+  let head = boundedCaret;
+
+  if (direction === "up" && currentLineStart > 0) {
+    const previousLineEnd = currentLineStart - 1;
+    const previousLineStart = source.lastIndexOf("\n", Math.max(0, previousLineEnd - 1)) + 1;
+    head = Math.min(previousLineStart + column, previousLineEnd);
+  } else if (direction === "down" && currentLineEnd < source.length) {
+    const nextLineStart = currentLineEnd + 1;
+    const nextLineEndIndex = source.indexOf("\n", nextLineStart);
+    const nextLineEnd = nextLineEndIndex < 0 ? source.length : nextLineEndIndex;
+    head = Math.min(nextLineStart + column, nextLineEnd);
+  }
+
+  return {
+    start: Math.min(boundedCaret, head),
+    end: Math.max(boundedCaret, head),
+    direction: head < boundedCaret ? "backward" : head > boundedCaret ? "forward" : "none"
+  };
+}
+
+function listItemTypeAtMarkerBoundary(state) {
+  const { selection } = state;
+  const { $from } = selection;
+  if (!selection.empty || $from.parentOffset !== 0 || !$from.parent.isTextblock) return null;
+
+  for (let depth = $from.depth - 1; depth > 0; depth -= 1) {
+    const type = $from.node(depth).type;
+    if (type.name === "list_item") return type;
+  }
+  return null;
+}
+
+export function liftListMarkerAtCursor(state, dispatch = null, view = null) {
+  const listItemType = listItemTypeAtMarkerBoundary(state);
+  if (!listItemType) return false;
+  return liftListItem(listItemType)(state, dispatch, view);
+}
+
+function replaceDocumentSourceAtCaret(state, source, caretOffset, parser) {
+  if (typeof parser !== "function") return null;
+  let marker = "\uE200";
+  while (source.includes(marker)) marker += "\uE201";
+  const parsed = parser(source);
+  const marked = parser(`${source.slice(0, caretOffset)}${marker}${source.slice(caretOffset)}`);
+  let markerPosition = null;
+  marked?.descendants((node, position) => {
+    if (markerPosition != null || !node.isText) return markerPosition == null;
+    const index = node.text.indexOf(marker);
+    if (index >= 0) markerPosition = position + index;
+    return markerPosition == null;
+  });
+  if (markerPosition == null) return null;
+
+  let transaction = state.tr.replace(
+    0,
+    state.doc.content.size,
+    new Slice(parsed.content, 0, 0)
+  );
+  for (const [name, value] of Object.entries(parsed.attrs || {})) {
+    transaction = transaction.setDocAttribute(name, value);
+  }
+  const selectionPosition = Math.max(0, Math.min(markerPosition, transaction.doc.content.size));
+  return transaction.setSelection(TextSelection.create(transaction.doc, selectionPosition));
+}
+
+function listLinePrefix(line, requireCaretBoundary = false) {
+  const pattern = requireCaretBoundary
+    ? /^((?:\[\^[^\]\r\n]+\]:[\t ]*)?(?:[\t ]{0,3}>[\t ]?)*)([\t ]*)(?:[-+*]|\d+[.)])(?:[\t ]+)(?:\[[ xX]\][\t ]+)?$/
+    : /^((?:\[\^[^\]\r\n]+\]:[\t ]*)?(?:[\t ]{0,3}>[\t ]?)*)([\t ]*)(?:[-+*]|\d+[.)])(?:[\t ]+|$)/;
+  const match = line.match(pattern);
+  if (!match) return null;
+  return {
+    container: match[1],
+    indent: match[2],
+    quoteDepth: (match[1].match(/>/g) || []).length
+  };
+}
+
+function precedingListIndent(source, lineStart, current, searchStart = 0) {
+  const before = source.slice(searchStart, lineStart).split(/\r?\n/);
+  for (let index = before.length - 1; index >= 0; index -= 1) {
+    const candidate = listLinePrefix(before[index]);
+    if (
+      !candidate
+      || candidate.quoteDepth !== current.quoteDepth
+      || candidate.indent.length >= current.indent.length
+    ) continue;
+    return candidate.indent;
+  }
+  return "";
+}
+
+export function sourceFaithfulListMarkerBackspaceTransaction(state, parser, serializer) {
+  if (!listItemTypeAtMarkerBoundary(state) || typeof serializer !== "function") return null;
+  // At a formatted item start, the inline delimiter is physically between the
+  // caret and the list marker. Avoid serializing a sentinel through the mark
+  // group and let the inline source handler consume that delimiter first.
+  if (activeMarkdownSyntax(state)) return null;
+  const unit = activeMarkdownBlockSyntax(state);
+  if (!unit || !["bullet_list", "ordered_list", "blockquote", "footnote_definition"].includes(unit.name)) {
+    return null;
+  }
+  const documentSource = documentSourceSegments(state, serializer);
+  const segment = documentSource?.segments.find(({ position }) => position === unit.from);
+  if (!segment) return null;
+
+  const unitSource = continuousMarkdownSource(state, unit, serializer);
+  const unitOffset = sourceCaretOffset(
+    state,
+    unit,
+    unitSource,
+    state.selection.from,
+    null,
+    serializer
+  );
+  const caretOffset = segment.from + unitOffset;
+  const lineStart = documentSource.fullSource.lastIndexOf("\n", Math.max(0, caretOffset - 1)) + 1;
+  const prefix = documentSource.fullSource.slice(lineStart, caretOffset);
+  const marker = listLinePrefix(prefix, true);
+  if (!marker) return null;
+
+  const listDepth = Array.from({ length: state.selection.$from.depth }, (_, index) =>
+    state.selection.$from.node(index + 1).type.name
+  ).filter((name) => name === "bullet_list" || name === "ordered_list").length;
+  if (listDepth <= 1) {
+    const retainedIndent = unit.name === "footnote_definition" && !marker.container
+      ? marker.indent
+      : "";
+    const source = `${documentSource.fullSource.slice(0, lineStart)}${marker.container}${retainedIndent}${documentSource.fullSource.slice(caretOffset)}`;
+    return replaceDocumentSourceAtCaret(
+      state,
+      source,
+      lineStart + marker.container.length + retainedIndent.length,
+      parser
+    );
+  }
+
+  const targetIndent = precedingListIndent(
+    documentSource.fullSource,
+    lineStart,
+    marker,
+    segment.from
+  );
+  const source = `${documentSource.fullSource.slice(0, lineStart)}${marker.container}${targetIndent}${documentSource.fullSource.slice(lineStart + marker.container.length + marker.indent.length)}`;
+  const nextCaret = caretOffset - marker.indent.length + targetIndent.length;
+  return replaceDocumentSourceAtCaret(state, source, nextCaret, parser);
+}
+
+function structuralMarkerAtCursor(state) {
+  const { selection } = state;
+  const { $from } = selection;
+  if (
+    !selection.empty
+    || $from.parentOffset !== 0
+    || $from.parent.type.name !== "paragraph"
+  ) return null;
+
+  // Walk from the text toward the document so Backspace removes the source
+  // marker nearest the caret. This matters for combinations such as
+  // `- > quote`: the quote marker must lift before the outer list marker.
+  for (let depth = $from.depth - 1; depth > 0; depth -= 1) {
+    const type = $from.node(depth).type;
+    if (type.name === "blockquote") return { kind: "blockquote" };
+    if (type.name === "list_item") return { kind: "list_item", type };
+  }
+  return null;
+}
+
+export function liftStructuralMarkerAtCursor(state, dispatch = null, view = null) {
+  const marker = structuralMarkerAtCursor(state);
+  if (!marker) return false;
+  if (marker.kind === "list_item") {
+    return liftListItem(marker.type)(state, dispatch, view);
+  }
+  return lift(state, dispatch, view);
+}
+
+export function sourceFaithfulListItemKeymapConfig(config) {
+  return {
+    ...config,
+    LiftFirstListItem: {
+      ...config.LiftFirstListItem,
+      // Forward Delete operates on the first content character. Only Backspace
+      // crosses the rendered marker boundary.
+      shortcuts: "Backspace"
+    }
+  };
+}
+
+export function splitOrderedListItemWithSourceNumber(state, dispatch = null, view = null) {
+  const { $from } = state.selection;
+  let itemType = null;
+  let inOrderedList = false;
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    const node = $from.node(depth);
+    if (!itemType && node.type.name === "list_item") itemType = node.type;
+    if (node.type.name === "ordered_list") {
+      inOrderedList = true;
+      break;
+    }
+  }
+  if (!itemType || !inOrderedList) return false;
+
+  return splitListItem(itemType)(state, dispatch
+    ? (transaction) => {
+        const selection = transaction.selection;
+        const resolved = selection.$from;
+        for (let depth = resolved.depth; depth > 0; depth -= 1) {
+          const node = resolved.node(depth);
+          if (node.type.name !== "list_item") continue;
+          if (node.attrs.orderedNumber != null) {
+            transaction.setNodeMarkup(resolved.before(depth), undefined, {
+              ...node.attrs,
+              orderedNumber: null
+            });
+          }
+          break;
+        }
+        dispatch(transaction);
+      }
+    : null, view);
+}
+
+export function sourceFaithfulHeadingKeymapConfig(config) {
+  return {
+    ...config,
+    DowngradeHeading: {
+      ...config.DowngradeHeading,
+      shortcuts: []
+    }
+  };
+}
+
+export function downgradeAtxHeadingAtCursor(state, dispatch = null) {
+  const { selection } = state;
+  const { $from } = selection;
+  const heading = $from.parent;
+  if (
+    !selection.empty
+    || $from.parentOffset !== 0
+    || heading.type.name !== "heading"
+    || heading.attrs.markdownStyle === "setext"
+  ) return false;
+
+  const position = $from.before();
+  const level = Number(heading.attrs.level) - 1;
+  const transaction = level > 0
+    ? state.tr.setNodeMarkup(position, undefined, { ...heading.attrs, level })
+    : state.tr.setNodeMarkup(position, state.schema.nodes.paragraph);
+  dispatch?.(transaction.scrollIntoView());
+  return true;
+}
+
+export function textSelectionAcrossBoundary(state, boundaryPosition, direction) {
+  const assoc = direction === "backward" ? -1 : 1;
+  let boundedBoundary = Math.max(0, Math.min(boundaryPosition, state.doc.content.size));
+  const resolved = state.doc.resolve(boundedBoundary);
+
+  // Inline source controls end at a textblock content position, while the
+  // physical Markdown newline lives between the surrounding block nodes.
+  // Promote that endpoint to the enclosing source block (list/quote/heading)
+  // or, for ordinary prose, to the immediate textblock boundary.
+  if (resolved.parent.isTextblock) {
+    const atRequestedEdge = direction === "backward"
+      ? resolved.parentOffset === 0
+      : resolved.parentOffset === resolved.parent.content.size;
+    if (atRequestedEdge) {
+      const boundaryState = {
+        doc: state.doc,
+        schema: state.schema,
+        selection: TextSelection.create(state.doc, boundedBoundary)
+      };
+      const sourceBlock = activeMarkdownBlockSyntax(boundaryState);
+      boundedBoundary = sourceBlock
+        ? direction === "backward" ? sourceBlock.from : sourceBlock.to
+        : direction === "backward" ? resolved.before() : resolved.after();
+    }
+  }
+
+  const boundary = state.doc.resolve(boundedBoundary);
+  const before = Selection.findFrom(boundary, -1, true);
+  const after = Selection.findFrom(boundary, 1, true);
+  if (
+    before
+    && after
+    && before.from < after.from
+    && !rangeContainsLeafContent(state.doc, before.from, after.from)
+    && state.doc.textBetween(before.from, after.from, "", "") === ""
+  ) {
+    return TextSelection.create(
+      state.doc,
+      direction === "backward" ? after.from : before.from,
+      direction === "backward" ? before.from : after.from
+    );
+  }
+
+  const anchor = Selection.near(boundary, assoc).from;
+  const head = Math.max(0, Math.min(anchor + assoc, state.doc.content.size));
+  return TextSelection.between(
+    state.doc.resolve(anchor),
+    state.doc.resolve(head),
+    assoc
+  );
+}
+
+function rangeContainsLeafContent(doc, from, to) {
+  let containsLeafContent = false;
+  doc.slice(from, to).content.descendants((node) => {
+    if (node.isLeaf) containsLeafContent = true;
+  });
+  return containsLeafContent;
+}
+
+export function sourceNewlineSelectionInfo(state) {
+  const { selection, doc } = state;
+  if (
+    selection.empty
+    || rangeContainsLeafContent(doc, selection.from, selection.to)
+    || doc.textBetween(selection.from, selection.to, "", "") !== ""
+    || !doc.textBetween(selection.from, selection.to, "\n", "").includes("\n")
+  ) return null;
+
+  for (let position = selection.from + 1; position < selection.to; position += 1) {
+    const resolved = doc.resolve(position);
+    if (resolved.depth !== 0 || !resolved.nodeBefore || !resolved.nodeAfter) continue;
+    return {
+      boundary: position,
+      beforeFrom: position - resolved.nodeBefore.nodeSize,
+      beforeTo: position,
+      afterFrom: position,
+      afterTo: position + resolved.nodeAfter.nodeSize
+    };
+  }
+  return null;
+}
+
+export function sourceNewlineClipboardText(state) {
+  return sourceNewlineSelectionInfo(state) ? "\n" : null;
+}
+
+export function sourceNewlineSourceRange(state, serializer) {
+  if (typeof serializer !== "function") return null;
+  const info = sourceNewlineSelectionInfo(state);
+  const gaps = documentGaps(state.doc.attrs.markdownBlockGaps, state.doc.childCount);
+  if (!info || !gaps) return null;
+  const gapIndex = state.doc.resolve(info.boundary).index(0);
+  const gap = gaps[gapIndex];
+  if (!gap) return null;
+
+  const prefix = state.doc.type.create(
+    {
+      ...state.doc.attrs,
+      markdownBlockGaps: JSON.stringify(gaps.slice(0, gapIndex + 1))
+    },
+    state.doc.content.cut(0, info.boundary)
+  );
+  const prefixSource = serializer(prefix);
+  const fullSource = serializer(state.doc);
+  const gapStart = prefixSource.length - gap.length;
+  if (gapStart < 0 || fullSource.slice(gapStart, gapStart + gap.length) !== gap) return null;
+
+  const backward = state.selection.anchor > state.selection.head;
+  const relativeFrom = backward
+    ? gap.endsWith("\r\n") ? gap.length - 2 : gap.length - 1
+    : 0;
+  const length = backward
+    ? gap.endsWith("\r\n") ? 2 : 1
+    : gap.startsWith("\r\n") ? 2 : 1;
+  const from = gapStart + relativeFrom;
+  const to = from + length;
+  const text = fullSource.slice(from, to);
+  if (!(text === "\n" || text === "\r\n")) return null;
+  return {
+    ...info,
+    from,
+    to,
+    text,
+    fullSource,
+    gapStart,
+    gapEnd: gapStart + gap.length
+  };
+}
+
+export function sourceSelectionFromNewlineRange(range, direction) {
+  if (!range || !["backward", "forward"].includes(direction)) return null;
+  return {
+    anchor: direction === "backward" ? range.to : range.from,
+    head: direction === "backward" ? range.from : range.to,
+    fullSource: range.fullSource,
+    boundary: range.boundary,
+    beforeFrom: range.beforeFrom,
+    beforeTo: range.beforeTo,
+    afterFrom: range.afterFrom,
+    afterTo: range.afterTo,
+    gapStart: range.gapStart,
+    gapEnd: range.gapEnd
+  };
+}
+
+export function sourceSelectionText(sourceSelection) {
+  if (!sourceSelection) return null;
+  const from = Math.min(sourceSelection.anchor, sourceSelection.head);
+  const to = Math.max(sourceSelection.anchor, sourceSelection.head);
+  return sourceSelection.fullSource.slice(from, to);
+}
+
+export function documentSourceSegments(state, serializer) {
+  if (typeof serializer !== "function") return null;
+  const gaps = documentGaps(state.doc.attrs.markdownBlockGaps, state.doc.childCount);
+  if (!gaps) return null;
+  const segments = [];
+  let documentPosition = 0;
+  let previousSourceEnd = 0;
+  for (let index = 0; index < state.doc.childCount; index += 1) {
+    const node = state.doc.child(index);
+    const nodeTo = documentPosition + node.nodeSize;
+    const prefix = state.doc.type.create(
+      {
+        ...state.doc.attrs,
+        markdownBlockGaps: JSON.stringify(gaps.slice(0, index + 2))
+      },
+      state.doc.content.cut(0, nodeTo)
+    );
+    const prefixSource = serializer(prefix);
+    const sourceStart = previousSourceEnd + gaps[index].length;
+    const sourceEnd = prefixSource.length - gaps[index + 1].length;
+    segments.push({
+      index,
+      node,
+      position: documentPosition,
+      from: sourceStart,
+      to: sourceEnd,
+      gapFrom: sourceEnd,
+      gapTo: sourceEnd + gaps[index + 1].length
+    });
+    previousSourceEnd = sourceEnd;
+    documentPosition = nodeTo;
+  }
+  return { fullSource: serializer(state.doc), gaps, segments };
+}
+
+export function documentSourceTarget(state, sourceOffset, serializer, affinity = "forward") {
+  const documentSource = documentSourceSegments(state, serializer);
+  if (!documentSource) return null;
+  const offset = Math.max(0, Math.min(documentSource.fullSource.length, sourceOffset));
+  for (const segment of documentSource.segments) {
+    const atStart = offset === segment.from;
+    const atEnd = offset === segment.to;
+    if (
+      (offset > segment.from && offset < segment.to)
+      || (atStart && affinity === "forward")
+      || (atEnd && affinity === "backward")
+    ) {
+      return {
+        kind: "block",
+        position: segment.position,
+        node: segment.node,
+        sourceOffset: offset - segment.from,
+        segment,
+        documentSource
+      };
+    }
+    if (
+      (offset > segment.gapFrom && offset < segment.gapTo)
+      || (offset === segment.gapFrom && affinity === "forward" && segment.gapTo > segment.gapFrom)
+      || (offset === segment.gapTo && affinity === "backward" && segment.gapTo > segment.gapFrom)
+    ) {
+      return {
+        kind: "gap",
+        position: segment.position + segment.node.nodeSize,
+        sourceOffset: offset,
+        segment,
+        documentSource
+      };
+    }
+  }
+  return null;
+}
+
+export function documentSourceOffsetAtPosition(state, position, serializer, affinity = "forward") {
+  const documentSource = documentSourceSegments(state, serializer);
+  if (!documentSource) return null;
+  const bounded = Math.max(0, Math.min(position, state.doc.content.size));
+  for (const segment of documentSource.segments) {
+    const start = segment.position;
+    const end = start + segment.node.nodeSize;
+    if (bounded < start || bounded > end) continue;
+    if (bounded === start && affinity === "backward" && segment.index > 0) {
+      return documentSource.segments[segment.index - 1].to;
+    }
+    if (
+      bounded === end
+      && affinity === "forward"
+      && segment.index + 1 < documentSource.segments.length
+    ) {
+      return documentSource.segments[segment.index + 1].from;
+    }
+    if (bounded <= start) return segment.from;
+    if (bounded >= end) return segment.to;
+    const unit = {
+      from: start,
+      to: end,
+      kind: "block",
+      name: segment.node.type.name
+    };
+    const source = documentSource.fullSource.slice(segment.from, segment.to);
+    const offset = sourceCaretOffset(state, unit, source, bounded, null, serializer);
+    return segment.from + Math.max(0, Math.min(source.length, offset));
+  }
+  return null;
+}
+
+export function sourceSelectionFromDocumentSelection(
+  state,
+  serializer,
+  selection = state.selection
+) {
+  if (
+    !selection
+    || selection.empty
+    || (selection.$from.sameParent(selection.$to) && selection.$from.parent.isTextblock)
+  ) return null;
+
+  let includesTable = false;
+  state.doc.nodesBetween(selection.from, selection.to, (node) => {
+    if (tableNames.has(node.type.name)) includesTable = true;
+    return !includesTable;
+  });
+  if (includesTable) return null;
+
+  const documentSource = documentSourceSegments(state, serializer);
+  const from = documentSourceOffsetAtPosition(state, selection.from, serializer, "forward");
+  const to = documentSourceOffsetAtPosition(state, selection.to, serializer, "backward");
+  if (!documentSource || from == null || to == null || from > to) return null;
+  const forward = selection.anchor <= selection.head;
+  return {
+    anchor: forward ? from : to,
+    head: forward ? to : from,
+    fullSource: documentSource.fullSource,
+    boundary: selection.from
+  };
+}
+
+function sourceOffsetAfterCharacter(source, offset, direction) {
+  if (direction === "forward") {
+    if (source.slice(offset, offset + 2) === "\r\n") return offset + 2;
+    const point = source.codePointAt(offset);
+    return point == null ? offset : offset + (point > 0xFFFF ? 2 : 1);
+  }
+  if (source.slice(Math.max(0, offset - 2), offset) === "\r\n") return offset - 2;
+  const previous = source.charCodeAt(offset - 1);
+  const beforePrevious = source.charCodeAt(offset - 2);
+  return previous >= 0xDC00 && previous <= 0xDFFF
+    && beforePrevious >= 0xD800 && beforePrevious <= 0xDBFF
+    ? offset - 2
+    : offset - 1;
+}
+
+export function extendSourceSelection(sourceSelection, direction) {
+  if (!sourceSelection || !["backward", "forward"].includes(direction)) return null;
+  const nextHead = sourceOffsetAfterCharacter(
+    sourceSelection.fullSource,
+    sourceSelection.head,
+    direction
+  );
+  return {
+    ...sourceSelection,
+    head: Math.max(0, Math.min(sourceSelection.fullSource.length, nextHead))
+  };
+}
+
+export function replaceSourceSelectionTransaction(
+  state,
+  sourceSelection,
+  replacement,
+  parser
+) {
+  if (!sourceSelection || typeof parser !== "function") return null;
+  const from = Math.min(sourceSelection.anchor, sourceSelection.head);
+  const to = Math.max(sourceSelection.anchor, sourceSelection.head);
+  const nextSource = `${sourceSelection.fullSource.slice(0, from)}${replacement}${sourceSelection.fullSource.slice(to)}`;
+  const parsed = parser(nextSource);
+  let transaction = state.tr.replace(
+    0,
+    state.doc.content.size,
+    new Slice(parsed.content, 0, 0)
+  );
+  for (const [name, value] of Object.entries(parsed.attrs || {})) {
+    transaction = transaction.setDocAttribute(name, value);
+  }
+  let caret = null;
+  let marker = "\uE000";
+  while (nextSource.includes(marker)) marker += "\uE001";
+  const caretSourceOffset = from + replacement.length;
+  const marked = parser(
+    `${nextSource.slice(0, caretSourceOffset)}${marker}${nextSource.slice(caretSourceOffset)}`
+  );
+  marked.descendants((node, position) => {
+    if (caret != null || !node.isText) return caret == null;
+    const markerOffset = node.text.indexOf(marker);
+    if (markerOffset < 0) return true;
+    caret = position + markerOffset;
+    return false;
+  });
+  caret = Math.max(
+    0,
+    Math.min(caret ?? sourceSelection.boundary, transaction.doc.content.size)
+  );
+  return transaction.setSelection(Selection.near(transaction.doc.resolve(caret), 1));
+}
+
+export function replaceSourceNewlineSelectionTransaction(
+  state,
+  replacement,
+  parser,
+  serializer,
+  selection = state.selection
+) {
+  if (typeof parser !== "function" || typeof serializer !== "function") return null;
+  const range = sourceNewlineSourceRange({ doc: state.doc, selection }, serializer);
+  if (!range) return null;
+  return replaceSourceSelectionTransaction(
+    state,
+    sourceSelectionFromNewlineRange(
+      range,
+      selection.anchor > selection.head ? "backward" : "forward"
+    ),
+    replacement,
+    parser
+  );
+}
+
+export function sourceNewlineDeletionTransaction(
+  state,
+  boundaryPosition,
+  direction,
+  parser = null,
+  serializer = null
+) {
+  const selection = textSelectionAcrossBoundary(state, boundaryPosition, direction);
+  if (
+    selection.empty
+    || state.doc.textBetween(selection.from, selection.to, "", "") !== ""
+    || !state.doc.textBetween(selection.from, selection.to, "\n", "").includes("\n")
+  ) return null;
+
+  const exact = replaceSourceNewlineSelectionTransaction(
+    state,
+    "",
+    parser,
+    serializer,
+    selection
+  );
+  if (exact) return exact;
+  return state.tr.delete(selection.from, selection.to);
+}
+
+export function documentSelectionFromCodeBoundary(
+  state,
+  boundaryPosition,
+  direction,
+  geometryPosition = null
+) {
+  const assoc = direction === "backward" ? -1 : 1;
+  const destination = Number.isFinite(geometryPosition) ? geometryPosition : boundaryPosition;
+  const bounded = Math.max(0, Math.min(destination, state.doc.content.size));
+  const selection = Selection.near(state.doc.resolve(bounded), assoc);
+  // At the beginning or end of a document containing only this code block,
+  // the nearest selectable position is back inside CodeMirror. Returning null
+  // lets its native key handling run instead of pretending the caret moved.
+  return selection.$from.parent.type.name === "code_block" ? null : selection;
+}
+
+export const structuralMarkerBackspaceKeymap = $shortcut((ctx) => ({
+  Backspace: {
+    key: "Backspace",
+    priority: 100,
+    onRun: () => (state, dispatch, view) => {
+      const listBoundary = Boolean(listItemTypeAtMarkerBoundary(state));
+      const blockUnit = listBoundary ? activeMarkdownBlockSyntax(state) : null;
+      const sourceFaithfulRootList = Boolean(
+        blockUnit && ["bullet_list", "ordered_list", "blockquote", "footnote_definition"].includes(blockUnit.name)
+      );
+      const transaction = sourceFaithfulListMarkerBackspaceTransaction(
+        state,
+        ctx.get(parserCtx),
+        ctx.get(serializerCtx)
+      );
+      if (transaction) {
+        if (dispatch) dispatch(transaction.scrollIntoView());
+        return true;
+      }
+      // A formatted token at the visible item start (for example `+ **bold**`)
+      // is physically closer than the list marker. Yield so the inline source
+      // handler removes that delimiter before a later Backspace reaches `+ `.
+      if (sourceFaithfulRootList) return false;
+      return liftStructuralMarkerAtCursor(state, dispatch, view);
+    }
+  }
+}));
+
+export const sourceFaithfulHeadingBackspaceKeymap = $shortcut(() => ({
+  Backspace: {
+    key: "Backspace",
+    priority: 100,
+    onRun: () => downgradeAtxHeadingAtCursor
+  }
+}));
+
+export const sourceFaithfulOrderedListSplitKeymap = $shortcut(() => ({
+  Enter: {
+    key: "Enter",
+    priority: 110,
+    onRun: () => splitOrderedListItemWithSourceNumber
+  }
+}));
+
+export function usesContinuousSourceEditor(unit, explicitUnit = null) {
+  if (!unit) return false;
+  return unit.kind === "inline"
+    || sourceAtomNames.has(unit.name)
+    || unit === explicitUnit;
+}
+
+export function inlineSourceContentOffset(source, sourceOffset, parser) {
+  const boundedOffset = Math.max(0, Math.min(source.length, sourceOffset));
+  let marker = "\uE100";
+  while (source.includes(marker)) marker += "\uE101";
+
+  const originalBlock = parser(source)?.firstChild;
+  const originalSize = originalBlock?.isTextblock ? originalBlock.content.size : 0;
+  const markedSource = `${source.slice(0, boundedOffset)}${marker}${source.slice(boundedOffset)}`;
+  const markedBlock = parser(markedSource)?.firstChild;
+  let markerPosition = null;
+  if (markedBlock?.isTextblock) {
+    markedBlock.descendants((node, position) => {
+      if (markerPosition != null || !node.isText) return markerPosition == null;
+      const index = node.text.indexOf(marker);
+      if (index >= 0) markerPosition = position + index;
+      return false;
+    });
+  }
+  if (markerPosition != null) return Math.max(0, Math.min(originalSize, markerPosition));
+
+  // Syntax-only regions such as a link destination or an inline-math value
+  // live in node attributes rather than document text. They map to the nearest
+  // visible edge because ProseMirror has no caret position inside the attribute.
+  const visibleText = originalBlock?.textContent || "";
+  if (visibleText) {
+    const visibleStart = source.indexOf(visibleText);
+    if (visibleStart >= 0) {
+      if (boundedOffset <= visibleStart) return 0;
+      if (boundedOffset >= visibleStart + visibleText.length) return originalSize;
+      return Math.min(originalSize, boundedOffset - visibleStart);
+    }
+  }
+  return boundedOffset <= source.length / 2 ? 0 : originalSize;
+}
+
+export function isSourceInputComposing(event) {
+  return Boolean(event?.isComposing) || event?.keyCode === 229;
+}
+
 function continuousSourceEditor(
   source,
   kind,
@@ -329,8 +1491,14 @@ function continuousSourceEditor(
   label,
   initialCaret,
   initialDeleteDirection,
+  initialSelectionDirection,
   onCommit,
   onCancel,
+  onBoundaryNavigate,
+  onBoundaryDelete,
+  onVerticalNavigate,
+  onBoundarySelect,
+  onInlineEnter,
   shouldFocus,
   setActiveControl
 ) {
@@ -344,11 +1512,18 @@ function continuousSourceEditor(
   editor.setAttribute("autocapitalize", "off");
   editor.setAttribute("spellcheck", "false");
   let startingCaret = Math.max(0, Math.min(editor.value.length, initialCaret));
+  let startingSelection = null;
   if (initialDeleteDirection === "backward" && startingCaret > 0) {
     editor.value = `${editor.value.slice(0, startingCaret - 1)}${editor.value.slice(startingCaret)}`;
     startingCaret -= 1;
   } else if (initialDeleteDirection === "forward" && startingCaret < editor.value.length) {
     editor.value = `${editor.value.slice(0, startingCaret)}${editor.value.slice(startingCaret + 1)}`;
+  } else if (initialSelectionDirection) {
+    startingSelection = sourceInitialSelectionRange(
+      editor.value,
+      startingCaret,
+      initialSelectionDirection
+    );
   }
 
   const resize = () => {
@@ -380,6 +1555,31 @@ function continuousSourceEditor(
       nearestDistance = distance;
     }
     return nearest;
+  };
+  const caretTargetPoint = (direction) => {
+    const style = getComputedStyle(editor);
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const rect = editor.getBoundingClientRect();
+    const caret = editor.selectionStart ?? 0;
+    const beforeCaret = editor.value.slice(0, caret);
+    const lineStart = beforeCaret.lastIndexOf("\n") + 1;
+    const lineText = editor.value.slice(lineStart, caret);
+    const lineIndex = beforeCaret.slice(0, lineStart).split("\n").length - 1;
+    const textWidth = context.measureText(lineText).width;
+    const borderLeft = Number.parseFloat(style.borderLeftWidth || "0");
+    const paddingLeft = Number.parseFloat(style.paddingLeft || "0");
+    const borderTop = Number.parseFloat(style.borderTopWidth || "0");
+    const paddingTop = Number.parseFloat(style.paddingTop || "0");
+    const lineHeight = Number.parseFloat(style.lineHeight || "")
+      || Number.parseFloat(style.fontSize || "16") * 1.5;
+    const lineTop = rect.top + borderTop + paddingTop + lineIndex * lineHeight - editor.scrollTop;
+    return {
+      left: rect.left + borderLeft + paddingLeft + textWidth - editor.scrollLeft,
+      top: direction === "up" ? lineTop : lineTop + lineHeight
+    };
   };
   let finished = false;
   let blurTimer = 0;
@@ -421,12 +1621,68 @@ function continuousSourceEditor(
     }, 120);
   });
   editor.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
+    if (isSourceInputComposing(event)) return;
+    const boundaryDirection = inlineSourceBoundaryDirection(
+      event.key,
+      editor.selectionStart,
+      editor.selectionEnd,
+      editor.value.length,
+      event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+    );
+    // The source-aware boundary transaction now represents the newline between
+    // ProseMirror blocks, so inline inputs and block textareas can share the
+    // same Backspace/Delete handoff at their outer edges.
+    const boundaryDeleteDirection = inlineSourceBoundaryDeleteDirection(
+      event.key,
+      editor.selectionStart,
+      editor.selectionEnd,
+      editor.value.length,
+      event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+    );
+    const verticalDirection = isBlock
+      ? blockSourceVerticalDirection(
+          event.key,
+          editor.selectionStart,
+          editor.selectionEnd,
+          editor.value,
+          event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+        )
+      : inlineSourceVerticalDirection(
+          event.key,
+          editor.selectionStart,
+          editor.selectionEnd,
+          event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+        );
+    const boundarySelectionDirection = inlineSourceBoundarySelectionDirection(
+      event.key,
+      editor.selectionStart,
+      editor.selectionEnd,
+      editor.value.length,
+      event.shiftKey,
+      event.altKey || event.ctrlKey || event.metaKey
+    );
+    if (boundaryDirection || boundaryDeleteDirection || verticalDirection || boundarySelectionDirection) {
+      event.preventDefault();
+      event.stopPropagation();
+      const targetPoint = verticalDirection ? caretTargetPoint(verticalDirection) : null;
+      finish(true, (mapping) => {
+        if (boundaryDirection) onBoundaryNavigate(boundaryDirection, mapping);
+        else if (boundaryDeleteDirection) onBoundaryDelete(boundaryDeleteDirection, mapping);
+        else if (verticalDirection) onVerticalNavigate(verticalDirection, targetPoint, mapping);
+        else onBoundarySelect(boundarySelectionDirection, mapping);
+      });
+    } else if (event.key === "Escape") {
       event.preventDefault();
       finish(false);
     } else if (!isBlock && event.key === "Enter") {
       event.preventDefault();
-      finish(true);
+      const sourceOffset = editor.selectionStart ?? 0;
+      if (editor.selectionEnd !== sourceOffset) {
+        editor.value = `${editor.value.slice(0, sourceOffset)}${editor.value.slice(editor.selectionEnd)}`;
+        resize();
+      }
+      const value = editor.value;
+      finish(true, (mapping) => onInlineEnter(value, sourceOffset, mapping));
     } else if (isBlock && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       finish(true);
@@ -439,7 +1695,15 @@ function continuousSourceEditor(
     if (!shouldFocus()) return;
     editor.focus();
     const caret = Math.max(0, Math.min(editor.value.length, startingCaret));
-    editor.setSelectionRange(caret, caret);
+    if (startingSelection) {
+      editor.setSelectionRange(
+        startingSelection.start,
+        startingSelection.end,
+        startingSelection.direction
+      );
+    } else {
+      editor.setSelectionRange(caret, caret);
+    }
   });
   return editor;
 }
@@ -607,6 +1871,47 @@ function textOffsetAtPoint(root, event) {
   }
 }
 
+export function verticalDocumentPositionFromGeometry(view, point, direction) {
+  if (!point) return null;
+  const ownerDocument = view.dom.ownerDocument || document;
+  const walker = ownerDocument.createTreeWalker(view.dom, 4);
+  let best = null;
+
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    if (parent?.closest("button, input, textarea, .katex, .cm-editor, [contenteditable='false']")) continue;
+    const text = node.nodeValue || "";
+    for (let index = 0; index < text.length; index += 1) {
+      const range = ownerDocument.createRange();
+      range.setStart(node, index);
+      range.setEnd(node, index + 1);
+      const rect = range.getBoundingClientRect();
+      if (!rect.height) continue;
+      const verticalDistance = direction === "up"
+        ? point.top - rect.bottom
+        : rect.top - point.top;
+      if (verticalDistance < 1) continue;
+
+      const edges = [
+        { offset: index, x: rect.left, assoc: -1 },
+        { offset: index + 1, x: rect.right, assoc: 1 }
+      ];
+      for (const edge of edges) {
+        let position;
+        try {
+          position = view.posAtDOM(node, edge.offset, edge.assoc);
+        } catch {
+          continue;
+        }
+        const score = verticalDistance * 1000 + Math.abs(point.left - edge.x);
+        if (!best || score < best.score) best = { position, score };
+      }
+    }
+  }
+
+  return best?.position ?? null;
+}
+
 export function enclosingCodeBlock(doc, position) {
   let blockPosition = Math.max(0, Math.min(position, doc.content.size));
   let node = doc.nodeAt(blockPosition);
@@ -690,6 +1995,23 @@ function capturedTargetAtPointer(view, event) {
     }
   }
   if (!math) {
+    const targetElement = event.target instanceof Element ? event.target : null;
+    const atomElement = targetElement?.closest("img:not(.ProseMirror-separator), hr, sup");
+    if (atomElement) {
+      try {
+        const domPosition = view.posAtDOM(atomElement, 0, -1);
+        const atom = sourceAtomNearPosition(view.state, domPosition);
+        if (atom) {
+          return {
+            position: atom.from,
+            atomPosition: atom.from,
+            assoc: 1
+          };
+        }
+      } catch {
+        // Fall through to the general coordinate mapper for detached node views.
+      }
+    }
     const codeBlock = event.target instanceof Element
       ? event.target.closest(".milkdown-code-block")
       : null;
@@ -761,29 +2083,58 @@ export function mappedPosition(mapping, position, assoc = 1) {
 
 const inlineWordChar = /[\p{L}\p{N}_]/u;
 const completedInlinePatterns = [
-  { pattern: /\*\*[^*\n]+\*\*$/ },
-  { pattern: /__[^_\n]+__$/, wordBoundary: true },
-  { pattern: /~~[^~\n]+~~$/ },
-  { pattern: /`[^`\n]+`$/ },
-  { pattern: /\[[^\]\n]+\]\([^\s)]+(?:\s+"[^"]*")?\)$/, wordBoundary: true },
-  { pattern: /\$(?!\s)[^$\n]*[^$\s]\$$/, noDigitAfter: true },
-  { pattern: /(?<!\*)\*[^*\n]+\*$/ },
-  { pattern: /(?<!_)_[^_\n]+_$/, wordBoundary: true }
+  { pattern: /\*\*[^*\n]+\*\*$/, closingLength: 2 },
+  { pattern: /__[^_\n]+__$/, closingLength: 2, wordBoundary: true },
+  { pattern: /~~[^~\n]+~~$/, closingLength: 2 },
+  { pattern: /\[[^\]\n]+\]\([^\s)]+(?:\s+"[^"]*")?\)$/, closingLength: 1, wordBoundary: true },
+  { pattern: /\$(?!\s)[^$\n]*[^$\s]\$$/, closingLength: 1, noDigitAfter: true },
+  { pattern: /(?<!\*)\*[^*\n]+\*$/, closingLength: 1 },
+  { pattern: /(?<!_)_[^_\n]+_$/, closingLength: 1, wordBoundary: true }
 ];
+
+function isEscapedDelimiter(text, index) {
+  let backslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor -= 1) {
+    backslashes += 1;
+  }
+  return backslashes % 2 === 1;
+}
+
+function completedInlineCodeMatch(text) {
+  const closing = text.match(/`+$/);
+  if (!closing) return null;
+  const fence = closing[0];
+  const closingStart = closing.index;
+  for (let index = closingStart - fence.length; index >= 0; index -= 1) {
+    if (text.slice(index, index + fence.length) !== fence) continue;
+    // A matching fence is an exact run. A shorter slice inside a longer run
+    // must not trigger conversion while the user is still typing the closer.
+    if (text[index - 1] === "`" || text[index + fence.length] === "`") continue;
+    if (isEscapedDelimiter(text, index)) continue;
+    const content = text.slice(index + fence.length, closingStart);
+    if (!content || content.includes("\n")) continue;
+    return { 0: text.slice(index), index };
+  }
+  return null;
+}
 
 export function completedInlineMarkdownSource(text, nextChar = "") {
   const matches = [];
-  for (const { pattern, wordBoundary, noDigitAfter } of completedInlinePatterns) {
+  for (const { pattern, closingLength, wordBoundary, noDigitAfter } of completedInlinePatterns) {
     const match = text.match(pattern);
     if (!match) continue;
     // Delimiters glued to surrounding word characters stay literal text, so
     // snake_case identifiers and index-call shapes like arr[i](x) never
     // auto-format; a "$" closing right before a digit is a price, not math.
     const charBefore = match.index > 0 ? text[match.index - 1] : "";
+    const closingIndex = match.index + match[0].length - closingLength;
+    if (isEscapedDelimiter(text, match.index) || isEscapedDelimiter(text, closingIndex)) continue;
     if (wordBoundary && (inlineWordChar.test(charBefore) || (nextChar && inlineWordChar.test(nextChar)))) continue;
     if (noDigitAfter && nextChar && /\d/.test(nextChar)) continue;
     matches.push(match);
   }
+  const inlineCode = completedInlineCodeMatch(text);
+  if (inlineCode) matches.push(inlineCode);
   if (!matches.length) return null;
   return matches.reduce((best, match) => match.index < best.index ? match : best);
 }
@@ -878,23 +2229,35 @@ export function markdownDeletionTarget(state, direction) {
   const { selection } = state;
   if (selection.node) {
     const atom = markdownAtomSyntaxAt(state, selection.from);
-    const block = sourceDeletionBlockNames.has(selection.node.type.name)
-      ? {
-          from: selection.from,
-          to: selection.to,
-          kind: "block",
-          name: selection.node.type.name
-        }
-      : null;
-    const unit = atom || block;
+    const unit = atom;
     if (!unit) return null;
     return {
       position: unit.from,
-      atomPosition: atom ? unit.from : null,
-      explicitUnitPosition: block ? unit.from : null,
+      atomPosition: unit.from,
+      explicitUnitPosition: null,
       edge: direction === "backward" ? "end" : "start"
     };
   }
+  return markdownBoundarySourceTarget(state, direction);
+}
+
+export function hardbreakBoundaryBackspaceTransaction(state) {
+  const { selection } = state;
+  if (!selection.empty) return null;
+  const node = selection.$from.nodeBefore;
+  if (!node || node.type.name !== "hardbreak" || node.attrs.isInline) return null;
+  const marker = node.attrs.markdownMarker;
+  if (!(marker === "\\" || /^ {2,}$/.test(marker || ""))) return null;
+
+  const from = selection.from - node.nodeSize;
+  let transaction = state.tr.replaceWith(from, selection.from, state.schema.text(marker));
+  transaction = transaction.setSelection(TextSelection.create(transaction.doc, from + marker.length));
+  transaction.setMeta(markdownSyntaxKey, "close");
+  return transaction;
+}
+
+export function markdownBoundarySourceTarget(state, direction) {
+  const { selection } = state;
   if (!selection.empty) return null;
 
   const adjacentNode = direction === "backward" ? selection.$from.nodeBefore : selection.$from.nodeAfter;
@@ -903,28 +2266,78 @@ export function markdownDeletionTarget(state, direction) {
     ? selection.from - adjacentNode.nodeSize
     : selection.from;
   const atom = markdownAtomSyntaxAt(state, position);
-  const block = sourceDeletionBlockNames.has(adjacentNode.type.name)
-    ? {
-        from: position,
-        to: position + adjacentNode.nodeSize,
-        kind: "block",
-        name: adjacentNode.type.name
-      }
-    : null;
-  const unit = atom || block;
-  if (!unit) return null;
+  if (atom) {
+    return {
+      position: atom.from,
+      atomPosition: atom.from,
+      explicitUnitPosition: null,
+      edge: direction === "backward" ? "end" : "start"
+    };
+  }
+
+  if (!adjacentNode.isText || !adjacentNode.marks.length) return null;
+  const inlinePosition = direction === "backward"
+    ? Math.max(0, selection.from - 1)
+    : Math.min(state.doc.content.size, selection.from + 1);
+  const inline = inlineMarkdownSyntaxAtPosition(state, inlinePosition);
+  if (!inline) return null;
+  const touchesBoundary = direction === "backward"
+    ? inline.to === selection.from
+    : inline.from === selection.from;
+  if (!touchesBoundary) return null;
   return {
-    position: unit.from,
-    atomPosition: atom ? unit.from : null,
-    explicitUnitPosition: block ? unit.from : null,
+    position: inlinePosition,
+    inlinePosition,
+    atomPosition: null,
+    explicitUnitPosition: null,
     edge: direction === "backward" ? "end" : "start"
   };
+}
+
+export function markdownDeletionSourceUnit(state, target) {
+  if (target.atomPosition != null) return markdownAtomSyntaxAt(state, target.atomPosition);
+  if (target.inlinePosition != null) return inlineMarkdownSyntaxAtPosition(state, target.inlinePosition);
+  if (target.explicitUnitPosition != null) {
+    return blockSyntaxAtPosition(state, target.explicitUnitPosition, sourceDeletionBlockNames);
+  }
+  return null;
 }
 
 // Live source controls per editor root, so the host component can commit an
 // in-progress raw-Markdown edit synchronously before a save, mode change, or
 // tab switch tears the surface down.
 const liveSourceControls = new WeakMap();
+
+function sourceNewlineDecorations(state, sourceSelection = null) {
+  const info = sourceSelection || sourceNewlineSelectionInfo(state);
+  if (!info) return [];
+  const marker = Decoration.widget(info.boundary, () => {
+    const element = document.createElement("span");
+    element.className = "tether-source-newline-selection";
+    const selected = sourceSelectionText(sourceSelection);
+    if (selected === "") {
+      element.classList.add("is-caret");
+    } else if (selected != null && !["\n", "\r\n"].includes(selected)) {
+      element.classList.add("is-extended");
+      const visible = selected
+        .replace(/\r\n|\n|\r/g, "↵")
+        .replace(/\t/g, "⇥")
+        .replace(/ /g, "·");
+      element.textContent = visible.length > 28 ? `${visible.slice(0, 27)}…` : visible;
+    }
+    element.setAttribute("aria-hidden", "true");
+    return element;
+  }, { side: -1 });
+  return [
+    Decoration.node(info.beforeFrom, info.beforeTo, {
+      class: "tether-source-newline-adjacent"
+    }),
+    Decoration.node(info.afterFrom, info.afterTo, {
+      class: "tether-source-newline-adjacent"
+    }),
+    marker
+  ];
+}
 
 export function flushActiveMarkdownSource(viewDom) {
   const control = viewDom ? liveSourceControls.get(viewDom) : null;
@@ -946,6 +2359,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const meta = transaction.getMeta(markdownSyntaxKey);
         if (meta === "close") return inactivePluginState();
         if (meta?.action === "smart-input") return inactivePluginState();
+        if (meta?.action === "source-selection") {
+          return {
+            ...inactivePluginState(),
+            sourceSelection: meta.sourceSelection
+          };
+        }
         if (meta?.action === "activate") {
           return {
             active: true,
@@ -954,7 +2373,9 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             clickPosition: meta.clickPosition ?? transaction.selection.from,
             sourceOffset: meta.sourceOffset ?? null,
             initialDeleteDirection: meta.initialDeleteDirection ?? null,
-            focusLock: Boolean(meta.focusLock)
+            initialSelectionDirection: meta.initialSelectionDirection ?? null,
+            focusLock: Boolean(meta.focusLock),
+            sourceSelection: null
           };
         }
         if (transaction.selectionSet && pendingActivation) {
@@ -966,7 +2387,9 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             clickPosition: transaction.selection.from,
             sourceOffset: null,
             initialDeleteDirection: null,
-            focusLock: false
+            initialSelectionDirection: null,
+            focusLock: false,
+            sourceSelection: null
           };
         }
         if (transaction.selectionSet && pluginState.active && pluginState.focusLock) {
@@ -980,9 +2403,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             clickPosition: transaction.selection.from,
             sourceOffset: null,
             initialDeleteDirection: null,
-            focusLock: false
+            initialSelectionDirection: null,
+            focusLock: false,
+            sourceSelection: null
           };
         }
+        if (transaction.selectionSet && pluginState.sourceSelection) return inactivePluginState();
         return pluginState;
       }
     },
@@ -1023,7 +2449,70 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       };
     },
     props: {
+      handleTextInput(view, _from, _to, text) {
+        const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+        const documentSelection = sourceSelection
+          ? null
+          : sourceSelectionFromDocumentSelection(view.state, ctx.get(serializerCtx));
+        const exactSelection = sourceSelection || documentSelection;
+        const transaction = exactSelection
+          ? replaceSourceSelectionTransaction(
+              view.state,
+              exactSelection,
+              text,
+              ctx.get(parserCtx)
+            )
+          : replaceSourceNewlineSelectionTransaction(
+              view.state,
+              text,
+              ctx.get(parserCtx),
+              ctx.get(serializerCtx)
+            );
+        if (!transaction) return false;
+        transaction.setMeta(markdownSyntaxKey, "close");
+        view.dispatch(transaction.scrollIntoView());
+        return true;
+      },
+      handlePaste(view, event) {
+        const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+        const documentSelection = sourceSelection
+          ? null
+          : sourceSelectionFromDocumentSelection(view.state, ctx.get(serializerCtx));
+        const exactSelection = sourceSelection || documentSelection;
+        if (!exactSelection && !sourceNewlineSelectionInfo(view.state)) return false;
+        const text = event.clipboardData?.getData("text/plain");
+        if (text == null) return false;
+        const transaction = exactSelection
+          ? replaceSourceSelectionTransaction(
+              view.state,
+              exactSelection,
+              text,
+              ctx.get(parserCtx)
+            )
+          : replaceSourceNewlineSelectionTransaction(
+              view.state,
+              text,
+              ctx.get(parserCtx),
+              ctx.get(serializerCtx)
+            );
+        if (!transaction) return false;
+        event.preventDefault();
+        transaction.setMeta(markdownSyntaxKey, "close");
+        view.dispatch(transaction.scrollIntoView());
+        return true;
+      },
       handleDOMEvents: {
+        copy(view, event) {
+          const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+          const text = sourceSelectionText(sourceSelection)
+            ?? sourceNewlineClipboardText(view.state)
+            ?? sourceAwareClipboardText(view.state, ctx.get(serializerCtx));
+          if (text == null || text === "" || !event.clipboardData) return false;
+          event.preventDefault();
+          event.clipboardData.setData("text/plain", text);
+          if (["\n", "\r\n"].includes(text)) event.clipboardData.setData("text/html", "<br>");
+          return true;
+        },
         mousedown(view, event) {
           if (!view.editable) return false;
           if (event.target instanceof Element && event.target.closest(".tether-continuous-source")) return false;
@@ -1046,13 +2535,214 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         },
         keydown(_view, event) {
           if (!_view.editable) return false;
-          if (["Backspace", "Delete"].includes(event.key) && !activeSourceControl?.element?.isConnected) {
+          if (isSourceInputComposing(event)) return false;
+          const pluginState = markdownSyntaxKey.getState(_view.state);
+          const sourceSelection = pluginState?.sourceSelection;
+          if (
+            sourceSelection
+            && !event.shiftKey
+            && !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && ["ArrowLeft", "ArrowRight"].includes(event.key)
+          ) {
+            const direction = event.key === "ArrowLeft" ? "backward" : "forward";
+            const offset = sourceSelection.anchor === sourceSelection.head
+              ? extendSourceSelection(sourceSelection, direction).head
+              : direction === "backward"
+                ? Math.min(sourceSelection.anchor, sourceSelection.head)
+                : Math.max(sourceSelection.anchor, sourceSelection.head);
+            event.preventDefault();
+            activateDocumentSourceOffset(
+              _view,
+              sourceSelection,
+              offset,
+              direction,
+              ctx.get(serializerCtx)
+            );
+            return true;
+          }
+          if (
+            sourceSelection
+            && event.shiftKey
+            && !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && ["ArrowLeft", "ArrowRight"].includes(event.key)
+          ) {
+            const direction = event.key === "ArrowLeft" ? "backward" : "forward";
+            const next = extendSourceSelection(sourceSelection, direction);
+            event.preventDefault();
+            if (next.head === next.anchor) {
+              activateDocumentSourceOffset(
+                _view,
+                next,
+                next.head,
+                direction,
+                ctx.get(serializerCtx)
+              );
+              return true;
+            }
+            _view.dispatch(
+              _view.state.tr.setMeta(markdownSyntaxKey, {
+                action: "source-selection",
+                sourceSelection: next
+              })
+            );
+            return true;
+          }
+          const documentSelection = sourceSelection || _view.state.selection.empty
+            ? null
+            : sourceSelectionFromDocumentSelection(
+                _view.state,
+                ctx.get(serializerCtx)
+              );
+          const exactSelection = sourceSelection || documentSelection;
+          if (
+            (exactSelection || sourceNewlineSelectionInfo(_view.state))
+            && !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && !event.shiftKey
+            && ["Backspace", "Delete", "Enter"].includes(event.key)
+          ) {
+            const replacement = event.key === "Enter" ? "\n" : "";
+            const deletionSelection = exactSelection
+              && exactSelection.anchor === exactSelection.head
+              && ["Backspace", "Delete"].includes(event.key)
+              ? extendSourceSelection(
+                  exactSelection,
+                  event.key === "Backspace" ? "backward" : "forward"
+                )
+              : exactSelection;
+            const transaction = deletionSelection
+              ? replaceSourceSelectionTransaction(
+                  _view.state,
+                  deletionSelection,
+                  replacement,
+                  ctx.get(parserCtx)
+                )
+              : replaceSourceNewlineSelectionTransaction(
+                  _view.state,
+                  replacement,
+                  ctx.get(parserCtx),
+                  ctx.get(serializerCtx)
+                );
+            if (transaction) {
+              event.preventDefault();
+              transaction.setMeta(markdownSyntaxKey, "close");
+              _view.dispatch(transaction.scrollIntoView());
+              return true;
+            }
+          }
+          if (
+            !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && ["ArrowLeft", "ArrowRight"].includes(event.key)
+            && !activeSourceControl?.element?.isConnected
+          ) {
+            const target = structuralBoundarySourceTarget(_view.state, event.key);
+            if (target) {
+              const serializer = ctx.get(serializerCtx);
+              const source = continuousMarkdownSource(_view.state, target.unit, serializer);
+              const caret = sourceCaretOffset(
+                _view.state,
+                target.unit,
+                source,
+                target.position,
+                null,
+                serializer
+              );
+              const sourceOffset = event.shiftKey
+                ? caret
+                : Math.max(
+                    0,
+                    Math.min(source.length, caret + (target.direction === "backward" ? -1 : 1))
+                  );
+              event.preventDefault();
+              activateMarkdownSourceAt(_view, target.position, {
+                explicitUnitPosition: target.unit.kind === "block" ? target.unit.from : null,
+                sourceOffset,
+                initialSelectionDirection: event.shiftKey ? target.direction : null
+              });
+              return true;
+            }
+          }
+          if (
+            event.shiftKey
+            && !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && ["ArrowLeft", "ArrowRight"].includes(event.key)
+            && !activeSourceControl?.element?.isConnected
+          ) {
+            const direction = event.key === "ArrowLeft" ? "backward" : "forward";
+            const target = markdownBoundarySourceTarget(_view.state, direction);
+            if (target) {
+              const unit = markdownDeletionSourceUnit(_view.state, target);
+              if (!unit) return false;
+              const serializer = ctx.get(serializerCtx);
+              const source = continuousMarkdownSource(_view.state, unit, serializer);
+              event.preventDefault();
+              activateMarkdownSourceAt(_view, target.position, {
+                atomPosition: target.atomPosition,
+                explicitUnitPosition: target.explicitUnitPosition,
+                sourceOffset: target.edge === "end" ? source.length : 0,
+                initialSelectionDirection: direction
+              });
+              return true;
+            }
+          }
+          if (
+            event.key === "Backspace"
+            && !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && !event.shiftKey
+            && !activeSourceControl?.element?.isConnected
+          ) {
+            const transaction = hardbreakBoundaryBackspaceTransaction(_view.state);
+            if (transaction) {
+              event.preventDefault();
+              _view.dispatch(transaction.scrollIntoView());
+              return true;
+            }
+          }
+          if (
+            !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && !event.shiftKey
+            && ["ArrowLeft", "ArrowRight"].includes(event.key)
+            && !activeSourceControl?.element?.isConnected
+          ) {
+            const direction = event.key === "ArrowLeft" ? "backward" : "forward";
+            const target = markdownBoundarySourceTarget(_view.state, direction);
+            const unit = target ? markdownDeletionSourceUnit(_view.state, target) : null;
+            if (target && unit?.name === "hardbreak") {
+              const source = continuousMarkdownSource(_view.state, unit, ctx.get(serializerCtx));
+              event.preventDefault();
+              activateMarkdownSourceAt(_view, target.position, {
+                atomPosition: target.atomPosition,
+                sourceOffset: target.edge === "end" ? source.length : 0
+              });
+              return true;
+            }
+          }
+          if (
+            !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && !event.shiftKey
+            && ["Backspace", "Delete"].includes(event.key)
+            && !activeSourceControl?.element?.isConnected
+          ) {
             const direction = event.key === "Backspace" ? "backward" : "forward";
             const target = markdownDeletionTarget(_view.state, direction);
             if (target) {
-              const unit = target.atomPosition == null
-                ? blockSyntaxAtPosition(_view.state, target.explicitUnitPosition, sourceDeletionBlockNames)
-                : markdownAtomSyntaxAt(_view.state, target.atomPosition);
+              const unit = markdownDeletionSourceUnit(_view.state, target);
+              if (!unit) return false;
               const serializer = ctx.get(serializerCtx);
               const source = continuousMarkdownSource(_view.state, unit, serializer);
               event.preventDefault();
@@ -1073,21 +2763,46 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       },
       decorations(state) {
         const pluginState = markdownSyntaxKey.getState(state);
-        if (!pluginState?.active) return DecorationSet.empty;
+        const newlineDecorations = sourceNewlineDecorations(
+          state,
+          pluginState?.sourceSelection
+        );
+        if (!pluginState?.active) {
+          return newlineDecorations.length
+            ? DecorationSet.create(state.doc, newlineDecorations)
+            : DecorationSet.empty;
+        }
 
         // The smallest active unit wins: inline formatting, then a selected atom,
         // then a complete structural block such as a heading, list, or quote.
+        const explicitUnit = pluginState.explicitUnitPosition == null
+          ? null
+          : markdownTableSyntaxAt(state, pluginState.explicitUnitPosition)
+            || blockSyntaxAtPosition(state, pluginState.explicitUnitPosition, explicitSourceBlockNames);
         const unit = (pluginState.atomPosition == null
           ? null
           : markdownAtomSyntaxAt(state, pluginState.atomPosition))
-          || (pluginState.explicitUnitPosition == null
-            ? null
-            : markdownTableSyntaxAt(state, pluginState.explicitUnitPosition)
-              || blockSyntaxAtPosition(state, pluginState.explicitUnitPosition, sourceDeletionBlockNames))
+          || explicitUnit
           || activeMarkdownSyntax(state)
           || activeMarkdownAtomSyntax(state)
           || activeMarkdownBlockSyntax(state);
-        if (!unit) return DecorationSet.empty;
+        if (!unit) {
+          return newlineDecorations.length
+            ? DecorationSet.create(state.doc, newlineDecorations)
+            : DecorationSet.empty;
+        }
+
+        // Keep headings, lists, quotes, and fenced code in their native rendered
+        // editors. A node decoration gives CSS a stable active-block hook without
+        // replacing the content DOM or creating a second caret/undo context.
+        if (!usesContinuousSourceEditor(unit, explicitUnit)) {
+          return DecorationSet.create(state.doc, [
+            ...newlineDecorations,
+            Decoration.node(unit.from, unit.to, {
+              class: `tether-active-markdown-block is-${unit.name}`
+            })
+          ]);
+        }
 
         const serializer = ctx.get(serializerCtx);
         const source = continuousMarkdownSource(state, unit, serializer);
@@ -1103,8 +2818,210 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const commit = (value, afterCommit = null, sync = false) => {
           if (!editorView) return;
           const parser = ctx.get(parserCtx);
-          if (unit.kind === "inline") replaceInlineSource(editorView, parser, unit, value, afterCommit, sync);
+          if (unit.name === "hardbreak") {
+            replaceHardbreakSource(editorView, parser, unit, value, afterCommit, sync);
+          } else if (unit.kind === "inline") replaceInlineSource(editorView, parser, unit, value, afterCommit, sync);
           else replaceBlockSource(editorView, parser, unit, value, afterCommit, sync);
+        };
+        const navigateFromBoundary = (direction, mapping = null) => {
+          if (!editorView?.dom.isConnected) return;
+          const assoc = direction === "backward" ? -1 : 1;
+          const originalPosition = direction === "backward" ? unit.from : unit.to;
+          const position = Math.max(
+            0,
+            Math.min(mappedPosition(mapping, originalPosition, assoc), editorView.state.doc.content.size)
+          );
+          if (unit.kind === "inline") {
+            const handoff = structuralSourceHandoffTarget(
+              editorView.state,
+              position,
+              direction,
+              serializer,
+              true
+            );
+            if (handoff) {
+              activateMarkdownSourceAt(editorView, position, {
+                explicitUnitPosition: handoff.unit.from,
+                sourceOffset: handoff.sourceOffset,
+                focusLock: true
+              });
+              return;
+            }
+          }
+          editorView.dispatch(
+            editorView.state.tr
+              .setSelection(Selection.near(editorView.state.doc.resolve(position), assoc))
+              .setMeta(markdownSyntaxKey, "close")
+              .scrollIntoView()
+          );
+          editorView.focus();
+        };
+        const deleteFromBoundary = (direction, mapping = null) => {
+          if (!editorView?.dom.isConnected) return;
+          const assoc = direction === "backward" ? -1 : 1;
+          const originalPosition = direction === "backward" ? unit.from : unit.to;
+          const position = Math.max(
+            0,
+            Math.min(mappedPosition(mapping, originalPosition, assoc), editorView.state.doc.content.size)
+          );
+          if (unit.kind === "inline") {
+            const handoff = structuralSourceHandoffTarget(
+              editorView.state,
+              position,
+              direction,
+              serializer
+            );
+            if (handoff) {
+              activateMarkdownSourceAt(editorView, position, {
+                explicitUnitPosition: handoff.unit.from,
+                sourceOffset: handoff.sourceOffset,
+                initialDeleteDirection: direction,
+                focusLock: true
+              });
+              return;
+            }
+          }
+          const newlineDeletion = sourceNewlineDeletionTransaction(
+            editorView.state,
+            position,
+            direction,
+            ctx.get(parserCtx),
+            serializer
+          );
+          if (newlineDeletion) {
+            newlineDeletion.setMeta(markdownSyntaxKey, "close");
+            editorView.dispatch(newlineDeletion.scrollIntoView());
+            editorView.focus();
+            return;
+          }
+          const resolved = editorView.state.doc.resolve(position);
+          const boundaryState = {
+            doc: editorView.state.doc,
+            selection: TextSelection.create(editorView.state.doc, position)
+          };
+          const adjacentTarget = markdownDeletionTarget(boundaryState, direction);
+          const adjacentUnit = adjacentTarget
+            ? markdownDeletionSourceUnit(editorView.state, adjacentTarget)
+            : null;
+          if (adjacentTarget && adjacentUnit) {
+            const adjacentSource = continuousMarkdownSource(editorView.state, adjacentUnit, serializer);
+            activateMarkdownSourceAt(editorView, adjacentTarget.position, {
+              atomPosition: adjacentTarget.atomPosition,
+              explicitUnitPosition: adjacentTarget.explicitUnitPosition,
+              sourceOffset: adjacentTarget.edge === "end" ? adjacentSource.length : 0,
+              initialDeleteDirection: direction,
+              focusLock: true
+            });
+            return;
+          }
+          let transaction = editorView.state.tr.setMeta(markdownSyntaxKey, "close");
+
+          if (resolved.parent.isTextblock && direction === "backward" && resolved.parentOffset > 0) {
+            transaction = transaction
+              .delete(position - 1, position)
+              .setSelection(Selection.near(transaction.doc.resolve(position - 1), -1));
+            editorView.dispatch(transaction.scrollIntoView());
+          } else if (
+            resolved.parent.isTextblock
+            && direction === "forward"
+            && resolved.parentOffset < resolved.parent.content.size
+          ) {
+            transaction = transaction
+              .delete(position, position + 1)
+              .setSelection(Selection.near(transaction.doc.resolve(position), 1));
+            editorView.dispatch(transaction.scrollIntoView());
+          } else {
+            transaction = transaction.setSelection(Selection.near(resolved, assoc));
+            editorView.dispatch(transaction.scrollIntoView());
+            const join = direction === "backward" ? joinBackward : joinForward;
+            join(editorView.state, editorView.dispatch, editorView);
+          }
+          editorView.focus();
+        };
+        const navigateVertically = (direction, point, mapping = null) => {
+          if (!editorView?.dom.isConnected) return;
+          const assoc = direction === "up" ? -1 : 1;
+          const fallbackPosition = mappedPosition(
+            mapping,
+            direction === "up" ? unit.from : unit.to,
+            assoc
+          );
+          const geometryPosition = verticalDocumentPositionFromGeometry(editorView, point, direction);
+          const hit = geometryPosition == null && point ? editorView.posAtCoords(point) : null;
+          const position = Math.max(
+            0,
+            Math.min(geometryPosition ?? hit?.pos ?? fallbackPosition, editorView.state.doc.content.size)
+          );
+          editorView.dispatch(
+            editorView.state.tr
+              .setSelection(Selection.near(editorView.state.doc.resolve(position), assoc))
+              .setMeta(markdownSyntaxKey, "close")
+              .scrollIntoView()
+          );
+          editorView.focus();
+        };
+        const selectFromBoundary = (direction, mapping = null) => {
+          if (!editorView?.dom.isConnected) return;
+          const assoc = direction === "backward" ? -1 : 1;
+          const originalPosition = direction === "backward" ? unit.from : unit.to;
+          const anchor = Math.max(
+            0,
+            Math.min(mappedPosition(mapping, originalPosition, assoc), editorView.state.doc.content.size)
+          );
+          if (unit.kind === "inline") {
+            const handoff = structuralSourceHandoffTarget(
+              editorView.state,
+              anchor,
+              direction,
+              serializer
+            );
+            if (handoff) {
+              activateMarkdownSourceAt(editorView, anchor, {
+                explicitUnitPosition: handoff.unit.from,
+                sourceOffset: handoff.sourceOffset,
+                initialSelectionDirection: direction,
+                focusLock: true
+              });
+              return;
+            }
+          }
+          const selection = textSelectionAcrossBoundary(editorView.state, anchor, direction);
+          const range = sourceNewlineSourceRange(
+            { doc: editorView.state.doc, selection },
+            serializer
+          );
+          const sourceSelection = sourceSelectionFromNewlineRange(range, direction);
+          editorView.dispatch(
+            editorView.state.tr
+              .setSelection(selection)
+              .setMeta(
+                markdownSyntaxKey,
+                sourceSelection
+                  ? { action: "source-selection", sourceSelection }
+                  : "close"
+              )
+              .scrollIntoView()
+          );
+          editorView.focus();
+        };
+        const splitFromInlineSource = (value, sourceOffset, mapping = null) => {
+          if (!editorView?.dom.isConnected) return;
+          const parser = ctx.get(parserCtx);
+          const contentOffset = inlineSourceContentOffset(value, sourceOffset, parser);
+          const from = mappedPosition(mapping, unit.from, -1);
+          const to = mappedPosition(mapping, unit.to, 1);
+          const position = Math.max(
+            0,
+            Math.min(from + contentOffset, to, editorView.state.doc.content.size)
+          );
+          editorView.dispatch(
+            editorView.state.tr
+              .setSelection(TextSelection.create(editorView.state.doc, position))
+              .setMeta(markdownSyntaxKey, "close")
+              .scrollIntoView()
+          );
+          splitBlock(editorView.state, editorView.dispatch, editorView);
+          editorView.focus();
         };
         const editorDecoration = Decoration.widget(unit.from, () => continuousSourceEditor(
           source,
@@ -1113,8 +3030,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           `${unit.name || unit.names?.join(" ") || "Markdown"} source`,
           initialCaret,
           pluginState.initialDeleteDirection,
+          pluginState.initialSelectionDirection,
           commit,
           () => editorView && closeSourceEditor(editorView),
+          navigateFromBoundary,
+          deleteFromBoundary,
+          navigateVertically,
+          selectFromBoundary,
+          splitFromInlineSource,
           () => true,
           (control) => {
             activeSourceControl = control;
@@ -1133,7 +3056,11 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           ? Decoration.inline(unit.from, unit.to, { class: "tether-source-hidden" })
           : Decoration.node(unit.from, unit.to, { class: "tether-source-hidden is-block" });
 
-        return DecorationSet.create(state.doc, [editorDecoration, hiddenDecoration]);
+        return DecorationSet.create(state.doc, [
+          ...newlineDecorations,
+          editorDecoration,
+          hiddenDecoration
+        ]);
       }
     }
   });

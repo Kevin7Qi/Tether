@@ -2000,16 +2000,55 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror h3:hover::before,
 .tether-wysiwyg .ProseMirror h4:hover::before,
 .tether-wysiwyg .ProseMirror h5:hover::before,
-.tether-wysiwyg .ProseMirror h6:hover::before {
+.tether-wysiwyg .ProseMirror h6:hover::before,
+.tether-wysiwyg .ProseMirror h1.tether-active-markdown-block::before,
+.tether-wysiwyg .ProseMirror h2.tether-active-markdown-block::before,
+.tether-wysiwyg .ProseMirror h3.tether-active-markdown-block::before,
+.tether-wysiwyg .ProseMirror h4.tether-active-markdown-block::before,
+.tether-wysiwyg .ProseMirror h5.tether-active-markdown-block::before,
+.tether-wysiwyg .ProseMirror h6.tether-active-markdown-block::before {
   opacity: 1;
 }
 
-.tether-wysiwyg .ProseMirror h1::before { content: "H1" / ""; top: 12px; }
-.tether-wysiwyg .ProseMirror h2::before { content: "H2" / ""; top: 5px; }
-.tether-wysiwyg .ProseMirror h3::before { content: "H3" / ""; top: 4px; }
-.tether-wysiwyg .ProseMirror h4::before { content: "H4" / ""; top: 3px; }
-.tether-wysiwyg .ProseMirror h5::before { content: "H5" / ""; top: 2px; }
-.tether-wysiwyg .ProseMirror h6::before { content: "H6" / ""; top: 1px; }
+.tether-wysiwyg .ProseMirror h1::before { content: "#" / ""; top: 12px; }
+.tether-wysiwyg .ProseMirror h2::before { content: "##" / ""; top: 5px; }
+.tether-wysiwyg .ProseMirror h3::before { content: "###" / ""; top: 4px; }
+.tether-wysiwyg .ProseMirror h4::before { content: "####" / ""; top: 3px; }
+.tether-wysiwyg .ProseMirror h5::before { content: "#####" / ""; top: 2px; }
+.tether-wysiwyg .ProseMirror h6::before { content: "######" / ""; top: 1px; }
+
+.tether-wysiwyg .ProseMirror h1[data-md-heading-style="setext"]::before,
+.tether-wysiwyg .ProseMirror h2[data-md-heading-style="setext"]::before {
+  content: none;
+}
+
+.tether-wysiwyg .ProseMirror h1[data-md-heading-style="setext"]::after,
+.tether-wysiwyg .ProseMirror h2[data-md-heading-style="setext"]::after {
+  content: attr(data-md-heading-marker) / "";
+  position: absolute;
+  left: 0;
+  bottom: -0.55em;
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: pre;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 120ms ease;
+}
+
+.tether-wysiwyg .ProseMirror h1[data-md-heading-style="setext"]:hover::after,
+.tether-wysiwyg .ProseMirror h2[data-md-heading-style="setext"]:hover::after,
+.tether-wysiwyg .ProseMirror h1[data-md-heading-style="setext"].tether-active-markdown-block::after,
+.tether-wysiwyg .ProseMirror h2[data-md-heading-style="setext"].tether-active-markdown-block::after {
+  opacity: 1;
+}
 
 .tether-wysiwyg .ProseMirror p,
 .tether-wysiwyg .ProseMirror blockquote {
@@ -2072,6 +2111,75 @@ textarea:focus-visible,
   font-size: 0.84em;
 }
 
+.tether-wysiwyg .ProseMirror mark[data-md-html-inline] {
+  border-radius: 2px;
+  background: color-mix(in srgb, #f0c84b 34%, var(--surface));
+  color: inherit;
+  padding: 0 0.12em;
+}
+
+.tether-wysiwyg .ProseMirror kbd[data-md-html-inline] {
+  display: inline-block;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--code) 78%, var(--surface));
+  padding: 0.05em 0.38em;
+  font-family: var(--mono);
+  font-size: 0.78em;
+  line-height: 1.35;
+  vertical-align: 0.06em;
+}
+
+.tether-wysiwyg .ProseMirror ins[data-md-html-inline] {
+  text-decoration-color: color-mix(in srgb, var(--accent) 65%, currentColor);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.tether-wysiwyg .ProseMirror small[data-md-html-inline] {
+  color: var(--ink2);
+  font-size: 0.84em;
+}
+
+.tether-wysiwyg .ProseMirror sup[data-type="footnote_reference"] {
+  border-radius: 3px;
+  color: var(--accent);
+  padding: 0 0.08em;
+  font-family: var(--ui);
+  font-size: 0.72em;
+  font-weight: 600;
+  line-height: 1;
+  vertical-align: super;
+}
+
+.tether-wysiwyg .ProseMirror dl[data-type="footnote_definition"] {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 9px;
+  margin: 8px 0 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  color: var(--ink2);
+  font-size: 0.9em;
+}
+
+.tether-wysiwyg .ProseMirror dl[data-type="footnote_definition"] dt {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.82em;
+  font-weight: 500;
+}
+
+.tether-wysiwyg .ProseMirror dl[data-type="footnote_definition"] dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.tether-wysiwyg .ProseMirror dl[data-type="footnote_definition"] dd > :last-child {
+  margin-bottom: 0;
+}
+
 .tether-wysiwyg .ProseMirror .tether-continuous-source {
   appearance: none;
   box-sizing: border-box;
@@ -2101,8 +2209,11 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .ProseMirror input.tether-continuous-source {
+  max-width: 100%;
   min-width: 3ch;
   height: 1.55em;
+  overflow-x: auto;
+  text-overflow: clip;
   white-space: pre;
 }
 
@@ -2125,13 +2236,104 @@ textarea:focus-visible,
   display: block;
   width: 100%;
   min-height: 28px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   resize: none;
+  white-space: pre;
+}
+
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-code_block {
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--code) 82%, var(--surface));
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 2;
+}
+
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-code_block:focus {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line-strong));
+}
+
+.tether-wysiwyg .ProseMirror .tether-reference-definition {
+  margin: 4px 0;
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 0.78em;
+  line-height: 1.55;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .tether-wysiwyg .ProseMirror .tether-source-hidden {
   display: none;
+}
+
+/* A cross-block source selection represents the Markdown newline, not the
+   implementation UI inside a custom node view (language chip, gutter, copy
+   button). Suppress that incidental browser highlight and draw one compact
+   separator marker at the real document boundary instead. */
+.tether-wysiwyg .ProseMirror .tether-source-newline-adjacent::selection,
+.tether-wysiwyg .ProseMirror .tether-source-newline-adjacent *::selection {
+  background: transparent;
+  color: inherit;
+}
+
+.tether-wysiwyg .ProseMirror .tether-source-newline-selection {
+  display: block;
+  position: relative;
+  width: 100%;
+  height: 0;
+  pointer-events: none;
+}
+
+.tether-wysiwyg .ProseMirror .tether-source-newline-selection::after {
+  content: "";
+  position: absolute;
+  z-index: 3;
+  top: -1px;
+  left: 0;
+  width: 1.35em;
+  height: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 58%, transparent);
+}
+
+.tether-wysiwyg .ProseMirror .tether-source-newline-selection.is-extended {
+  width: max-content;
+  max-width: min(28ch, 100%);
+  height: 1.45em;
+  margin-top: -0.72em;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  color: var(--accent);
+  padding: 0.08em 0.38em;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 0.76em;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tether-wysiwyg .ProseMirror .tether-source-newline-selection.is-extended::after {
+  content: none;
+}
+
+.tether-wysiwyg .ProseMirror .tether-source-newline-selection.is-caret::after {
+  top: -0.62em;
+  width: 2px;
+  height: 1.25em;
+  background: var(--accent);
+  animation: tether-source-caret 1s steps(1, end) infinite;
+}
+
+@keyframes tether-source-caret {
+  50% {
+    opacity: 0;
+  }
 }
 
 /* Inline decorations hide the text inside its mark wrapper. Remove the empty
@@ -2151,6 +2353,20 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror blockquote::before {
   content: none;
   display: none;
+}
+
+.tether-wysiwyg .ProseMirror blockquote.tether-active-markdown-block::before {
+  content: ">" / "";
+  display: block;
+  position: absolute;
+  top: 1px;
+  left: 5px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.85em;
+  font-weight: 500;
+  line-height: inherit;
+  pointer-events: none;
 }
 
 .tether-wysiwyg .ProseMirror blockquote > :last-child {
@@ -2175,12 +2391,20 @@ textarea:focus-visible,
 .tether-wysiwyg.is-reading .ProseMirror h4::before,
 .tether-wysiwyg.is-reading .ProseMirror h5::before,
 .tether-wysiwyg.is-reading .ProseMirror h6::before,
+.tether-wysiwyg.is-reading .ProseMirror h1[data-md-heading-style="setext"]::after,
+.tether-wysiwyg.is-reading .ProseMirror h2[data-md-heading-style="setext"]::after,
+.tether-wysiwyg.is-reading .ProseMirror blockquote.tether-active-markdown-block::before,
 .tether-wysiwyg.is-reading .ProseMirror .crepe-placeholder::before {
   content: none;
 }
 
 .tether-wysiwyg.is-reading .milkdown-code-block .language-button {
   pointer-events: none;
+  cursor: default;
+}
+
+.tether-wysiwyg.is-reading .milkdown-code-block .language-button svg {
+  display: none;
 }
 
 .tether-wysiwyg.is-reading .milkdown-code-block:not(:has(.preview-panel)) .cm-editor,
@@ -2444,22 +2668,27 @@ textarea:focus-visible,
   margin: 2px 0 28px;
   overflow: hidden;
   border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--code) 74%, var(--surface));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--code) 84%, var(--surface));
   padding: 6px 0 14px;
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 12.25px;
+  font-size: 13px;
   font-feature-settings:
     "liga" 0,
     "calt" 0;
   font-variant-ligatures: none;
-  line-height: 1.66;
+  line-height: 1.62;
 }
 
 .tether-wysiwyg .milkdown-code-block.selected {
   outline: 1px solid color-mix(in srgb, var(--accent) 64%, var(--line));
   outline-offset: -1px;
+}
+
+.tether-wysiwyg .milkdown-code-block:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line-strong));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .tether-wysiwyg .milkdown-code-block .tools {
@@ -2472,12 +2701,12 @@ textarea:focus-visible,
   border-radius: 3px;
   background: transparent;
   padding: 3px 4px;
-  color: var(--ink3);
+  color: var(--ink2);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 0.08em;
-  opacity: 0.68;
+  opacity: 0.82;
   text-transform: uppercase;
 }
 
@@ -2494,11 +2723,11 @@ textarea:focus-visible,
   border-radius: 4px;
   background: transparent;
   padding: 3px 6px;
-  color: var(--ink3);
+  color: var(--ink2);
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 500;
-  opacity: 0.68;
+  opacity: 0.76;
 }
 
 .tether-wysiwyg .milkdown-code-block .tools .tools-button-group button:first-child,
@@ -2519,7 +2748,7 @@ textarea:focus-visible,
 
 /* CodeMirror already supplies its own copy action. Keep that single native
    control and bring it into the same visual system as formula copying. */
-.tether-wysiwyg .milkdown-code-block .tools .copy-button {
+.tether-wysiwyg .milkdown-code-block .tools button.copy-button {
   min-width: 26px;
   height: 25px;
   display: inline-flex;
@@ -2578,9 +2807,9 @@ textarea:focus-visible,
 
 .tether-wysiwyg .milkdown-code-block .cm-scroller {
   font-family: var(--mono);
-  font-size: 12.25px;
-  font-weight: 500;
-  line-height: 1.66;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.62;
 }
 
 .tether-wysiwyg .milkdown-code-block .cm-content {
@@ -2594,7 +2823,8 @@ textarea:focus-visible,
 .tether-wysiwyg .milkdown-code-block .cm-gutters {
   min-width: 42px;
   border: 0;
-  color: color-mix(in srgb, var(--ink3) 76%, transparent);
+  color: color-mix(in srgb, var(--ink3) 90%, transparent);
+  font-size: 11.5px;
 }
 
 .tether-wysiwyg .milkdown-code-block .cm-lineNumbers .cm-gutterElement {
@@ -2608,27 +2838,9 @@ textarea:focus-visible,
   background: transparent !important;
 }
 
-.tether-wysiwyg .milkdown-code-block:not(:has(.preview-panel)).selected .codemirror-host::before,
-.tether-wysiwyg .milkdown-code-block:not(:has(.preview-panel)):focus-within .codemirror-host::before,
-.tether-wysiwyg .milkdown-code-block:not(:has(.preview-panel)).selected .codemirror-host::after,
-.tether-wysiwyg .milkdown-code-block:not(:has(.preview-panel)):focus-within .codemirror-host::after {
-  display: block;
-  padding: 0 16px 0 52px;
-  color: var(--ink3);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  font-weight: 500;
-  line-height: 1.55;
-}
-
-.tether-wysiwyg .milkdown-code-block:not(:has(.preview-panel)).selected .codemirror-host::before,
-.tether-wysiwyg .milkdown-code-block:not(:has(.preview-panel)):focus-within .codemirror-host::before {
-  content: attr(data-tether-fence);
-}
-
-.tether-wysiwyg .milkdown-code-block:not(:has(.preview-panel)).selected .codemirror-host::after,
-.tether-wysiwyg .milkdown-code-block:not(:has(.preview-panel)):focus-within .codemirror-host::after {
-  content: "```";
+.tether-wysiwyg .milkdown-code-block .cm-editor.cm-focused .cm-activeLine,
+.tether-wysiwyg .milkdown-code-block .cm-editor.cm-focused .cm-activeLineGutter {
+  background: color-mix(in srgb, var(--accent) 5%, transparent) !important;
 }
 
 .tether-wysiwyg .milkdown-code-block:has(.preview-panel) {
@@ -2700,17 +2912,6 @@ textarea:focus-visible,
 .tether-wysiwyg .milkdown-code-block:has(.preview-panel):has(.codemirror-host:not(.hidden)) .cm-content {
   padding-top: 2px;
   padding-bottom: 2px;
-}
-
-.tether-wysiwyg .milkdown-code-block:has(.preview-panel) .codemirror-host:not(.hidden)::before,
-.tether-wysiwyg .milkdown-code-block:has(.preview-panel) .codemirror-host:not(.hidden)::after {
-  display: block;
-  padding: 0 16px;
-  color: var(--ink3);
-  content: "$$";
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.5;
 }
 
 .tether-wysiwyg .milkdown-code-block .language-list,
