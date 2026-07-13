@@ -1205,7 +1205,11 @@ test("source-aware clipboard preserves atoms, marks, block nodes, and Select All
   assert.equal(sourceAwareClipboardText(EditorState.create({
     doc: markedDoc,
     selection: TextSelection.create(markedDoc, 1, 5)
-  }), () => "**Bold**\n"), "**Bold**");
+  }), () => "**Bold**\n"), "Bold");
+  assert.equal(sourceAwareClipboardText(EditorState.create({
+    doc: markedDoc,
+    selection: TextSelection.create(markedDoc, 2, 4)
+  }), () => "**Bold**\n"), "ol");
 
   const plainDoc = blockSchema.node("doc", null, [
     blockSchema.node("paragraph", null, [blockSchema.text("Plain")])

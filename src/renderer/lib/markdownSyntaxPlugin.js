@@ -713,6 +713,8 @@ export function sourceAwareClipboardText(state, serializer) {
     return !hasMarkdownSource;
   });
   if (!hasMarkdownSource) return null;
+  const sourceSelection = sourceSelectionFromDocumentSelection(state, serializer, selection);
+  if (sourceSelection) return sourceSelectionText(sourceSelection);
   const source = serializer(state.doc.cut(selection.from, selection.to));
   return source.replace(/\r?\n$/, "");
 }
@@ -1754,11 +1756,24 @@ export function sourceSelectionFromDocumentSelection(
   serializer,
   selection = state.selection
 ) {
-  if (
-    !selection
-    || selection.empty
-    || (selection.$from.sameParent(selection.$to) && selection.$from.parent.isTextblock)
-  ) return null;
+  if (!selection || selection.empty) return null;
+
+  const sameTextblock = selection.$from.sameParent(selection.$to)
+    && selection.$from.parent.isTextblock;
+  if (sameTextblock) {
+    let containsMarkdownSource = false;
+    state.doc.nodesBetween(selection.from, selection.to, (node) => {
+      if (sourceAtomNames.has(node.type.name)) containsMarkdownSource = true;
+      if (node.isText && node.marks.some((mark) => supportedMarks.includes(mark.type.name))) {
+        containsMarkdownSource = true;
+      }
+      return !containsMarkdownSource;
+    });
+    // A selection that touches a rendered Markdown token needs physical source
+    // endpoints. Serializing the selected fragment would invent balanced
+    // delimiters that the user never traversed or selected.
+    if (!containsMarkdownSource) return null;
+  }
 
   const documentSource = documentSourceSegments(state, serializer);
   if (!documentSource) return null;

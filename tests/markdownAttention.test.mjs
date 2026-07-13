@@ -36,7 +36,11 @@ import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   activeMarkdownSyntax,
   continuousMarkdownSource,
-  sourceCaretOffset
+  sourceAwareClipboardText,
+  sourceCaretOffset,
+  sourceClipboardEdit,
+  sourceSelectionFromDocumentSelection,
+  sourceSelectionText
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
 const milkdownTimerEvents = new EventTarget();
@@ -222,4 +226,32 @@ test("underscore strong source opens at the matching source caret", async () => 
   const source = continuousMarkdownSource(state, unit, serialize);
   assert.equal(source, "__plain__");
   assert.equal(sourceCaretOffset(state, unit, source, position + 2, null, serialize), 4);
+});
+
+test("rendered attention selections use exact physical source intervals", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const doc = parse("A **bold word** tail\n");
+  const position = textPosition(doc, "bold word");
+  const partial = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, position + 1, position + 4)
+  });
+  assert.equal(
+    sourceSelectionText(sourceSelectionFromDocumentSelection(partial, serialize)),
+    "old"
+  );
+  assert.equal(sourceAwareClipboardText(partial, serialize), "old");
+
+  const edit = sourceClipboardEdit(partial, "X", parse, serialize);
+  assert.equal(edit?.selectedText, "old");
+  assert.equal(serialize(edit.transaction.doc), "A **bX word** tail\n");
+
+  const acrossOpeningMarker = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, position - 2, position + 4)
+  });
+  assert.equal(
+    sourceSelectionText(sourceSelectionFromDocumentSelection(acrossOpeningMarker, serialize)),
+    "A **bold"
+  );
 });

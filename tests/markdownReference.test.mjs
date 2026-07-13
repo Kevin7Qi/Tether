@@ -15,7 +15,7 @@ import {
   serializerCtx
 } from "@milkdown/kit/core";
 import { Clock, Container, Ctx } from "@milkdown/kit/ctx";
-import { EditorState } from "@milkdown/kit/prose/state";
+import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import {
   docSchema,
   imageAttr,
@@ -35,7 +35,10 @@ import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   continuousMarkdownSource,
   inlineSourceWithReferenceDefinitions,
-  markdownAtomSyntaxAt
+  markdownAtomSyntaxAt,
+  sourceAwareClipboardText,
+  sourceSelectionFromDocumentSelection,
+  sourceSelectionText
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
 const milkdownTimerEvents = new EventTarget();
@@ -262,6 +265,26 @@ test("inline link label edits preserve source suffixes while target edits intent
   assert.equal(changedMark.attrs.linkSourceKind, null);
   assert.equal(changedMark.attrs.href, "https://changed.example");
   assert.match(serialize(detached.doc), /^\[label\]\(https:\/\/changed\.example "single"\)/);
+});
+
+test("rendered link selections copy the exact label and destination source interval", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "[label](url  'single') and tail\n";
+  const doc = parse(source);
+  const labelPosition = textPosition(doc, "label");
+  const partialLabel = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, labelPosition + 1, labelPosition + 4)
+  });
+  assert.equal(sourceAwareClipboardText(partialLabel, serialize), "abe");
+
+  const throughDestination = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, labelPosition + 2, labelPosition + "label".length + 4)
+  });
+  const exact = sourceSelectionFromDocumentSelection(throughDestination, serialize);
+  assert.equal(sourceSelectionText(exact), "bel](url  'single') and");
+  assert.equal(sourceAwareClipboardText(throughDestination, serialize), "bel](url  'single') and");
 });
 
 test("image alt edits preserve exact suffixes while target edits intentionally normalize", async () => {

@@ -31,7 +31,10 @@ import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   activeMarkdownSyntax,
   continuousMarkdownSource,
-  sourceCaretOffset
+  sourceAwareClipboardText,
+  sourceCaretOffset,
+  sourceSelectionFromDocumentSelection,
+  sourceSelectionText
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
 const milkdownTimerEvents = new EventTarget();
@@ -123,6 +126,26 @@ test("Milkdown keeps inline-code style through edits and grows only for collisio
   const collision = EditorState.create({ doc }).tr
     .insertText("has `` ticks", position, position + 5).doc;
   assert.equal(serialize(collision), "Use ```has `` ticks``` here.\n");
+});
+
+test("rendered inline-code selections retain only the traversed backtick source", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const doc = parse("Use ``plain`` after.\n");
+  const position = textPosition(doc, "plain");
+  const partial = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, position + 1, position + 4)
+  });
+  assert.equal(sourceAwareClipboardText(partial, serialize), "lai");
+
+  const throughClosingFence = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, position + 2, position + "plain".length + 3)
+  });
+  assert.equal(
+    sourceSelectionText(sourceSelectionFromDocumentSelection(throughClosingFence, serialize)),
+    "ain`` af"
+  );
 });
 
 test("editing padded inline code retains its deliberate padding", async () => {
