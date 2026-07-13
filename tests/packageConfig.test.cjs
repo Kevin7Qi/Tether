@@ -146,6 +146,15 @@ test("CodeMirror document jumps are bridged through the source-faithful document
   assert.match(surface, /removeEventListener\("keydown", handleCodeDocumentJump, true\)/);
 });
 
+test("temporary Markdown source controls hand document jumps back to the full source map", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /const documentJumpEdge = sourceDocumentJumpEdge\(event\)/);
+  assert.match(syntax, /finish\(true, \(mapping\) => onDocumentJump\(shortcut, sourceSelection, mapping\)\)/);
+  assert.match(syntax, /const jumpFromSource = \(event, localSelection, mapping = null\) =>/);
+  assert.match(syntax, /baseOffset \+ localSelection\.head/);
+  assert.match(syntax, /baseOffset \+ localSelection\.anchor/);
+});
+
 test("active blockquotes expose their source marker and use structural Backspace semantics", () => {
   const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");

@@ -12,6 +12,7 @@ import {
   completedInlineMarkdownSource,
   continuousMarkdownSource,
   documentSelectionFromCodeBoundary,
+  documentSourceUnitStartOffset,
   downgradeAtxHeadingAtCursor,
   enclosingCodeBlock,
   exactSourceSelectionAfterUndo,
@@ -574,6 +575,11 @@ test("inline source hands directly into enclosing heading source coordinates", (
     doc,
     selection: TextSelection.create(doc, end)
   });
+
+  assert.equal(
+    documentSourceUnitStartOffset(backwardState, activeMarkdownSyntax(backwardState), serialize),
+    "## ".length
+  );
 
   const backwardEdge = structuralSourceHandoffTarget(
     backwardState,

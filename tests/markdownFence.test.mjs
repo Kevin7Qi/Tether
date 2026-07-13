@@ -295,6 +295,11 @@ test("document jumps address leading and trailing root Markdown gaps exactly", a
     fullSource: source,
     boundary: doc.content.size
   });
+  assert.equal(sourceDocumentJumpSelection(state, "start", serialize, {
+    sourceOffset: current,
+    extend: true,
+    sourceSelection: { anchor: source.length + 20, head: current }
+  }).anchor, source.length);
 });
 
 test("a prose-to-code replacement preserves the unselected physical closing fence", async () => {

@@ -1477,8 +1477,15 @@ export function sourceDocumentJumpSelection(
     )
   );
   const head = edge === "start" ? 0 : documentSource.fullSource.length;
+  const anchor = Math.max(
+    0,
+    Math.min(
+      documentSource.fullSource.length,
+      Number.isFinite(sourceSelection?.anchor) ? sourceSelection.anchor : current
+    )
+  );
   return {
-    anchor: extend ? sourceSelection?.anchor ?? current : head,
+    anchor: extend ? anchor : head,
     head,
     fullSource: documentSource.fullSource,
     boundary: edge === "start" ? 0 : state.doc.content.size
@@ -1565,6 +1572,28 @@ export function documentSourceOffsetAtPosition(state, position, serializer, affi
     return segment.from + Math.max(0, Math.min(source.length, offset));
   }
   return null;
+}
+
+export function documentSourceUnitStartOffset(state, unit, serializer) {
+  if (!unit || typeof serializer !== "function") return null;
+  const source = continuousMarkdownSource(state, unit, serializer);
+  const visibleStartOffset = sourceCaretOffset(
+    state,
+    unit,
+    source,
+    unit.from,
+    null,
+    serializer
+  );
+  const visibleStart = documentSourceOffsetAtPosition(
+    state,
+    unit.from,
+    serializer,
+    "forward"
+  );
+  return Number.isFinite(visibleStart)
+    ? Math.max(0, visibleStart - visibleStartOffset)
+    : null;
 }
 
 export function sourceSelectionFromDocumentSelection(
@@ -1921,6 +1950,7 @@ function continuousSourceEditor(
   onBoundaryDelete,
   onVerticalNavigate,
   onBoundarySelect,
+  onDocumentJump,
   onInlineEnter,
   shouldFocus,
   setActiveControl
@@ -2045,6 +2075,27 @@ function continuousSourceEditor(
   });
   editor.addEventListener("keydown", (event) => {
     if (isSourceInputComposing(event)) return;
+    const documentJumpEdge = sourceDocumentJumpEdge(event);
+    if (documentJumpEdge) {
+      const start = editor.selectionStart ?? 0;
+      const end = editor.selectionEnd ?? start;
+      const backward = editor.selectionDirection === "backward";
+      const sourceSelection = {
+        anchor: backward ? end : start,
+        head: backward ? start : end
+      };
+      const shortcut = {
+        key: event.key,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey
+      };
+      event.preventDefault();
+      event.stopPropagation();
+      finish(true, (mapping) => onDocumentJump(shortcut, sourceSelection, mapping));
+      return;
+    }
     const boundaryDirection = inlineSourceBoundaryDirection(
       event.key,
       editor.selectionStart,
@@ -3749,6 +3800,37 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           );
           editorView.focus();
         };
+        const jumpFromSource = (event, localSelection, mapping = null) => {
+          if (!editorView?.dom.isConnected) return;
+          const mappedFrom = Math.max(
+            0,
+            Math.min(
+              mappedPosition(mapping, unit.from, -1),
+              editorView.state.doc.content.size
+            )
+          );
+          const mappedTo = Math.max(
+            mappedFrom,
+            Math.min(
+              mappedPosition(mapping, unit.to, 1),
+              editorView.state.doc.content.size
+            )
+          );
+          const mappedUnit = { ...unit, from: mappedFrom, to: mappedTo };
+          const baseOffset = documentSourceUnitStartOffset(
+            editorView.state,
+            mappedUnit,
+            serializer
+          );
+          if (!Number.isFinite(baseOffset)) return;
+          applyDocumentSourceJump(
+            editorView,
+            event,
+            serializer,
+            baseOffset + localSelection.head,
+            baseOffset + localSelection.anchor
+          );
+        };
         const splitFromInlineSource = (value, sourceOffset, mapping = null) => {
           if (!editorView?.dom.isConnected) return;
           const parser = ctx.get(parserCtx);
@@ -3782,6 +3864,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           deleteFromBoundary,
           navigateVertically,
           selectFromBoundary,
+          jumpFromSource,
           splitFromInlineSource,
           () => true,
           (control) => {
