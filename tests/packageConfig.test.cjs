@@ -146,6 +146,25 @@ test("CodeMirror document jumps are bridged through the source-faithful document
   assert.match(surface, /removeEventListener\("keydown", handleCodeDocumentJump, true\)/);
 });
 
+test("CodeMirror word jumps enter hidden fence source with exact Shift selection", () => {
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
+  assert.match(surface, /const handleCodeWordJump = \(event\) =>/);
+  assert.match(surface, /sourceWordOffset\(source, currentOffset, direction\)/);
+  assert.match(surface, /sourceWordSelectionRange\(currentOffset, targetOffset\)/);
+  assert.match(surface, /addEventListener\("keydown", handleCodeWordJump, true\)/);
+  assert.match(surface, /removeEventListener\("keydown", handleCodeWordJump, true\)/);
+});
+
+test("multi-click activation carries word and line selection into raw Markdown controls", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /pointerClickCount: Math\.max\(1, Number\(event\?\.detail\) \|\| 1\)/);
+  assert.match(syntax, /initialPointerSelection: target\.pointerClickCount \?\? 1/);
+  assert.match(syntax, /sourcePointerSelectionRange\(/);
+  assert.match(syntax, /pointerClickCount = Math\.max\(continuedClickCount, event\.detail\)/);
+  assert.match(syntax, /sourcePointerSelectionRange\(editor\.value, caret, pointerClickCount\)/);
+  assert.match(syntax, /editor\.setSelectionRange\(/);
+});
+
 test("temporary Markdown source controls hand document jumps back to the full source map", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /const documentJumpEdge = sourceDocumentJumpEdge\(event\)/);

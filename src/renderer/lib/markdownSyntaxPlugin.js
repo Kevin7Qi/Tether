@@ -41,6 +41,8 @@ const inactivePluginState = () => ({
   explicitUnitPosition: null,
   initialDeleteDirection: null,
   initialSelectionDirection: null,
+  initialSourceSelection: null,
+  initialPointerSelection: 0,
   focusLock: false,
   sourceSelection: null
 });
@@ -52,6 +54,8 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
     sourceOffset = null,
     initialDeleteDirection = null,
     initialSelectionDirection = null,
+    initialSourceSelection = null,
+    initialPointerSelection = 0,
     focusLock = false
   } = options;
   const resolved = view.state.doc.resolve(Math.min(position, view.state.doc.content.size));
@@ -67,6 +71,8 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
         sourceOffset,
         initialDeleteDirection,
         initialSelectionDirection,
+        initialSourceSelection,
+        initialPointerSelection,
         focusLock
       })
   );
@@ -470,6 +476,109 @@ export function sourceDocumentJumpEdge(event) {
   if ((event.metaKey || event.ctrlKey) && event.key === "Home") return "start";
   if ((event.metaKey || event.ctrlKey) && event.key === "End") return "end";
   return null;
+}
+
+const sourceWordCharacter = /[\p{L}\p{N}_]/u;
+
+function sourceCharacterKind(character) {
+  if (/\s/u.test(character)) return "space";
+  return sourceWordCharacter.test(character) ? "word" : "punctuation";
+}
+
+export function sourceWordOffset(source, offset, direction) {
+  const bounded = Math.max(0, Math.min(source.length, offset));
+  if (!source || !["backward", "forward"].includes(direction)) return bounded;
+  let next = bounded;
+  if (direction === "backward") {
+    while (next > 0 && sourceCharacterKind(source[next - 1]) === "space") next -= 1;
+    if (next === 0) return 0;
+    const kind = sourceCharacterKind(source[next - 1]);
+    while (next > 0 && sourceCharacterKind(source[next - 1]) === kind) next -= 1;
+    return next;
+  }
+  while (next < source.length && sourceCharacterKind(source[next]) === "space") next += 1;
+  if (next === source.length) return next;
+  const kind = sourceCharacterKind(source[next]);
+  while (next < source.length && sourceCharacterKind(source[next]) === kind) next += 1;
+  return next;
+}
+
+export function sourceWordSelectionRange(anchor, head) {
+  return {
+    start: Math.min(anchor, head),
+    end: Math.max(anchor, head),
+    direction: head < anchor ? "backward" : head > anchor ? "forward" : "none"
+  };
+}
+
+export function sourcePointerSelectionRange(source, caret, clickCount = 1) {
+  const bounded = Math.max(0, Math.min(source.length, caret));
+  if (clickCount < 2) return null;
+  if (clickCount >= 3) {
+    const line = sourceLineBounds(source, bounded);
+    return {
+      start: line.start,
+      end: line.lineBreak < 0 ? line.end : line.lineBreak + 1,
+      direction: "forward"
+    };
+  }
+  if (!source) return { start: 0, end: 0, direction: "none" };
+  let probe = Math.min(bounded, source.length - 1);
+  if (
+    probe > 0
+    && sourceCharacterKind(source[probe]) !== "word"
+    && sourceCharacterKind(source[probe - 1]) === "word"
+  ) probe -= 1;
+  const kind = sourceCharacterKind(source[probe]);
+  let start = probe;
+  let end = probe + 1;
+  while (start > 0 && sourceCharacterKind(source[start - 1]) === kind) start -= 1;
+  while (end < source.length && sourceCharacterKind(source[end]) === kind) end += 1;
+  return { start, end, direction: "forward" };
+}
+
+export function sourceWordJumpTarget(state, event, serializer) {
+  if (
+    !state?.selection?.empty
+    || !event?.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || !["ArrowLeft", "ArrowRight"].includes(event.key)
+    || typeof serializer !== "function"
+  ) return null;
+  const direction = event.key === "ArrowLeft" ? "backward" : "forward";
+  const adjacent = markdownBoundarySourceTarget(state, direction);
+  if (adjacent) {
+    const unit = markdownDeletionSourceUnit(state, adjacent);
+    if (!unit) return null;
+    const source = continuousMarkdownSource(state, unit, serializer);
+    const currentOffset = adjacent.edge === "end" ? source.length : 0;
+    const targetOffset = sourceWordOffset(source, currentOffset, direction);
+    if (targetOffset === currentOffset) return null;
+    return { ...adjacent, unit, source, currentOffset, targetOffset, direction };
+  }
+
+  const structural = structuralBoundarySourceTarget(state, event.key);
+  if (!structural) return null;
+  const source = continuousMarkdownSource(state, structural.unit, serializer);
+  const currentOffset = sourceCaretOffset(
+    state,
+    structural.unit,
+    source,
+    structural.position,
+    null,
+    serializer
+  );
+  const targetOffset = sourceWordOffset(source, currentOffset, direction);
+  if (targetOffset === currentOffset) return null;
+  return {
+    ...structural,
+    source,
+    currentOffset,
+    targetOffset,
+    atomPosition: null,
+    explicitUnitPosition: structural.unit.from
+  };
 }
 
 export function sourceLineJumpTarget(state, edge, serializer) {
@@ -1988,6 +2097,8 @@ function continuousSourceEditor(
   initialCaret,
   initialDeleteDirection,
   initialSelectionDirection,
+  initialSourceSelection,
+  initialPointerSelection,
   onCommit,
   onCancel,
   onBoundaryNavigate,
@@ -2015,6 +2126,18 @@ function continuousSourceEditor(
     startingCaret -= 1;
   } else if (initialDeleteDirection === "forward" && startingCaret < editor.value.length) {
     editor.value = `${editor.value.slice(0, startingCaret)}${editor.value.slice(startingCaret + 1)}`;
+  } else if (initialSourceSelection) {
+    startingSelection = {
+      start: Math.max(0, Math.min(editor.value.length, initialSourceSelection.start)),
+      end: Math.max(0, Math.min(editor.value.length, initialSourceSelection.end)),
+      direction: initialSourceSelection.direction || "none"
+    };
+  } else if (initialPointerSelection >= 2) {
+    startingSelection = sourcePointerSelectionRange(
+      editor.value,
+      startingCaret,
+      initialPointerSelection
+    );
   } else if (initialSelectionDirection) {
     startingSelection = sourceInitialSelectionRange(
       editor.value,
@@ -2080,6 +2203,8 @@ function continuousSourceEditor(
   };
   let finished = false;
   let blurTimer = 0;
+  let pointerClickCount = initialPointerSelection >= 1 ? initialPointerSelection : 0;
+  let lastPointerDownAt = pointerClickCount ? performance.now() : 0;
   const finish = (commit, afterFinish = null, sync = false) => {
     if (finished) return;
     finished = true;
@@ -2107,8 +2232,28 @@ function continuousSourceEditor(
   editor.addEventListener("mousedown", (event) => {
     const caret = caretAtClientX(event.clientX);
     if (caret == null) return;
+    const now = performance.now();
+    // The first press replaces rendered text with this input, so the browser
+    // sees the next press as a new target and may restart event.detail at 1.
+    // Carry the sequence across that DOM swap to retain native double/triple
+    // click word and line selection semantics.
+    const continuedClickCount = pointerClickCount > 0 && now - lastPointerDownAt <= 500
+      ? Math.min(3, pointerClickCount + 1)
+      : Math.max(1, event.detail);
+    pointerClickCount = Math.max(continuedClickCount, event.detail);
+    lastPointerDownAt = now;
+    const pointerSelection = sourcePointerSelectionRange(editor.value, caret, pointerClickCount);
     requestAnimationFrame(() => {
-      if (!finished && editor.isConnected) editor.setSelectionRange(caret, caret);
+      if (finished || !editor.isConnected) return;
+      if (pointerSelection) {
+        editor.setSelectionRange(
+          pointerSelection.start,
+          pointerSelection.end,
+          pointerSelection.direction || "none"
+        );
+      } else {
+        editor.setSelectionRange(caret, caret);
+      }
     });
   });
   editor.addEventListener("blur", () => {
@@ -2734,7 +2879,10 @@ function capturedTargetAtPointer(view, event) {
 }
 
 export function markdownSourceTargetFromPointer(view, event) {
-  return capturedTargetAtPointer(view, event);
+  const target = capturedTargetAtPointer(view, event);
+  return target
+    ? { ...target, pointerClickCount: Math.max(1, Number(event?.detail) || 1) }
+    : null;
 }
 
 export function mappedPosition(mapping, position, assoc = 1) {
@@ -2879,6 +3027,7 @@ function activateCapturedTarget(view, target, mapping = null) {
     activateMarkdownSourceAt(view, position, {
       atomPosition,
       sourceOffset: target.sourceOffset ?? null,
+      initialPointerSelection: target.pointerClickCount ?? 1,
       focusLock: Boolean(mapping)
     });
   };
@@ -3102,6 +3251,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             sourceOffset: meta.sourceOffset ?? null,
             initialDeleteDirection: meta.initialDeleteDirection ?? null,
             initialSelectionDirection: meta.initialSelectionDirection ?? null,
+            initialSourceSelection: meta.initialSourceSelection ?? null,
+            initialPointerSelection: meta.initialPointerSelection ?? 0,
             focusLock: Boolean(meta.focusLock),
             sourceSelection: null
           };
@@ -3116,6 +3267,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             sourceOffset: null,
             initialDeleteDirection: null,
             initialSelectionDirection: null,
+            initialSourceSelection: null,
+            initialPointerSelection: 0,
             focusLock: false,
             sourceSelection: null
           };
@@ -3132,6 +3285,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             sourceOffset: null,
             initialDeleteDirection: null,
             initialSelectionDirection: null,
+            initialSourceSelection: null,
+            initialPointerSelection: 0,
             focusLock: false,
             sourceSelection: null
           };
@@ -3156,7 +3311,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const sourceToFinish = activeSourceControl?.element?.isConnected ? activeSourceControl : null;
         if (!sourceToFinish) return;
 
-        const target = capturedTargetAtPointer(view, event);
+        const target = markdownSourceTargetFromPointer(view, event);
         if (!target) return;
         event.preventDefault();
         event.stopPropagation();
@@ -3263,7 +3418,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (!view.editable) return false;
           if (event.target instanceof Element && event.target.closest(".tether-continuous-source")) return false;
           const sourceToFinish = activeSourceControl?.element?.isConnected ? activeSourceControl : null;
-          const target = capturedTargetAtPointer(view, event);
+          const target = markdownSourceTargetFromPointer(view, event);
           if (!target) return false;
           const activateCapturedPosition = (mapping = null) => {
             if (!editorView) return;
@@ -3299,6 +3454,20 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             && applyDocumentSourceJump(_view, event, ctx.get(serializerCtx))
           ) {
             event.preventDefault();
+            return true;
+          }
+          const serializer = ctx.get(serializerCtx);
+          const wordJump = sourceWordJumpTarget(_view.state, event, serializer);
+          if (wordJump && !activeSourceControl?.element?.isConnected) {
+            event.preventDefault();
+            activateMarkdownSourceAt(_view, wordJump.position, {
+              atomPosition: wordJump.atomPosition,
+              explicitUnitPosition: wordJump.explicitUnitPosition,
+              sourceOffset: wordJump.targetOffset,
+              initialSourceSelection: event.shiftKey
+                ? sourceWordSelectionRange(wordJump.currentOffset, wordJump.targetOffset)
+                : null
+            });
             return true;
           }
           const lineJumpEdge = sourceLineJumpEdge(event);
@@ -3907,6 +4076,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           initialCaret,
           pluginState.initialDeleteDirection,
           pluginState.initialSelectionDirection,
+          pluginState.initialSourceSelection,
+          pluginState.initialPointerSelection,
           commit,
           () => editorView && closeSourceEditor(editorView),
           navigateFromBoundary,

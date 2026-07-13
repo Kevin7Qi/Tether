@@ -39,6 +39,7 @@ import {
   sourceInitialSelectionRange,
   sourceDocumentJumpEdge,
   sourceLineJumpEdge,
+  sourcePointerSelectionRange,
   sourceAtomNearPosition,
   sourceAwareClipboardText,
   sourceNewlineClipboardText,
@@ -48,6 +49,9 @@ import {
   sourceSelectionHasAdjacentBlocks,
   sourceSelectionText,
   sourceVerticalOffset,
+  sourceWordJumpTarget,
+  sourceWordOffset,
+  sourceWordSelectionRange,
   serializedDocumentGaps,
   structuralBoundarySourceTarget,
   structuralSourceHandoffTarget,
@@ -1479,6 +1483,97 @@ test("document-jump shortcuts cover native macOS and Windows key combinations", 
   assert.equal(sourceDocumentJumpEdge({ key: "ArrowUp", ctrlKey: true }), null);
   assert.equal(sourceDocumentJumpEdge({ key: "ArrowUp", metaKey: true, altKey: true }), null);
   assert.equal(sourceDocumentJumpEdge({ key: "Home" }), null);
+});
+
+test("word-wise source movement traverses Markdown punctuation and whitespace groups", () => {
+  const source = "```js\nasync value\n```";
+  const contentStart = source.indexOf("async");
+  const contentEnd = source.indexOf("\n```", contentStart);
+  assert.equal(sourceWordOffset(source, contentStart, "backward"), source.indexOf("js"));
+  assert.equal(sourceWordOffset(source, contentEnd, "forward"), source.length);
+  assert.equal(sourceWordOffset("**bold**", 0, "forward"), 2);
+  assert.equal(sourceWordOffset("**bold**", 8, "backward"), 6);
+  assert.deepEqual(sourceWordSelectionRange(8, 6), {
+    start: 6,
+    end: 8,
+    direction: "backward"
+  });
+});
+
+test("word jumps enter the exact hidden delimiter beside rendered inline text", () => {
+  const strong = blockSchema.marks.strong.create();
+  const before = "Before ";
+  const marked = "Bold";
+  const doc = blockSchema.node("doc", null, [
+    blockSchema.node("paragraph", null, [
+      blockSchema.text(before),
+      blockSchema.text(marked, [strong]),
+      blockSchema.text(" after")
+    ])
+  ]);
+  const serialize = (partialDoc) => {
+    let result = "";
+    partialDoc.firstChild.forEach((node) => {
+      result += node.marks.some((mark) => mark.type.name === "strong")
+        ? `**${node.text}**`
+        : node.text;
+    });
+    return result;
+  };
+  const start = 1 + before.length;
+  const end = start + marked.length;
+  const forwardState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, start)
+  });
+  const backwardState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, end)
+  });
+  const forward = sourceWordJumpTarget(
+    forwardState,
+    { key: "ArrowRight", altKey: true },
+    serialize
+  );
+  const backward = sourceWordJumpTarget(
+    backwardState,
+    { key: "ArrowLeft", altKey: true, shiftKey: true },
+    serialize
+  );
+  assert.equal(forward.source, "**Bold**");
+  assert.equal(forward.currentOffset, 0);
+  assert.equal(forward.targetOffset, 2);
+  assert.equal(backward.currentOffset, "**Bold**".length);
+  assert.equal(backward.targetOffset, "**Bold".length);
+  assert.equal(sourceWordJumpTarget(
+    forwardState,
+    { key: "ArrowRight", ctrlKey: true },
+    serialize
+  ), null);
+});
+
+test("multi-click source activation selects the physical word or line", () => {
+  assert.deepEqual(sourcePointerSelectionRange("**bold text**", 6, 2), {
+    start: 2,
+    end: 6,
+    direction: "forward"
+  });
+  assert.deepEqual(sourcePointerSelectionRange("**bold text**", 8, 2), {
+    start: 7,
+    end: 11,
+    direction: "forward"
+  });
+  assert.deepEqual(sourcePointerSelectionRange("**bold**", 0, 2), {
+    start: 0,
+    end: 2,
+    direction: "forward"
+  });
+  assert.deepEqual(sourcePointerSelectionRange("one\ntwo\nthree", 6, 3), {
+    start: 4,
+    end: 8,
+    direction: "forward"
+  });
+  assert.equal(sourcePointerSelectionRange("word", 2, 1), null);
 });
 
 test("source line selections include hidden prefixes and suffixes with CRLF", () => {

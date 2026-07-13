@@ -95,11 +95,14 @@ import {
   flushActiveMarkdownSource,
   markdownSourceTargetFromPointer,
   markdownSyntaxPlugin,
+  sourceCaretOffset,
   sourceDocumentJumpEdge,
   sourceFaithfulHeadingKeymapConfig,
   sourceFaithfulHeadingBackspaceKeymap,
   sourceFaithfulListItemKeymapConfig,
   sourceFaithfulOrderedListSplitKeymap,
+  sourceWordOffset,
+  sourceWordSelectionRange,
   structuralMarkerBackspaceKeymap
 } from "./lib/markdownSyntaxPlugin.js";
 
@@ -414,6 +417,61 @@ export default function WysiwygSurface({
       event.preventDefault();
       event.stopPropagation();
       activateMarkdownBlockSourceAt(view, position);
+    };
+    const handleCodeWordJump = (event) => {
+      if (readOnlyRef.current || event.isComposing || event.keyCode === 229) return;
+      if (
+        !event.altKey
+        || event.ctrlKey
+        || event.metaKey
+        || !["ArrowLeft", "ArrowRight"].includes(event.key)
+      ) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const codeView = tetherCodeViewForElement(target);
+      const selection = codeView?.state.selection.main;
+      const direction = event.key === "ArrowLeft" ? "backward" : "forward";
+      const atBoundary = direction === "backward"
+        ? selection?.head === 0
+        : selection?.head === codeView?.state.doc.length;
+      if (!codeView || !selection || selection.anchor !== selection.head || !atBoundary) return;
+
+      const block = target?.closest(".milkdown-code-block");
+      const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+      const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+      if (!block || !view || !serializer) return;
+      let codeBlock;
+      try {
+        codeBlock = enclosingCodeBlock(view.state.doc, view.posAtDOM(block, 0, -1));
+      } catch {
+        return;
+      }
+      if (!codeBlock) return;
+      const unit = {
+        from: codeBlock.position,
+        to: codeBlock.position + codeBlock.node.nodeSize,
+        kind: "block",
+        name: "code_block"
+      };
+      const source = continuousMarkdownSource(view.state, unit, serializer);
+      const currentOffset = sourceCaretOffset(
+        view.state,
+        unit,
+        source,
+        codeContentSourcePosition(codeBlock.position, selection.head),
+        null,
+        serializer
+      );
+      const targetOffset = sourceWordOffset(source, currentOffset, direction);
+      if (targetOffset === currentOffset) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      activateMarkdownSourceAt(view, codeBlock.position, {
+        explicitUnitPosition: codeBlock.position,
+        sourceOffset: targetOffset,
+        initialSourceSelection: event.shiftKey
+          ? sourceWordSelectionRange(currentOffset, targetOffset)
+          : null
+      });
     };
     const handleCodeDocumentJump = (event) => {
       if (readOnlyRef.current || event.isComposing || event.keyCode === 229) return;
@@ -830,6 +888,7 @@ export default function WysiwygSurface({
     host.addEventListener("beforeinput", ensureSyntheticTrailing, true);
     host.addEventListener("paste", ensureSyntheticTrailing, true);
     host.addEventListener("drop", ensureSyntheticTrailing, true);
+    host.addEventListener("keydown", handleCodeWordJump, true);
     host.addEventListener("keydown", handleCodeDocumentJump, true);
     host.addEventListener("keydown", handleCodeBoundaryKey, true);
     host.addEventListener("mousedown", beginCodeDragSelection, true);
@@ -1016,6 +1075,7 @@ export default function WysiwygSurface({
       host.removeEventListener("beforeinput", ensureSyntheticTrailing, true);
       host.removeEventListener("paste", ensureSyntheticTrailing, true);
       host.removeEventListener("drop", ensureSyntheticTrailing, true);
+      host.removeEventListener("keydown", handleCodeWordJump, true);
       host.removeEventListener("keydown", handleCodeDocumentJump, true);
       host.removeEventListener("keydown", handleCodeBoundaryKey, true);
       host.removeEventListener("mousedown", beginCodeDragSelection, true);
