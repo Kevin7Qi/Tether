@@ -15,9 +15,8 @@ import {
   serializerCtx
 } from "@milkdown/kit/core";
 import { Clock, Container, Ctx } from "@milkdown/kit/ctx";
-import { EditorState } from "@milkdown/kit/prose/state";
+import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import {
-  docSchema,
   hardbreakAttr,
   paragraphSchema,
   textSchema
@@ -27,7 +26,17 @@ import {
   sourceFaithfulHardBreakRemark,
   sourceFaithfulHardBreakSchema
 } from "../src/renderer/lib/markdownBreak.js";
+import {
+  sourceFaithfulDocumentRemark,
+  sourceFaithfulDocumentSchema
+} from "../src/renderer/lib/markdownDocument.js";
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
+import {
+  sourceAwareClipboardText,
+  sourceClipboardEdit,
+  sourceSelectionFromDocumentSelection,
+  sourceSelectionText
+} from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
 const milkdownTimerEvents = new EventTarget();
 globalThis.addEventListener ??= milkdownTimerEvents.addEventListener.bind(milkdownTimerEvents);
@@ -56,7 +65,8 @@ async function milkdownTransformer() {
   const serializerHandler = serializer(ctx);
   ctx.inject(editorViewCtx, { state: { doc: { lastChild: null } } });
   const userHandlers = [
-    docSchema,
+    sourceFaithfulDocumentRemark,
+    sourceFaithfulDocumentSchema,
     paragraphSchema,
     textSchema,
     hardbreakAttr,
@@ -92,6 +102,8 @@ function textPosition(doc, text) {
 test("hard breaks retain backslash and exact trailing-space markers", () => {
   const source = "two  \nspaces\n\nthree   \nspaces\n\nslash\\\nbreak\n";
   assert.equal(roundTrip(source), source);
+  const crlf = "alpha  \r\nbeta\r\n\r\ngamma\\\r\ndelta\r\n";
+  assert.equal(roundTrip(crlf), "alpha  \r\nbeta\n\ngamma\\\r\ndelta\n");
 });
 
 test("Milkdown retains a trailing-space hard break through an unrelated text edit", async () => {
@@ -100,9 +112,38 @@ test("Milkdown retains a trailing-space hard break through an unrelated text edi
   const hardbreak = doc.firstChild.child(1);
   assert.equal(hardbreak.type.name, "hardbreak");
   assert.equal(hardbreak.attrs.markdownMarker, "  ");
+  assert.equal(hardbreak.attrs.markdownLineEnding, "\n");
   assert.equal(hardbreak.type.spec.toDOM(hardbreak)[1]["data-md-hardbreak-marker"], "  ");
 
   const alpha = textPosition(doc, "alpha");
   const edited = EditorState.create({ doc }).tr.insertText("renamed", alpha, alpha + "alpha".length).doc;
   assert.equal(serialize(edited), "renamed  \nbeta\n");
+
+  const crlfDoc = parse("alpha  \r\nbeta\r\n");
+  const beta = textPosition(crlfDoc, "beta");
+  const crlfEdited = EditorState.create({ doc: crlfDoc }).tr
+    .insertText("renamed", beta, beta + "beta".length).doc;
+  assert.equal(serialize(crlfEdited), "alpha  \r\nrenamed\r\n");
+});
+
+test("hard-break selections include the physical marker and newline", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  for (const [source, token, joined] of [
+    ["alpha  \nbeta\n", "  \n", "alpha beta\n"],
+    ["alpha\\\nbeta\n", "\\\n", "alpha beta\n"],
+    ["alpha  \r\nbeta\r\n", "  \r\n", "alpha beta\r\n"]
+  ]) {
+    const doc = parse(source);
+    const breakPosition = textPosition(doc, "alpha") + "alpha".length;
+    assert.equal(doc.nodeAt(breakPosition).attrs.markdownLineEnding, token.endsWith("\r\n") ? "\r\n" : "\n");
+    const state = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, breakPosition, breakPosition + 1)
+    });
+    assert.equal(sourceSelectionText(sourceSelectionFromDocumentSelection(state, serialize)), token);
+    assert.equal(sourceAwareClipboardText(state, serialize), token);
+    const edit = sourceClipboardEdit(state, " ", parse, serialize);
+    assert.equal(edit?.selectedText, token);
+    assert.equal(serialize(edit.transaction.doc), joined);
+  }
 });

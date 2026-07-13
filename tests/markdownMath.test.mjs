@@ -38,7 +38,11 @@ import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   activeMarkdownBlockSyntax,
   continuousMarkdownSource,
-  markdownAtomSyntaxAt
+  markdownAtomSyntaxAt,
+  sourceAwareClipboardText,
+  sourceClipboardEdit,
+  sourceSelectionFromDocumentSelection,
+  sourceSelectionText
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
 const milkdownTimerEvents = new EventTarget();
@@ -215,6 +219,24 @@ test("math source controls expose exact inline and display tokens", async () => 
   });
   const unit = activeMarkdownBlockSyntax(selectedBlockState);
   assert.equal(continuousMarkdownSource(selectedBlockState, unit, serialize), "$$\nx+y\n$$");
+});
+
+test("inline-math selections preserve the complete physical dollar token", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const doc = parse("Before $$ x+y $$ after.\n");
+  const position = nodePosition(doc, (node) => node.type.name === "math_inline");
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, position, position + 1)
+  });
+  assert.equal(
+    sourceSelectionText(sourceSelectionFromDocumentSelection(state, serialize)),
+    "$$ x+y $$"
+  );
+  assert.equal(sourceAwareClipboardText(state, serialize), "$$ x+y $$");
+  const edit = sourceClipboardEdit(state, "formula", parse, serialize);
+  assert.equal(edit?.selectedText, "$$ x+y $$");
+  assert.equal(serialize(edit.transaction.doc), "Before formula after.\n");
 });
 
 test("math block scanning pairs nested container fences without storing unsafe parent prefixes", () => {

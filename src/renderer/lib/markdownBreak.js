@@ -14,8 +14,11 @@ export function annotateHardBreakMarkers(tree, file) {
       const end = node.position?.end?.offset;
       if (Number.isFinite(start) && Number.isFinite(end)) {
         const raw = source.slice(start, end);
-        const marker = raw.match(/^(\\| {2,})(?:\r?\n)$/)?.[1];
-        if (marker) node.hardbreakMarker = marker;
+        const match = raw.match(/^(\\| {2,})(\r?\n)$/);
+        if (match) {
+          node.hardbreakMarker = match[1];
+          node.hardbreakLineEnding = match[2];
+        }
       }
     }
     (node?.children || []).forEach(visit);
@@ -35,7 +38,8 @@ export const sourceFaithfulHardBreakSchema = hardbreakSchema.extendSchema((previ
     ...spec,
     attrs: {
       ...spec.attrs,
-      markdownMarker: { default: "\\", validate: "string|null" }
+      markdownMarker: { default: "\\", validate: "string|null" },
+      markdownLineEnding: { default: "\n", validate: "string" }
     },
     toDOM: (node) => {
       const dom = spec.toDOM(node);
@@ -56,7 +60,8 @@ export const sourceFaithfulHardBreakSchema = hardbreakSchema.extendSchema((previ
           : node.hardbreakMarker === "\\" || /^ {2,}$/.test(node.hardbreakMarker || "")
             ? node.hardbreakMarker
             : "\\";
-        state.addNode(type, { isInline, markdownMarker: marker });
+        const lineEnding = node.hardbreakLineEnding === "\r\n" ? "\r\n" : "\n";
+        state.addNode(type, { isInline, markdownMarker: marker, markdownLineEnding: lineEnding });
       }
     },
     toMarkdown: {
@@ -67,7 +72,8 @@ export const sourceFaithfulHardBreakSchema = hardbreakSchema.extendSchema((previ
           return;
         }
         state.addNode("break", undefined, undefined, {
-          hardbreakMarker: node.attrs.markdownMarker
+          hardbreakMarker: node.attrs.markdownMarker,
+          hardbreakLineEnding: node.attrs.markdownLineEnding
         });
       }
     }
@@ -78,5 +84,8 @@ export function sourceFaithfulHardBreakHandler(node, parent, state, info) {
   const canonical = defaultHandlers.break(node, parent, state, info);
   if (canonical !== "\\\n") return canonical;
   const marker = node.hardbreakMarker;
-  return marker === "\\" || /^ {2,}$/.test(marker || "") ? `${marker}\n` : canonical;
+  const lineEnding = node.hardbreakLineEnding === "\r\n" ? "\r\n" : "\n";
+  return marker === "\\" || /^ {2,}$/.test(marker || "")
+    ? `${marker}${lineEnding}`
+    : canonical;
 }

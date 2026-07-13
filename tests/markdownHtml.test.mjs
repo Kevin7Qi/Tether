@@ -27,7 +27,10 @@ import { sourceFaithfulParagraphRemark, sourceFaithfulParagraphSchema } from "..
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   activeMarkdownSyntax,
-  continuousMarkdownSource
+  continuousMarkdownSource,
+  sourceAwareClipboardText,
+  sourceSelectionFromDocumentSelection,
+  sourceSelectionText
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
 const milkdownTimerEvents = new EventTarget();
@@ -150,4 +153,24 @@ test("rendered inline HTML opens one exact continuous source control", async () 
   const unit = activeMarkdownSyntax(state);
   assert.deepEqual(unit?.names, ["html_inline"]);
   assert.equal(continuousMarkdownSource(state, unit, serialize), "<kbd>Ctrl</kbd>");
+});
+
+test("rendered inline-HTML selections retain only traversed tag source", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const doc = parse("Before <U >under</U > after.\n");
+  const position = textPosition(doc, "under");
+  const partial = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, position + 1, position + 4)
+  });
+  assert.equal(sourceAwareClipboardText(partial, serialize), "nde");
+
+  const throughOpeningTag = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, position - "Before ".length, position + 3)
+  });
+  assert.equal(
+    sourceSelectionText(sourceSelectionFromDocumentSelection(throughOpeningTag, serialize)),
+    "Before <U >und"
+  );
 });

@@ -37,6 +37,7 @@ import {
   inlineSourceWithReferenceDefinitions,
   markdownAtomSyntaxAt,
   sourceAwareClipboardText,
+  sourceClipboardEdit,
   sourceSelectionFromDocumentSelection,
   sourceSelectionText
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
@@ -342,4 +343,24 @@ test("rendered image atoms expose their exact Markdown token", async () => {
   const state = EditorState.create({ doc });
   const unit = markdownAtomSyntaxAt(state, imagePosition);
   assert.equal(continuousMarkdownSource(state, unit, serialize), "![alt](<a b> 'Title')");
+});
+
+test("text selections across rendered images use the full physical image token", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "Before ![alt](<a b>  'Title') after.\n";
+  const doc = parse(source);
+  let imagePosition = null;
+  doc.descendants((node, pos) => {
+    if (imagePosition == null && node.type.name === "image") imagePosition = pos;
+  });
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, imagePosition, imagePosition + 1)
+  });
+  const token = "![alt](<a b>  'Title')";
+  assert.equal(sourceSelectionText(sourceSelectionFromDocumentSelection(state, serialize)), token);
+  assert.equal(sourceAwareClipboardText(state, serialize), token);
+  const edit = sourceClipboardEdit(state, "image", parse, serialize);
+  assert.equal(edit?.selectedText, token);
+  assert.equal(serialize(edit.transaction.doc), "Before image after.\n");
 });
