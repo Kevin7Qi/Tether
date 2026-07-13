@@ -252,6 +252,12 @@ test("Select All replacement includes leading and trailing root Markdown gaps", 
   assert.ok(edit);
   assert.equal(edit.selectedText, source);
   assert.equal(serialize(edit.transaction.doc), "Replacement\n");
+
+  const cut = sourceClipboardEdit(state, "", parse, serialize);
+  assert.ok(cut);
+  assert.equal(serialize(cut.transaction.doc), "");
+  assert.equal(cut.transaction.doc.firstChild.type.name, "paragraph");
+  assert.equal(cut.transaction.selection.$from.parent.type.name, "paragraph");
 });
 
 test("document jumps address leading and trailing root Markdown gaps exactly", async () => {

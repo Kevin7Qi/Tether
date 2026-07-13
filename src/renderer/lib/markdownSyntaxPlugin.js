@@ -97,6 +97,50 @@ function focusProseMirrorRoot(view) {
   view.dom.focus();
 }
 
+function pruneStaleCodeBlockDom(view) {
+  if (!view?.dom?.isConnected) return;
+  const activeElement = view.dom.ownerDocument?.activeElement;
+  let removedFocusedNode = false;
+  view.dom.querySelectorAll(":scope > .milkdown-code-block").forEach((block) => {
+    let mappedDom = null;
+    try {
+      const position = view.posAtDOM(block, 0, -1);
+      mappedDom = view.nodeDOM(position);
+    } catch {
+      // A node view removed from the ProseMirror document has no valid mapping.
+    }
+    const stillMapped = mappedDom === block
+      || mappedDom?.contains?.(block)
+      || block.contains(mappedDom);
+    if (stillMapped) return;
+    if (activeElement && block.contains(activeElement)) removedFocusedNode = true;
+    block.remove();
+  });
+  if (removedFocusedNode) focusProseMirrorRoot(view);
+}
+
+function focusExactEditSelection(view) {
+  const codeBlock = enclosingCodeBlock(view.state.doc, view.state.selection.head);
+  if (codeBlock && view.state.selection.empty) {
+    const contentOffset = Math.max(
+      0,
+      Math.min(
+        codeBlock.node.content.size,
+        view.state.selection.head - codeBlock.position - 1
+      )
+    );
+    focusCodeContentOffset(
+      view,
+      codeBlock.position,
+      contentOffset,
+      () => focusProseMirrorRoot(view)
+    );
+  } else {
+    focusProseMirrorRoot(view);
+  }
+  requestAnimationFrame(() => pruneStaleCodeBlockDom(view));
+}
+
 function activateDocumentSourceOffset(
   view,
   sourceSelection,
@@ -3029,6 +3073,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     rememberExactEdit(exactSelection, transaction);
     transaction.setMeta(markdownSyntaxKey, "close");
     view.dispatch(transaction.scrollIntoView());
+    focusExactEditSelection(view);
     return true;
   };
 
@@ -3155,6 +3200,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         rememberExactEdit(exactSelection, transaction);
         transaction.setMeta(markdownSyntaxKey, "close");
         view.dispatch(transaction.scrollIntoView());
+        focusExactEditSelection(view);
         return true;
       },
       handlePaste(view, event) {
@@ -3173,6 +3219,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         rememberExactEdit(edit.sourceSelection, edit.transaction);
         edit.transaction.setMeta(markdownSyntaxKey, "close");
         view.dispatch(edit.transaction.scrollIntoView());
+        focusExactEditSelection(view);
         return true;
       },
       handleDOMEvents: {
@@ -3209,6 +3256,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           rememberExactEdit(edit.sourceSelection, edit.transaction);
           edit.transaction.setMeta(markdownSyntaxKey, "close");
           view.dispatch(edit.transaction.scrollIntoView());
+          focusExactEditSelection(view);
           return true;
         },
         mousedown(view, event) {
@@ -3386,6 +3434,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               rememberExactEdit(exactSelection, transaction);
               transaction.setMeta(markdownSyntaxKey, "close");
               _view.dispatch(transaction.scrollIntoView());
+              focusExactEditSelection(_view);
               return true;
             }
           }

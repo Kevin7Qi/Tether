@@ -155,6 +155,16 @@ test("temporary Markdown source controls hand document jumps back to the full so
   assert.match(syntax, /baseOffset \+ localSelection\.anchor/);
 });
 
+test("exact source edits refocus the surviving rendered editing surface", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /function focusExactEditSelection\(view\)/);
+  assert.match(syntax, /focusCodeContentOffset\(/);
+  assert.match(syntax, /function pruneStaleCodeBlockDom\(view\)/);
+  assert.match(syntax, /view\.nodeDOM\(position\)/);
+  assert.match(syntax, /requestAnimationFrame\(\(\) => pruneStaleCodeBlockDom\(view\)\)/);
+  assert.ok((syntax.match(/focusExactEditSelection\((?:view|_view)\);/g) || []).length >= 5);
+});
+
 test("active blockquotes expose their source marker and use structural Backspace semantics", () => {
   const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
