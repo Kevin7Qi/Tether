@@ -6,6 +6,7 @@ import {
   activeMarkdownAtomSyntax,
   activeMarkdownBlockSyntax,
   activeMarkdownSyntax,
+  adjacentCodeBlockFromSelection,
   activateMarkdownBlockSourceAt,
   blockSourceVerticalDirection,
   completedInlineMarkdownSource,
@@ -13,6 +14,7 @@ import {
   documentSelectionFromCodeBoundary,
   downgradeAtxHeadingAtCursor,
   enclosingCodeBlock,
+  exactSourceSelectionAfterUndo,
   inlineSourceBoundaryDeleteDirection,
   inlineSourceBoundaryDirection,
   inlineSourceBoundarySelectionDirection,
@@ -27,16 +29,25 @@ import {
   markdownBoundarySourceTarget,
   markdownDeletionSourceUnit,
   markdownDeletionTarget,
+  markdownSourceSelectionAt,
   markdownTableSyntaxAt,
   mappedPosition,
+  moveSourceSelectionHead,
   sourceCaretOffset,
   sourceBoundarySelectionRange,
   sourceInitialSelectionRange,
+  sourceDocumentJumpEdge,
+  sourceLineJumpEdge,
   sourceAtomNearPosition,
   sourceAwareClipboardText,
   sourceNewlineClipboardText,
   sourceNewlineDeletionTransaction,
   sourceNewlineSelectionInfo,
+  sourceSelectionFromDocumentSelection,
+  sourceSelectionHasAdjacentBlocks,
+  sourceSelectionText,
+  sourceVerticalOffset,
+  serializedDocumentGaps,
   structuralBoundarySourceTarget,
   structuralSourceHandoffTarget,
   sourceFaithfulHeadingKeymapConfig,
@@ -71,6 +82,18 @@ test("activeMarkdownSyntax exposes one continuous strong source range", () => {
   assert.deepEqual(syntax.names, ["strong"]);
   assert.equal(syntax.kind, "inline");
   assert.equal(syntax.to - syntax.from, "marked".length);
+});
+
+test("source activation enters textblocks instead of selecting the whole paragraph", () => {
+  const paragraph = schema.node("paragraph", null, [schema.text("editable")]);
+  const doc = schema.node("doc", null, [paragraph]);
+  const atBoundary = markdownSourceSelectionAt(doc, 0);
+  const inside = markdownSourceSelectionAt(doc, 4);
+  assert.ok(atBoundary instanceof TextSelection);
+  assert.equal(atBoundary.from, 1);
+  assert.equal(atBoundary.$from.parent.type.name, "paragraph");
+  assert.ok(inside instanceof TextSelection);
+  assert.equal(inside.from, 4);
 });
 
 test("completed inline Markdown is detected at the typing caret", () => {
@@ -244,7 +267,10 @@ test("sourceCaretOffset uses a serialized marker for formatted inline text", () 
 
 const blockSchema = new Schema({
   nodes: {
-    doc: { content: "block+" },
+    doc: {
+      content: "block+",
+      attrs: { markdownBlockGaps: { default: null } }
+    },
     paragraph: { content: "inline*", group: "block" },
     heading: {
       content: "inline*",
@@ -880,6 +906,17 @@ test("selection across a block boundary represents the source newline without co
   assert.equal(fromInlineEnd.to, forward.to);
 });
 
+test("extended source selections do not invent adjacent block decoration ranges", () => {
+  assert.equal(sourceSelectionHasAdjacentBlocks({ boundary: 4 }), false);
+  assert.equal(sourceSelectionHasAdjacentBlocks({
+    boundary: 4,
+    beforeFrom: 0,
+    beforeTo: 4,
+    afterFrom: 4,
+    afterTo: 9
+  }), true);
+});
+
 test("selection after an enclosing list source captures only its root separator", () => {
   const item = blockSchema.node("list_item", null, [
     blockSchema.node("paragraph", null, [blockSchema.text("item")])
@@ -956,6 +993,107 @@ test("ordinary code-boundary navigation reaches surrounding text but not a fake 
   const codeOnlyState = docState(codeOnly);
   assert.equal(documentSelectionFromCodeBoundary(codeOnlyState, 0, "backward"), null);
   assert.equal(documentSelectionFromCodeBoundary(codeOnlyState, code.nodeSize, "forward"), null);
+});
+
+test("vertical navigation recognizes only an immediately adjacent fenced block", () => {
+  const before = blockSchema.node("paragraph", null, [blockSchema.text("Before")]);
+  const code = blockSchema.node("code_block", { language: "js" }, [blockSchema.text("one\ntwo")]);
+  const after = blockSchema.node("paragraph", null, [blockSchema.text("After")]);
+  const doc = blockSchema.node("doc", null, [before, code, after]);
+
+  const beforeState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, before.nodeSize - 1)
+  });
+  assert.deepEqual(adjacentCodeBlockFromSelection(beforeState, "down"), {
+    position: before.nodeSize,
+    node: code
+  });
+  assert.equal(adjacentCodeBlockFromSelection(beforeState, "up"), null);
+
+  const afterStart = before.nodeSize + code.nodeSize + 1;
+  const afterState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, afterStart)
+  });
+  assert.deepEqual(adjacentCodeBlockFromSelection(afterState, "up"), {
+    position: before.nodeSize,
+    node: code
+  });
+  assert.equal(adjacentCodeBlockFromSelection(afterState, "down"), null);
+
+  const gap = blockSchema.node("paragraph", null, [blockSchema.text("Gap")]);
+  const separated = blockSchema.node("doc", null, [before, gap, code]);
+  const separatedState = EditorState.create({
+    doc: separated,
+    selection: TextSelection.create(separated, before.nodeSize - 1)
+  });
+  assert.equal(adjacentCodeBlockFromSelection(separatedState, "down"), null);
+});
+
+test("serialized block gaps keep cross-block source selections exact without load metadata", () => {
+  const before = blockSchema.node("paragraph", null, [blockSchema.text("Before")]);
+  const code = blockSchema.node("code_block", { language: "js" }, [blockSchema.text("code")]);
+  const doc = blockSchema.node("doc", { markdownBlockGaps: null }, [before, code]);
+  const state = EditorState.create({ doc });
+  const serializer = (value) => {
+    const blocks = [];
+    value.forEach((node) => {
+      blocks.push(node.type.name === "code_block"
+        ? `\`\`\`js\n${node.textContent}\n\`\`\``
+        : node.textContent);
+    });
+    let exactGaps = null;
+    try {
+      exactGaps = JSON.parse(value.attrs.markdownBlockGaps);
+    } catch {
+      // Null metadata uses the serializer's ordinary root spacing below.
+    }
+    if (Array.isArray(exactGaps) && exactGaps.length === blocks.length + 1) {
+      return blocks.reduce(
+        (source, block, index) => `${source}${block}${exactGaps[index + 1]}`,
+        exactGaps[0]
+      );
+    }
+    return `${blocks.join("\n\n")}\n`;
+  };
+
+  assert.deepEqual(serializedDocumentGaps(state, serializer), ["", "\n\n", "\n"]);
+  assert.equal(doc.resolve(before.nodeSize - 1).parentOffset, "Before".length);
+  assert.equal(sourceCaretOffset(
+    state,
+    { from: 0, to: before.nodeSize, kind: "block", name: "paragraph" },
+    "Before",
+    before.nodeSize - 1,
+    null,
+    serializer
+  ), "Before".length);
+  const selection = TextSelection.create(
+    doc,
+    before.nodeSize - 1,
+    before.nodeSize + 1 + 3
+  );
+  const exact = sourceSelectionFromDocumentSelection(state, serializer, selection);
+  assert.equal(sourceSelectionText(exact), "\n\n```js\ncod");
+});
+
+test("undo matches an exact source edit before restoring its original selection", () => {
+  const sourceSelection = {
+    anchor: 8,
+    head: 2,
+    fullSource: "Before",
+    boundary: 4,
+    verticalColumn: 6
+  };
+  const history = [{
+    beforeSource: "Before",
+    afterSource: "B",
+    sourceSelection
+  }];
+  assert.deepEqual(exactSourceSelectionAfterUndo(history, "B", "Before"), sourceSelection);
+  assert.equal(exactSourceSelectionAfterUndo(history, "Else", "Before"), null);
+  assert.equal(exactSourceSelectionAfterUndo(history, "B", "Different"), null);
+  assert.equal(exactSourceSelectionAfterUndo(history, "Before", "Before"), null);
 });
 
 test("activeMarkdownBlockSyntax leaves table cells visual even inside a blockquote", () => {
@@ -1299,6 +1437,79 @@ test("fenced source selection crosses hidden newlines and fence lines in source 
     end: source.length,
     direction: "forward"
   });
+
+  const crlfSource = "```js\r\nlong-column\r\n```";
+  const crlfContentStart = crlfSource.indexOf("long-column");
+  const crlfClosingStart = crlfSource.lastIndexOf("\n") + 1;
+  assert.deepEqual(sourceInitialSelectionRange(crlfSource, crlfContentStart + 10, "up"), {
+    start: 5,
+    end: crlfContentStart + 10,
+    direction: "backward"
+  });
+  assert.deepEqual(sourceInitialSelectionRange(crlfSource, crlfContentStart + 10, "down"), {
+    start: crlfContentStart + 10,
+    end: crlfClosingStart + 3,
+    direction: "forward"
+  });
+});
+
+test("line-jump shortcuts distinguish physical line edges from word and document jumps", () => {
+  assert.equal(sourceLineJumpEdge({ key: "Home" }), "start");
+  assert.equal(sourceLineJumpEdge({ key: "End", shiftKey: true }), "end");
+  assert.equal(sourceLineJumpEdge({ key: "ArrowLeft", metaKey: true }), "start");
+  assert.equal(sourceLineJumpEdge({ key: "ArrowRight", metaKey: true, shiftKey: true }), "end");
+  assert.equal(sourceLineJumpEdge({ key: "ArrowLeft", ctrlKey: true }), null);
+  assert.equal(sourceLineJumpEdge({ key: "Home", metaKey: true }), null);
+  assert.equal(sourceLineJumpEdge({ key: "Home", altKey: true }), null);
+});
+
+test("document-jump shortcuts cover native macOS and Windows key combinations", () => {
+  assert.equal(sourceDocumentJumpEdge({ key: "ArrowUp", metaKey: true }), "start");
+  assert.equal(sourceDocumentJumpEdge({ key: "ArrowDown", metaKey: true, shiftKey: true }), "end");
+  assert.equal(sourceDocumentJumpEdge({ key: "Home", ctrlKey: true }), "start");
+  assert.equal(sourceDocumentJumpEdge({ key: "End", ctrlKey: true, shiftKey: true }), "end");
+  assert.equal(sourceDocumentJumpEdge({ key: "Home", metaKey: true }), "start");
+  assert.equal(sourceDocumentJumpEdge({ key: "End", metaKey: true }), "end");
+  assert.equal(sourceDocumentJumpEdge({ key: "ArrowUp", ctrlKey: true }), null);
+  assert.equal(sourceDocumentJumpEdge({ key: "ArrowUp", metaKey: true, altKey: true }), null);
+  assert.equal(sourceDocumentJumpEdge({ key: "Home" }), null);
+});
+
+test("source line selections include hidden prefixes and suffixes with CRLF", () => {
+  const source = "- one\r\n- two\r\n";
+  const caret = source.indexOf("two") + 2;
+  assert.deepEqual(sourceInitialSelectionRange(source, caret, "line-start"), {
+    start: source.indexOf("- two"),
+    end: caret,
+    direction: "backward"
+  });
+  assert.deepEqual(sourceInitialSelectionRange(source, caret, "line-end"), {
+    start: caret,
+    end: source.indexOf("two") + "two".length,
+    direction: "forward"
+  });
+});
+
+test("source selections move vertically by physical source lines and preserve columns", () => {
+  const source = "ab\r\n12345\r\nz";
+  const secondLineColumn = source.indexOf("12345") + 3;
+  assert.equal(sourceVerticalOffset(source, secondLineColumn, "up"), 2);
+  assert.equal(sourceVerticalOffset(source, secondLineColumn, "down"), source.length);
+
+  const selection = {
+    anchor: source.indexOf("12345"),
+    head: secondLineColumn,
+    fullSource: source,
+    boundary: 4
+  };
+  const movedUp = moveSourceSelectionHead(selection, "up");
+  assert.equal(movedUp.head, 2);
+  assert.equal(movedUp.verticalColumn, 3);
+  assert.equal(moveSourceSelectionHead(movedUp, "down").head, secondLineColumn);
+  assert.equal(moveSourceSelectionHead(selection, "down").head, source.length);
+  const movedBackward = moveSourceSelectionHead(selection, "backward");
+  assert.equal(movedBackward.head, secondLineColumn - 1);
+  assert.equal(movedBackward.verticalColumn, null);
 });
 
 test("continuous source controls are reserved for inline, atomic, and explicit source units", () => {

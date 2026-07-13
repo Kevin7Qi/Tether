@@ -40,8 +40,12 @@ test("document loading uses the centered preview-pane layout contract", () => {
 
 test("WYSIWYG tables use content-driven columns instead of equal fixed widths", () => {
   const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
   assert.match(styles, /milkdown-table-block table\s*\{[^}]*table-layout:\s*auto/s);
   assert.match(styles, /table:not\(:has\(\[data-colwidth\]\)\) col\s*\{[^}]*width:\s*auto !important/s);
+  assert.match(surface, /markdownSourceTargetFromPointer/);
+  assert.match(surface, /mousedown", focusTableTextFromPointer, true/);
+  assert.match(surface, /mousemove", updateTableDragSelection, true/);
 });
 
 test("fenced code blocks keep readable source typography and focused-only line feedback", () => {
@@ -50,6 +54,7 @@ test("fenced code blocks keep readable source typography and focused-only line f
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
 
   assert.match(styles, /milkdown-code-block \.cm-scroller\s*\{[^}]*font-size:\s*13px[^}]*font-weight:\s*400/s);
+  assert.match(styles, /milkdown-code-block \.cm-content\s*\{[^}]*min-height:\s*1\.62em/s);
   assert.match(styles, /cm-editor\.cm-focused \.cm-activeLine/);
   assert.match(styles, /\.tools button\.copy-button\s*\{[^}]*opacity:\s*0/s);
   assert.match(styles, /is-reading \.milkdown-code-block \.language-button svg\s*\{[^}]*display:\s*none/s);
@@ -120,6 +125,25 @@ test("fenced code blocks keep readable source typography and focused-only line f
 test("long inline Markdown source stays inside the document column", () => {
   const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
   assert.match(styles, /input\.tether-continuous-source\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/s);
+});
+
+test("rendered lists use compact indentation and intentional marker colors", () => {
+  const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
+  assert.match(styles, /\.ProseMirror ul,\s*\.tether-wysiwyg \.ProseMirror ol\s*\{[^}]*padding-inline-start:\s*12px/s);
+  assert.match(styles, /\.milkdown-list-item-block > \.list-item\s*\{[^}]*gap:\s*5px/s);
+  assert.match(styles, /\.label\.bullet,\s*\.tether-wysiwyg \.ProseMirror \.milkdown-list-item-block \.label\.ordered\s*\{[^}]*color:\s*var\(--ink2\)/s);
+  assert.match(styles, /\.milkdown-list-item-block \.label svg\s*\{[^}]*width:\s*18px[^}]*height:\s*18px/s);
+  assert.match(styles, /\.label\.ordered\s*\{[^}]*font-variant-numeric:\s*tabular-nums/s);
+});
+
+test("CodeMirror document jumps are bridged through the source-faithful document mapping", () => {
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
+  assert.match(surface, /const handleCodeDocumentJump = \(event\) =>/);
+  assert.match(surface, /sourceDocumentJumpEdge\(event\)/);
+  assert.match(surface, /documentSourceOffsetAtPosition\(/);
+  assert.match(surface, /applyDocumentSourceJump\(view, event, serializer, sourceHead, sourceAnchor\)/);
+  assert.match(surface, /addEventListener\("keydown", handleCodeDocumentJump, true\)/);
+  assert.match(surface, /removeEventListener\("keydown", handleCodeDocumentJump, true\)/);
 });
 
 test("active blockquotes expose their source marker and use structural Backspace semantics", () => {

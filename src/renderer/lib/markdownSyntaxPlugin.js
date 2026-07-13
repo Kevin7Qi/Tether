@@ -2,10 +2,15 @@ import { parserCtx, serializerCtx } from "@milkdown/kit/core";
 import { Fragment, Slice } from "@milkdown/kit/prose/model";
 import { joinBackward, joinForward, lift, splitBlock } from "@milkdown/kit/prose/commands";
 import { liftListItem, splitListItem } from "@milkdown/kit/prose/schema-list";
-import { Plugin, PluginKey, Selection, TextSelection } from "@milkdown/kit/prose/state";
+import { AllSelection, Plugin, PluginKey, Selection, TextSelection } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet } from "@milkdown/kit/prose/view";
 import { $prose, $shortcut } from "@milkdown/kit/utils";
 import { documentGaps } from "./markdownDocument.js";
+import { tableCellSourceOffsetAtPosition } from "./markdownTable.js";
+import {
+  codeContentOffsetAtSourceOffset,
+  tetherCodeViewForElement
+} from "./codeEditor.js";
 
 const markdownSyntaxKey = new PluginKey("TETHER_MARKDOWN_SYNTAX");
 
@@ -50,14 +55,15 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
     focusLock = false
   } = options;
   const resolved = view.state.doc.resolve(Math.min(position, view.state.doc.content.size));
+  const selection = markdownSourceSelectionAt(view.state.doc, resolved.pos, atomPosition);
   view.dispatch(
     view.state.tr
-      .setSelection(Selection.near(resolved))
+      .setSelection(selection)
       .setMeta(markdownSyntaxKey, {
         action: "activate",
         atomPosition,
         explicitUnitPosition,
-        clickPosition: resolved.pos,
+        clickPosition: selection.from,
         sourceOffset,
         initialDeleteDirection,
         initialSelectionDirection,
@@ -65,6 +71,30 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
       })
   );
   view.focus();
+}
+
+export function markdownSourceSelectionAt(doc, position, atomPosition = null) {
+  const bounded = Math.max(0, Math.min(position, doc.content.size));
+  const resolved = doc.resolve(bounded);
+  if (atomPosition == null) {
+    if (resolved.parent.isTextblock) return TextSelection.create(doc, bounded);
+    const direct = doc.nodeAt(bounded);
+    if (direct?.isTextblock) {
+      return TextSelection.create(doc, Math.min(doc.content.size, bounded + 1));
+    }
+  }
+  return Selection.near(resolved);
+}
+
+function focusProseMirrorRoot(view) {
+  // ProseMirror considers a focused CodeMirror descendant to be focused too,
+  // so view.focus() can leave keyboard input in the code block after a jump
+  // into a virtual source selection.
+  const activeElement = view.dom.ownerDocument?.activeElement;
+  if (activeElement !== view.dom && view.dom.contains(activeElement)) {
+    activeElement.blur?.();
+  }
+  view.dom.focus();
 }
 
 function activateDocumentSourceOffset(
@@ -77,6 +107,29 @@ function activateDocumentSourceOffset(
   const target = documentSourceTarget(view.state, sourceOffset, serializer, affinity);
   if (!target) return false;
   if (target.kind === "block") {
+    if (target.node.type.name === "code_block") {
+      const blockSource = target.documentSource.fullSource.slice(
+        target.segment.from,
+        target.segment.to
+      );
+      const contentOffset = codeContentOffsetAtSourceOffset(
+        blockSource,
+        target.node.textContent,
+        target.sourceOffset
+      );
+      if (contentOffset != null) {
+        focusCodeContentOffset(
+          view,
+          target.position,
+          contentOffset,
+          () => activateMarkdownSourceAt(view, target.position, {
+            explicitUnitPosition: target.position,
+            sourceOffset: target.sourceOffset
+          })
+        );
+        return true;
+      }
+    }
     const options = sourceAtomNames.has(target.node.type.name)
       ? { atomPosition: target.position, sourceOffset: target.sourceOffset }
       : { explicitUnitPosition: target.position, sourceOffset: target.sourceOffset };
@@ -84,28 +137,98 @@ function activateDocumentSourceOffset(
     return true;
   }
 
-  const next = target.documentSource.segments[target.segment.index + 1];
-  if (!next) return false;
+  const before = target.beforeSegment;
+  const after = target.afterSegment;
   view.dispatch(
-    view.state.tr.setMeta(markdownSyntaxKey, {
-      action: "source-selection",
-      sourceSelection: {
-        ...sourceSelection,
-        anchor: target.sourceOffset,
-        head: target.sourceOffset,
-        fullSource: target.documentSource.fullSource,
-        boundary: target.position,
-        beforeFrom: target.segment.position,
-        beforeTo: target.position,
-        afterFrom: next.position,
-        afterTo: next.position + next.node.nodeSize,
-        gapStart: target.segment.gapFrom,
-        gapEnd: target.segment.gapTo
-      }
-    })
+    view.state.tr
+      .setSelection(markdownSourceSelectionAt(view.state.doc, target.position))
+      .setMeta(markdownSyntaxKey, {
+        action: "source-selection",
+        sourceSelection: {
+          ...sourceSelection,
+          anchor: target.sourceOffset,
+          head: target.sourceOffset,
+          fullSource: target.documentSource.fullSource,
+          boundary: target.position,
+          ...(before
+            ? {
+                beforeFrom: before.position,
+                beforeTo: before.position + before.node.nodeSize
+              }
+            : {}),
+          ...(after
+            ? {
+                afterFrom: after.position,
+                afterTo: after.position + after.node.nodeSize
+              }
+            : {}),
+          gapStart: target.gapFrom,
+          gapEnd: target.gapTo
+        }
+      })
   );
-  view.focus();
+  focusProseMirrorRoot(view);
   return true;
+}
+
+function codeViewAtBlockPosition(view, blockPosition) {
+  const nodeDOM = view.nodeDOM(blockPosition);
+  const codeElement = nodeDOM instanceof Element
+    ? nodeDOM.querySelector(".cm-content")
+    : null;
+  return tetherCodeViewForElement(codeElement);
+}
+
+function focusCodeContentOffset(
+  view,
+  blockPosition,
+  contentOffset,
+  onUnavailable = null,
+  attempts = 6
+) {
+  const apply = (codeView) => {
+    const offset = Math.max(0, Math.min(codeView.state.doc.length, contentOffset));
+    view.dispatch(
+      view.state.tr
+        .setSelection(TextSelection.create(
+          view.state.doc,
+          blockPosition + 1 + offset
+        ))
+        .setMeta(markdownSyntaxKey, "close")
+    );
+    codeView.dispatch({ selection: { anchor: offset }, scrollIntoView: true });
+    codeView.focus();
+  };
+  const codeView = codeViewAtBlockPosition(view, blockPosition);
+  if (codeView) {
+    apply(codeView);
+    return;
+  }
+
+  const boundedOffset = Math.max(
+    0,
+    Math.min(view.state.doc.nodeAt(blockPosition)?.content.size ?? 0, contentOffset)
+  );
+  view.dispatch(
+    view.state.tr
+      .setSelection(TextSelection.create(
+        view.state.doc,
+        blockPosition + 1 + boundedOffset
+      ))
+      .setMeta(markdownSyntaxKey, "close")
+      .scrollIntoView()
+  );
+  const retry = (remaining) => requestAnimationFrame(() => {
+    if (!view.dom.isConnected) return;
+    const mounted = codeViewAtBlockPosition(view, blockPosition);
+    if (mounted) {
+      apply(mounted);
+      return;
+    }
+    if (remaining > 1) retry(remaining - 1);
+    else if (onUnavailable) onUnavailable();
+  });
+  retry(attempts);
 }
 
 function blockSyntaxAtPosition(state, position, allowedNames) {
@@ -287,6 +410,64 @@ export function structuralBoundarySourceTarget(state, key) {
   return { unit, direction, position: selection.from };
 }
 
+export function sourceLineJumpEdge(event) {
+  if (!event || event.altKey || event.ctrlKey) return null;
+  if (!event.metaKey && event.key === "Home") return "start";
+  if (!event.metaKey && event.key === "End") return "end";
+  if (event.metaKey && event.key === "ArrowLeft") return "start";
+  if (event.metaKey && event.key === "ArrowRight") return "end";
+  return null;
+}
+
+export function sourceDocumentJumpEdge(event) {
+  if (!event || event.altKey) return null;
+  if (event.metaKey && !event.ctrlKey && event.key === "ArrowUp") return "start";
+  if (event.metaKey && !event.ctrlKey && event.key === "ArrowDown") return "end";
+  if ((event.metaKey || event.ctrlKey) && event.key === "Home") return "start";
+  if ((event.metaKey || event.ctrlKey) && event.key === "End") return "end";
+  return null;
+}
+
+export function sourceLineJumpTarget(state, edge, serializer) {
+  const { selection } = state;
+  if (
+    !selection?.empty
+    || !selection.$from.parent.isTextblock
+    || !["start", "end"].includes(edge)
+    || typeof serializer !== "function"
+  ) return null;
+
+  const unit = markdownTableSyntaxAt(state, selection.from) || activeMarkdownBlockSyntax(state);
+  if (!unit || unit.name === "code_block") return null;
+  const source = continuousMarkdownSource(state, unit, serializer);
+  const caretOffset = sourceCaretOffset(
+    state,
+    unit,
+    source,
+    selection.from,
+    null,
+    serializer
+  );
+  const bounds = sourceLineBounds(source, caretOffset);
+  const boundaryOffset = edge === "start" ? bounds.start : bounds.end;
+  const visibleBoundaryPosition = edge === "start"
+    ? selection.$from.start()
+    : selection.$from.end();
+  const visibleBoundaryOffset = sourceCaretOffset(
+    state,
+    unit,
+    source,
+    visibleBoundaryPosition,
+    null,
+    serializer
+  );
+
+  // If the rendered text edge already is the physical Markdown line edge,
+  // native Home/End is exact and should remain visually stable.
+  if (boundaryOffset === visibleBoundaryOffset) return null;
+  return { unit, source, caretOffset, boundaryOffset };
+}
+
 export function markdownAtomSyntaxAt(state, position) {
   const node = state.doc.nodeAt(position);
   if (!node || !sourceAtomNames.has(node.type.name)) return null;
@@ -390,9 +571,10 @@ function serializedCaretOffset(state, unit, source, position, serializer) {
 
   const transaction = state.tr.insertText(marker, position, position);
   const markedState = { schema: state.schema, doc: transaction.doc };
+  const markerInsideUnit = position >= unit.from && position < unit.to;
   const markedUnit = {
     ...unit,
-    to: unit.kind === "inline" ? unit.to + marker.length : unit.to
+    to: markerInsideUnit ? unit.to + marker.length : unit.to
   };
   const markedSource = continuousMarkdownSource(markedState, markedUnit, serializer);
   const markerOffset = markedSource.indexOf(marker);
@@ -516,6 +698,10 @@ export function sourceCaretOffset(
   if (!Number.isFinite(clickPosition)) return source.length;
 
   const position = Math.max(0, Math.min(clickPosition, state.doc.content.size));
+  if (unit.name === "table") {
+    const tableOffset = tableCellSourceOffsetAtPosition(state, position, source, "forward");
+    if (tableOffset != null) return tableOffset;
+  }
   const exactBoundary = exactStructuralBoundaryOffset(state, unit, source, position);
   if (exactBoundary != null) return exactBoundary;
   if (serializer && position >= unit.from && position <= unit.to) {
@@ -716,23 +902,14 @@ export function sourceInitialSelectionRange(source, caret, direction) {
   if (["backward", "forward"].includes(direction)) {
     return sourceBoundarySelectionRange(source.length, boundedCaret, direction);
   }
-
-  const currentLineStart = source.lastIndexOf("\n", Math.max(0, boundedCaret - 1)) + 1;
-  const currentLineEndIndex = source.indexOf("\n", boundedCaret);
-  const currentLineEnd = currentLineEndIndex < 0 ? source.length : currentLineEndIndex;
-  const column = boundedCaret - currentLineStart;
-  let head = boundedCaret;
-
-  if (direction === "up" && currentLineStart > 0) {
-    const previousLineEnd = currentLineStart - 1;
-    const previousLineStart = source.lastIndexOf("\n", Math.max(0, previousLineEnd - 1)) + 1;
-    head = Math.min(previousLineStart + column, previousLineEnd);
-  } else if (direction === "down" && currentLineEnd < source.length) {
-    const nextLineStart = currentLineEnd + 1;
-    const nextLineEndIndex = source.indexOf("\n", nextLineStart);
-    const nextLineEnd = nextLineEndIndex < 0 ? source.length : nextLineEndIndex;
-    head = Math.min(nextLineStart + column, nextLineEnd);
-  }
+  const line = sourceLineBounds(source, boundedCaret);
+  const head = direction === "line-start"
+    ? line.start
+    : direction === "line-end"
+      ? line.end
+      : ["up", "down"].includes(direction)
+        ? sourceVerticalOffset(source, boundedCaret, direction)
+        : boundedCaret;
 
   return {
     start: Math.min(boundedCaret, head),
@@ -1061,10 +1238,44 @@ export function sourceNewlineClipboardText(state) {
   return sourceNewlineSelectionInfo(state) ? "\n" : null;
 }
 
+export function serializedDocumentGaps(state, serializer) {
+  if (typeof serializer !== "function") return null;
+  const fullSource = serializer(state.doc);
+  const gaps = [];
+  let cursor = 0;
+
+  for (let index = 0; index < state.doc.childCount; index += 1) {
+    const child = state.doc.child(index);
+    const single = state.doc.type.create(
+      { ...state.doc.attrs, markdownBlockGaps: null },
+      child
+    );
+    const serialized = serializer(single);
+    // A root serializer contributes one terminal line break. That line break
+    // is document spacing, not part of the block's own source segment.
+    const blockSource = serialized.endsWith("\r\n")
+      ? serialized.slice(0, -2)
+      : serialized.endsWith("\n")
+        ? serialized.slice(0, -1)
+        : serialized;
+    const start = fullSource.indexOf(blockSource, cursor);
+    if (start < cursor) return null;
+    gaps.push(fullSource.slice(cursor, start));
+    cursor = start + blockSource.length;
+  }
+  gaps.push(fullSource.slice(cursor));
+  return gaps.length === state.doc.childCount + 1 ? gaps : null;
+}
+
+function documentGapsForState(state, serializer) {
+  return documentGaps(state.doc.attrs.markdownBlockGaps, state.doc.childCount)
+    || serializedDocumentGaps(state, serializer);
+}
+
 export function sourceNewlineSourceRange(state, serializer) {
   if (typeof serializer !== "function") return null;
   const info = sourceNewlineSelectionInfo(state);
-  const gaps = documentGaps(state.doc.attrs.markdownBlockGaps, state.doc.childCount);
+  const gaps = documentGapsForState(state, serializer);
   if (!info || !gaps) return null;
   const gapIndex = state.doc.resolve(info.boundary).index(0);
   const gap = gaps[gapIndex];
@@ -1127,9 +1338,26 @@ export function sourceSelectionText(sourceSelection) {
   return sourceSelection.fullSource.slice(from, to);
 }
 
+export function exactSourceSelectionAfterUndo(history, beforeUndoSource, afterUndoSource) {
+  if (!Array.isArray(history) || beforeUndoSource === afterUndoSource) return null;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry = history[index];
+    if (
+      entry?.afterSource !== beforeUndoSource
+      || entry?.beforeSource !== afterUndoSource
+      || !entry.sourceSelection
+    ) continue;
+    return {
+      ...entry.sourceSelection,
+      fullSource: afterUndoSource
+    };
+  }
+  return null;
+}
+
 export function documentSourceSegments(state, serializer) {
   if (typeof serializer !== "function") return null;
-  const gaps = documentGaps(state.doc.attrs.markdownBlockGaps, state.doc.childCount);
+  const gaps = documentGapsForState(state, serializer);
   if (!gaps) return null;
   const segments = [];
   let documentPosition = 0;
@@ -1166,6 +1394,24 @@ export function documentSourceTarget(state, sourceOffset, serializer, affinity =
   const documentSource = documentSourceSegments(state, serializer);
   if (!documentSource) return null;
   const offset = Math.max(0, Math.min(documentSource.fullSource.length, sourceOffset));
+  const first = documentSource.segments[0];
+  if (
+    first
+    && first.from > 0
+    && (offset < first.from || (offset === first.from && affinity === "backward"))
+  ) {
+    return {
+      kind: "gap",
+      position: 0,
+      sourceOffset: offset,
+      gapFrom: 0,
+      gapTo: first.from,
+      beforeSegment: null,
+      afterSegment: first,
+      segment: first,
+      documentSource
+    };
+  }
   for (const segment of documentSource.segments) {
     const atStart = offset === segment.from;
     const atEnd = offset === segment.to;
@@ -1192,12 +1438,91 @@ export function documentSourceTarget(state, sourceOffset, serializer, affinity =
         kind: "gap",
         position: segment.position + segment.node.nodeSize,
         sourceOffset: offset,
+        gapFrom: segment.gapFrom,
+        gapTo: segment.gapTo,
+        beforeSegment: segment,
+        afterSegment: documentSource.segments[segment.index + 1] || null,
         segment,
         documentSource
       };
     }
   }
   return null;
+}
+
+export function sourceDocumentJumpSelection(
+  state,
+  edge,
+  serializer,
+  { sourceOffset = null, extend = false, sourceSelection = null } = {}
+) {
+  if (!["start", "end"].includes(edge)) return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  if (!documentSource) return null;
+  const fallbackOffset = documentSourceOffsetAtPosition(
+    state,
+    state.selection.head,
+    serializer,
+    edge === "start" ? "forward" : "backward"
+  );
+  const current = Math.max(
+    0,
+    Math.min(
+      documentSource.fullSource.length,
+      Number.isFinite(sourceOffset)
+        ? sourceOffset
+        : Number.isFinite(sourceSelection?.head)
+          ? sourceSelection.head
+          : fallbackOffset ?? 0
+    )
+  );
+  const head = edge === "start" ? 0 : documentSource.fullSource.length;
+  return {
+    anchor: extend ? sourceSelection?.anchor ?? current : head,
+    head,
+    fullSource: documentSource.fullSource,
+    boundary: edge === "start" ? 0 : state.doc.content.size
+  };
+}
+
+export function applyDocumentSourceJump(
+  view,
+  event,
+  serializer,
+  sourceOffset = null,
+  sourceAnchor = null
+) {
+  const edge = sourceDocumentJumpEdge(event);
+  if (!edge) return false;
+  const existing = markdownSyntaxKey.getState(view.state)?.sourceSelection
+    || (Number.isFinite(sourceAnchor) && Number.isFinite(sourceOffset)
+      ? { anchor: sourceAnchor, head: sourceOffset }
+      : null);
+  const next = sourceDocumentJumpSelection(view.state, edge, serializer, {
+    sourceOffset,
+    extend: Boolean(event.shiftKey),
+    sourceSelection: existing
+  });
+  if (!next) return false;
+  if (event.shiftKey) {
+    view.dispatch(
+      view.state.tr
+        .setSelection(markdownSourceSelectionAt(view.state.doc, next.boundary))
+        .setMeta(markdownSyntaxKey, {
+          action: "source-selection",
+          sourceSelection: next
+        })
+    );
+    focusProseMirrorRoot(view);
+    return true;
+  }
+  return activateDocumentSourceOffset(
+    view,
+    next,
+    next.head,
+    edge === "start" ? "forward" : "backward",
+    serializer
+  );
 }
 
 export function documentSourceOffsetAtPosition(state, position, serializer, affinity = "forward") {
@@ -1227,6 +1552,15 @@ export function documentSourceOffsetAtPosition(state, position, serializer, affi
       name: segment.node.type.name
     };
     const source = documentSource.fullSource.slice(segment.from, segment.to);
+    if (segment.node.type.name === "table") {
+      const tableOffset = tableCellSourceOffsetAtPosition(
+        state,
+        bounded,
+        source,
+        affinity
+      );
+      return tableOffset == null ? null : segment.from + tableOffset;
+    }
     const offset = sourceCaretOffset(state, unit, source, bounded, null, serializer);
     return segment.from + Math.max(0, Math.min(source.length, offset));
   }
@@ -1244,24 +1578,42 @@ export function sourceSelectionFromDocumentSelection(
     || (selection.$from.sameParent(selection.$to) && selection.$from.parent.isTextblock)
   ) return null;
 
-  let includesTable = false;
-  state.doc.nodesBetween(selection.from, selection.to, (node) => {
-    if (tableNames.has(node.type.name)) includesTable = true;
-    return !includesTable;
-  });
-  if (includesTable) return null;
-
   const documentSource = documentSourceSegments(state, serializer);
+  if (!documentSource) return null;
+  if (selection instanceof AllSelection) {
+    return {
+      anchor: 0,
+      head: documentSource.fullSource.length,
+      fullSource: documentSource.fullSource,
+      boundary: 0
+    };
+  }
   const from = documentSourceOffsetAtPosition(state, selection.from, serializer, "forward");
   const to = documentSourceOffsetAtPosition(state, selection.to, serializer, "backward");
-  if (!documentSource || from == null || to == null || from > to) return null;
+  if (from == null || to == null || from > to) return null;
   const forward = selection.anchor <= selection.head;
+  const crossedBoundary = documentSource.segments
+    .map((segment) => segment.position + segment.node.nodeSize)
+    .find((boundary) => boundary >= selection.from && boundary <= selection.to);
   return {
     anchor: forward ? from : to,
     head: forward ? to : from,
     fullSource: documentSource.fullSource,
-    boundary: selection.from
+    boundary: crossedBoundary ?? selection.from
   };
+}
+
+export function activateDocumentSourceSelection(view, selection, serializer) {
+  const sourceSelection = sourceSelectionFromDocumentSelection(view.state, serializer, selection);
+  if (!sourceSelection) return false;
+  view.dispatch(
+    view.state.tr
+      .setSelection(selection)
+      .setMeta(markdownSyntaxKey, { action: "source-selection", sourceSelection })
+      .scrollIntoView()
+  );
+  view.focus();
+  return true;
 }
 
 function sourceOffsetAfterCharacter(source, offset, direction) {
@@ -1289,6 +1641,58 @@ export function extendSourceSelection(sourceSelection, direction) {
   return {
     ...sourceSelection,
     head: Math.max(0, Math.min(sourceSelection.fullSource.length, nextHead))
+  };
+}
+
+function sourceLineBounds(source, offset) {
+  const bounded = Math.max(0, Math.min(source.length, offset));
+  const start = source.lastIndexOf("\n", bounded - 1) + 1;
+  const lineBreak = source.indexOf("\n", bounded);
+  let end = lineBreak < 0 ? source.length : lineBreak;
+  if (end > start && source[end - 1] === "\r") end -= 1;
+  return { bounded, start, end, lineBreak };
+}
+
+export function sourceVerticalOffset(source, offset, direction, preferredColumn = null) {
+  if (!source || !["up", "down"].includes(direction)) return offset;
+  const current = sourceLineBounds(source, offset);
+  const currentColumn = Math.max(0, Math.min(current.end, current.bounded) - current.start);
+  const column = Number.isFinite(preferredColumn) ? Math.max(0, preferredColumn) : currentColumn;
+  if (direction === "up") {
+    if (current.start === 0) return current.bounded;
+    const previousBreak = current.start - 1;
+    const previousStart = source.lastIndexOf("\n", previousBreak - 1) + 1;
+    let previousEnd = previousBreak;
+    if (previousEnd > previousStart && source[previousEnd - 1] === "\r") previousEnd -= 1;
+    return Math.min(previousStart + column, previousEnd);
+  }
+  if (current.lineBreak < 0) return current.bounded;
+  const nextStart = current.lineBreak + 1;
+  const nextBreak = source.indexOf("\n", nextStart);
+  let nextEnd = nextBreak < 0 ? source.length : nextBreak;
+  if (nextEnd > nextStart && source[nextEnd - 1] === "\r") nextEnd -= 1;
+  return Math.min(nextStart + column, nextEnd);
+}
+
+export function moveSourceSelectionHead(sourceSelection, motion) {
+  if (!sourceSelection) return null;
+  if (["backward", "forward"].includes(motion)) {
+    return { ...extendSourceSelection(sourceSelection, motion), verticalColumn: null };
+  }
+  if (!["up", "down"].includes(motion)) return sourceSelection;
+  const current = sourceLineBounds(sourceSelection.fullSource, sourceSelection.head);
+  const verticalColumn = Number.isFinite(sourceSelection.verticalColumn)
+    ? sourceSelection.verticalColumn
+    : Math.max(0, Math.min(current.end, current.bounded) - current.start);
+  return {
+    ...sourceSelection,
+    head: sourceVerticalOffset(
+      sourceSelection.fullSource,
+      sourceSelection.head,
+      motion,
+      verticalColumn
+    ),
+    verticalColumn
   };
 }
 
@@ -1330,6 +1734,25 @@ export function replaceSourceSelectionTransaction(
     Math.min(caret ?? sourceSelection.boundary, transaction.doc.content.size)
   );
   return transaction.setSelection(Selection.near(transaction.doc.resolve(caret), 1));
+}
+
+export function sourceClipboardEdit(
+  state,
+  replacement,
+  parser,
+  serializer,
+  sourceSelection = null
+) {
+  const exactSelection = sourceSelection
+    || sourceSelectionFromDocumentSelection(state, serializer);
+  const selectedText = exactSelection
+    ? sourceSelectionText(exactSelection)
+    : sourceNewlineClipboardText(state);
+  if (selectedText == null || selectedText === "") return null;
+  const transaction = exactSelection
+    ? replaceSourceSelectionTransaction(state, exactSelection, replacement, parser)
+    : replaceSourceNewlineSelectionTransaction(state, replacement, parser, serializer);
+  return transaction ? { selectedText, transaction, sourceSelection: exactSelection } : null;
 }
 
 export function replaceSourceNewlineSelectionTransaction(
@@ -1925,6 +2348,151 @@ export function enclosingCodeBlock(doc, position) {
   return null;
 }
 
+export function adjacentCodeBlockFromSelection(state, direction) {
+  if (!state?.selection?.empty || !["up", "down"].includes(direction)) return null;
+  const $head = state.selection.$head;
+  const forward = direction === "down";
+
+  // Walk outward only when the current textblock is already at the edge of an
+  // enclosing container. The first real sibling is the visual neighbor; never
+  // skip an intervening paragraph/list merely to find a later code block.
+  for (let parentDepth = $head.depth - 1; parentDepth >= 0; parentDepth -= 1) {
+    const parent = $head.node(parentDepth);
+    const index = forward ? $head.indexAfter(parentDepth) : $head.index(parentDepth) - 1;
+    if (index < 0 || index >= parent.childCount) continue;
+    const node = parent.child(index);
+    if (node.type.name !== "code_block") return null;
+    const boundary = forward
+      ? $head.after(parentDepth + 1)
+      : $head.before(parentDepth + 1);
+    return {
+      position: forward ? boundary : boundary - node.nodeSize,
+      node
+    };
+  }
+  return null;
+}
+
+function atVerticalTextblockEdge(view, direction) {
+  if (view.endOfTextblock(direction)) return true;
+  const { $head } = view.state.selection;
+  if (!$head.parent.isTextblock) return false;
+  if (direction === "down" && $head.parentOffset === $head.parent.content.size) return true;
+  if (direction === "up" && $head.parentOffset === 0) return true;
+
+  let blockDOM = null;
+  try {
+    blockDOM = view.nodeDOM($head.before($head.depth));
+  } catch {
+    return false;
+  }
+  if (!(blockDOM instanceof Element)) return false;
+  const caret = view.coordsAtPos($head.pos);
+  const rect = blockDOM.getBoundingClientRect();
+  const style = getComputedStyle(blockDOM);
+  const lineHeight = Number.parseFloat(style.lineHeight || "")
+    || Math.max(1, caret.bottom - caret.top);
+  return direction === "up"
+    ? caret.top <= rect.top + lineHeight * 0.5
+    : caret.bottom >= rect.bottom - lineHeight * 0.5;
+}
+
+function adjacentCodeDestination(view, target, direction, documentX = null) {
+  const nodeDOM = view.nodeDOM(target.position);
+  const codeElement = nodeDOM instanceof Element
+    ? nodeDOM.querySelector(".cm-content")
+    : null;
+  const codeView = tetherCodeViewForElement(codeElement);
+  if (!codeView) return null;
+
+  const edgeOffset = direction === "up" ? codeView.state.doc.length : 0;
+  const codeCoords = codeView.coordsAtPos(edgeOffset);
+  const caretX = Number.isFinite(documentX)
+    ? documentX
+    : view.coordsAtPos(view.state.selection.head).left;
+  const codeOffset = codeCoords
+    ? codeView.posAtCoords({
+        x: caretX,
+        y: (codeCoords.top + codeCoords.bottom) / 2
+      })
+    : null;
+  const boundedOffset = Math.max(
+    0,
+    Math.min(codeView.state.doc.length, codeOffset ?? edgeOffset)
+  );
+  return { codeView, offset: boundedOffset };
+}
+
+function afterAdjacentCodeMount(view, target, direction, documentX, callback, attempts = 6) {
+  const retry = (remaining) => {
+    requestAnimationFrame(() => {
+      if (!view.dom.isConnected) return;
+      const destination = adjacentCodeDestination(view, target, direction, documentX);
+      if (destination) {
+        callback(destination);
+        return;
+      }
+      if (remaining > 1) retry(remaining - 1);
+    });
+  };
+  retry(attempts);
+}
+
+function focusAdjacentCodeBlock(view, target, direction) {
+  const documentX = view.coordsAtPos(view.state.selection.head).left;
+  const apply = ({ codeView, offset }) => {
+    view.dispatch(
+      view.state.tr
+        .setSelection(TextSelection.create(
+          view.state.doc,
+          target.position + 1 + offset
+        ))
+        .setMeta(markdownSyntaxKey, "close")
+    );
+    codeView.dispatch({ selection: { anchor: offset }, scrollIntoView: true });
+    codeView.focus();
+  };
+  const destination = adjacentCodeDestination(view, target, direction, documentX);
+  if (destination) {
+    apply(destination);
+    return true;
+  }
+
+  const edgeOffset = direction === "up" ? target.node.content.size : 0;
+  view.dispatch(
+    view.state.tr
+      .setSelection(TextSelection.create(
+        view.state.doc,
+        target.position + 1 + edgeOffset
+      ))
+      .setMeta(markdownSyntaxKey, "close")
+      .scrollIntoView()
+  );
+  afterAdjacentCodeMount(view, target, direction, documentX, apply);
+  return true;
+}
+
+function selectIntoAdjacentCodeBlock(view, target, direction, serializer) {
+  const anchor = view.state.selection.anchor;
+  const documentX = view.coordsAtPos(view.state.selection.head).left;
+  const apply = ({ offset }) => activateDocumentSourceSelection(
+    view,
+    TextSelection.create(
+      view.state.doc,
+      anchor,
+      target.position + 1 + offset
+    ),
+    serializer
+  );
+  const destination = adjacentCodeDestination(view, target, direction, documentX);
+  if (destination) return apply(destination);
+
+  const edgeOffset = direction === "up" ? target.node.content.size : 0;
+  const activated = apply({ offset: edgeOffset });
+  afterAdjacentCodeMount(view, target, direction, documentX, apply);
+  return activated;
+}
+
 function capturedCodeBlockTarget(view, block, event) {
   let domPosition;
   try {
@@ -2070,11 +2638,8 @@ function capturedTargetAtPointer(view, event) {
   }
 }
 
-export function activateMarkdownSourceFromPointer(view, event) {
-  const target = capturedTargetAtPointer(view, event);
-  if (!target) return false;
-  activateCapturedTarget(view, target);
-  return true;
+export function markdownSourceTargetFromPointer(view, event) {
+  return capturedTargetAtPointer(view, event);
 }
 
 export function mappedPosition(mapping, position, assoc = 1) {
@@ -2328,6 +2893,7 @@ function sourceNewlineDecorations(state, sourceSelection = null) {
     element.setAttribute("aria-hidden", "true");
     return element;
   }, { side: -1 });
+  if (!sourceSelectionHasAdjacentBlocks(info)) return [marker];
   return [
     Decoration.node(info.beforeFrom, info.beforeTo, {
       class: "tether-source-newline-adjacent"
@@ -2339,6 +2905,11 @@ function sourceNewlineDecorations(state, sourceSelection = null) {
   ];
 }
 
+export function sourceSelectionHasAdjacentBlocks(info) {
+  return Boolean(info) && [info.beforeFrom, info.beforeTo, info.afterFrom, info.afterTo]
+    .every(Number.isFinite);
+}
+
 export function flushActiveMarkdownSource(viewDom) {
   const control = viewDom ? liveSourceControls.get(viewDom) : null;
   if (control?.element?.isConnected) control.finish(true, null, true);
@@ -2348,6 +2919,67 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
   let editorView = null;
   let pendingActivation = false;
   let activeSourceControl = null;
+  const exactEditHistory = [];
+
+  const rememberExactEdit = (sourceSelection, transaction) => {
+    if (!sourceSelection || !transaction?.docChanged) return;
+    const beforeSource = sourceSelection.fullSource;
+    const afterSource = ctx.get(serializerCtx)(transaction.doc);
+    if (beforeSource === afterSource) return;
+    exactEditHistory.push({
+      beforeSource,
+      afterSource,
+      sourceSelection: { ...sourceSelection }
+    });
+    if (exactEditHistory.length > 20) exactEditHistory.shift();
+  };
+
+  const restoreExactSelectionAfterUndo = (view) => {
+    if (!exactEditHistory.length) return;
+    const serializer = ctx.get(serializerCtx);
+    const beforeUndoSource = serializer(view.state.doc);
+    requestAnimationFrame(() => {
+      if (!view.dom.isConnected) return;
+      const afterUndoSource = serializer(view.state.doc);
+      const sourceSelection = exactSourceSelectionAfterUndo(
+        exactEditHistory,
+        beforeUndoSource,
+        afterUndoSource
+      );
+      if (!sourceSelection) return;
+      view.dispatch(
+        view.state.tr.setMeta(markdownSyntaxKey, {
+          action: "source-selection",
+          sourceSelection
+        })
+      );
+      view.focus();
+    });
+  };
+
+  const replaceExactTextInput = (view, event) => {
+    if (isSourceInputComposing(event)) return false;
+    if (!["insertText", "insertReplacementText"].includes(event.inputType)) return false;
+    if (typeof event.data !== "string") return false;
+    const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+    const documentSelection = sourceSelection
+      ? null
+      : sourceSelectionFromDocumentSelection(view.state, ctx.get(serializerCtx));
+    const exactSelection = sourceSelection || documentSelection;
+    if (!exactSelection) return false;
+    const transaction = replaceSourceSelectionTransaction(
+      view.state,
+      exactSelection,
+      event.data,
+      ctx.get(parserCtx)
+    );
+    if (!transaction) return false;
+    event.preventDefault();
+    rememberExactEdit(exactSelection, transaction);
+    transaction.setMeta(markdownSyntaxKey, "close");
+    view.dispatch(transaction.scrollIntoView());
+    return true;
+  };
 
   return new Plugin({
     key: markdownSyntaxKey,
@@ -2469,39 +3101,33 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               ctx.get(serializerCtx)
             );
         if (!transaction) return false;
+        rememberExactEdit(exactSelection, transaction);
         transaction.setMeta(markdownSyntaxKey, "close");
         view.dispatch(transaction.scrollIntoView());
         return true;
       },
       handlePaste(view, event) {
         const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
-        const documentSelection = sourceSelection
-          ? null
-          : sourceSelectionFromDocumentSelection(view.state, ctx.get(serializerCtx));
-        const exactSelection = sourceSelection || documentSelection;
-        if (!exactSelection && !sourceNewlineSelectionInfo(view.state)) return false;
         const text = event.clipboardData?.getData("text/plain");
         if (text == null) return false;
-        const transaction = exactSelection
-          ? replaceSourceSelectionTransaction(
-              view.state,
-              exactSelection,
-              text,
-              ctx.get(parserCtx)
-            )
-          : replaceSourceNewlineSelectionTransaction(
-              view.state,
-              text,
-              ctx.get(parserCtx),
-              ctx.get(serializerCtx)
-            );
-        if (!transaction) return false;
+        const edit = sourceClipboardEdit(
+          view.state,
+          text,
+          ctx.get(parserCtx),
+          ctx.get(serializerCtx),
+          sourceSelection
+        );
+        if (!edit) return false;
         event.preventDefault();
-        transaction.setMeta(markdownSyntaxKey, "close");
-        view.dispatch(transaction.scrollIntoView());
+        rememberExactEdit(edit.sourceSelection, edit.transaction);
+        edit.transaction.setMeta(markdownSyntaxKey, "close");
+        view.dispatch(edit.transaction.scrollIntoView());
         return true;
       },
       handleDOMEvents: {
+        beforeinput(view, event) {
+          return replaceExactTextInput(view, event);
+        },
         copy(view, event) {
           const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
           const text = sourceSelectionText(sourceSelection)
@@ -2511,6 +3137,27 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           event.preventDefault();
           event.clipboardData.setData("text/plain", text);
           if (["\n", "\r\n"].includes(text)) event.clipboardData.setData("text/html", "<br>");
+          return true;
+        },
+        cut(view, event) {
+          if (!view.editable || !event.clipboardData) return false;
+          const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+          const edit = sourceClipboardEdit(
+            view.state,
+            "",
+            ctx.get(parserCtx),
+            ctx.get(serializerCtx),
+            sourceSelection
+          );
+          if (!edit) return false;
+          event.preventDefault();
+          event.clipboardData.setData("text/plain", edit.selectedText);
+          if (["\n", "\r\n"].includes(edit.selectedText)) {
+            event.clipboardData.setData("text/html", "<br>");
+          }
+          rememberExactEdit(edit.sourceSelection, edit.transaction);
+          edit.transaction.setMeta(markdownSyntaxKey, "close");
+          view.dispatch(edit.transaction.scrollIntoView());
           return true;
         },
         mousedown(view, event) {
@@ -2536,19 +3183,67 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         keydown(_view, event) {
           if (!_view.editable) return false;
           if (isSourceInputComposing(event)) return false;
+          if (
+            !event.altKey
+            && !event.shiftKey
+            && Boolean(event.metaKey || event.ctrlKey)
+            && String(event.key || "").toLowerCase() === "z"
+          ) {
+            restoreExactSelectionAfterUndo(_view);
+            return false;
+          }
           const pluginState = markdownSyntaxKey.getState(_view.state);
           const sourceSelection = pluginState?.sourceSelection;
+          if (
+            !activeSourceControl?.element?.isConnected
+            && sourceDocumentJumpEdge(event)
+            && applyDocumentSourceJump(_view, event, ctx.get(serializerCtx))
+          ) {
+            event.preventDefault();
+            return true;
+          }
+          const lineJumpEdge = sourceLineJumpEdge(event);
+          if (
+            lineJumpEdge
+            && _view.state.selection.empty
+            && !activeSourceControl?.element?.isConnected
+            && _view.endOfTextblock(lineJumpEdge === "start" ? "up" : "down")
+          ) {
+            const target = sourceLineJumpTarget(
+              _view.state,
+              lineJumpEdge,
+              ctx.get(serializerCtx)
+            );
+            if (target) {
+              event.preventDefault();
+              activateMarkdownSourceAt(_view, _view.state.selection.from, {
+                explicitUnitPosition: target.unit.from,
+                sourceOffset: event.shiftKey ? target.caretOffset : target.boundaryOffset,
+                initialSelectionDirection: event.shiftKey
+                  ? lineJumpEdge === "start" ? "line-start" : "line-end"
+                  : null
+              });
+              return true;
+            }
+          }
           if (
             sourceSelection
             && !event.shiftKey
             && !event.altKey
             && !event.ctrlKey
             && !event.metaKey
-            && ["ArrowLeft", "ArrowRight"].includes(event.key)
+            && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
           ) {
-            const direction = event.key === "ArrowLeft" ? "backward" : "forward";
+            const motion = event.key === "ArrowLeft"
+              ? "backward"
+              : event.key === "ArrowRight"
+                ? "forward"
+                : event.key === "ArrowUp"
+                  ? "up"
+                  : "down";
+            const direction = ["backward", "up"].includes(motion) ? "backward" : "forward";
             const offset = sourceSelection.anchor === sourceSelection.head
-              ? extendSourceSelection(sourceSelection, direction).head
+              ? moveSourceSelectionHead(sourceSelection, motion).head
               : direction === "backward"
                 ? Math.min(sourceSelection.anchor, sourceSelection.head)
                 : Math.max(sourceSelection.anchor, sourceSelection.head);
@@ -2568,10 +3263,17 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             && !event.altKey
             && !event.ctrlKey
             && !event.metaKey
-            && ["ArrowLeft", "ArrowRight"].includes(event.key)
+            && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
           ) {
-            const direction = event.key === "ArrowLeft" ? "backward" : "forward";
-            const next = extendSourceSelection(sourceSelection, direction);
+            const motion = event.key === "ArrowLeft"
+              ? "backward"
+              : event.key === "ArrowRight"
+                ? "forward"
+                : event.key === "ArrowUp"
+                  ? "up"
+                  : "down";
+            const direction = ["backward", "up"].includes(motion) ? "backward" : "forward";
+            const next = moveSourceSelectionHead(sourceSelection, motion);
             event.preventDefault();
             if (next.head === next.anchor) {
               activateDocumentSourceOffset(
@@ -2630,6 +3332,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 );
             if (transaction) {
               event.preventDefault();
+              rememberExactEdit(exactSelection, transaction);
               transaction.setMeta(markdownSyntaxKey, "close");
               _view.dispatch(transaction.scrollIntoView());
               return true;
@@ -2752,6 +3455,48 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 sourceOffset: target.edge === "end" ? source.length : 0,
                 initialDeleteDirection: direction
               });
+              return true;
+            }
+          }
+          if (
+            event.shiftKey
+            && !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && ["ArrowUp", "ArrowDown"].includes(event.key)
+            && _view.state.selection.empty
+            && !activeSourceControl?.element?.isConnected
+          ) {
+            const direction = event.key === "ArrowUp" ? "up" : "down";
+            const target = atVerticalTextblockEdge(_view, direction)
+              ? adjacentCodeBlockFromSelection(_view.state, direction)
+              : null;
+            if (target) {
+              event.preventDefault();
+              selectIntoAdjacentCodeBlock(
+                _view,
+                target,
+                direction,
+                ctx.get(serializerCtx)
+              );
+              return true;
+            }
+          }
+          if (
+            !event.shiftKey
+            && !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && ["ArrowUp", "ArrowDown"].includes(event.key)
+            && _view.state.selection.empty
+            && !activeSourceControl?.element?.isConnected
+          ) {
+            const direction = event.key === "ArrowUp" ? "up" : "down";
+            const target = atVerticalTextblockEdge(_view, direction)
+              ? adjacentCodeBlockFromSelection(_view.state, direction)
+              : null;
+            if (target && focusAdjacentCodeBlock(_view, target, direction)) {
+              event.preventDefault();
               return true;
             }
           }

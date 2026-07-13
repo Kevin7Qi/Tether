@@ -4,6 +4,21 @@ import { tags } from "@lezer/highlight";
 
 const tetherCodeViews = new WeakMap();
 
+export function isEditorHistoryShortcut(event) {
+  return Boolean(event)
+    && !event.altKey
+    && Boolean(event.metaKey || event.ctrlKey)
+    && String(event.key || "").toLowerCase() === "z";
+}
+
+export function isEditorSelectAllShortcut(event) {
+  return Boolean(event)
+    && !event.altKey
+    && !event.shiftKey
+    && Boolean(event.metaKey || event.ctrlKey)
+    && String(event.key || "").toLowerCase() === "a";
+}
+
 export function codeBoundarySelectionDirection(state, key) {
   const ranges = state?.selection?.ranges || [];
   if (ranges.length !== 1 || !ranges[0].empty) return null;
@@ -62,6 +77,35 @@ export function codeContentSourcePosition(blockPosition, contentOffset) {
   return blockPosition + 1 + Math.max(0, contentOffset);
 }
 
+export function codeDragDocumentRange(
+  blockPosition,
+  contentLength,
+  codeAnchor,
+  targetPosition
+) {
+  const blockEnd = blockPosition + Math.max(0, contentLength) + 2;
+  if (targetPosition >= blockPosition && targetPosition <= blockEnd) return null;
+  return {
+    anchor: codeContentSourcePosition(blockPosition, Math.min(Math.max(0, codeAnchor), contentLength)),
+    head: Math.max(0, targetPosition)
+  };
+}
+
+export function documentDragIntoCodeRange(
+  blockPosition,
+  contentLength,
+  documentAnchor,
+  codeHead
+) {
+  const reversed = codeDragDocumentRange(
+    blockPosition,
+    contentLength,
+    codeHead,
+    documentAnchor
+  );
+  return reversed ? { anchor: reversed.head, head: reversed.anchor } : null;
+}
+
 function closingFenceLineStart(source) {
   const openingLineEnd = source.indexOf("\n");
   if (openingLineEnd < 0) return null;
@@ -76,6 +120,28 @@ function closingFenceLineStart(source) {
     return null;
   }
   return lineStart;
+}
+
+export function codeContentOffsetAtSourceOffset(source, content, sourceOffset) {
+  const openingEnd = source.indexOf("\n");
+  if (openingEnd < 0) return null;
+  const contentStart = openingEnd + 1;
+  const closingStart = closingFenceLineStart(source);
+  let contentEnd = closingStart ?? source.length;
+  if (closingStart != null && contentEnd > contentStart && source[contentEnd - 1] === "\n") {
+    contentEnd -= 1;
+    if (contentEnd > contentStart && source[contentEnd - 1] === "\r") contentEnd -= 1;
+  }
+  const normalize = (value) => value.replace(/\r\n/g, "\n");
+  if (closingStart == null && normalize(source.slice(contentStart, contentEnd)) !== content) {
+    if (contentEnd > contentStart && source[contentEnd - 1] === "\n") {
+      contentEnd -= 1;
+      if (contentEnd > contentStart && source[contentEnd - 1] === "\r") contentEnd -= 1;
+    }
+  }
+  if (normalize(source.slice(contentStart, contentEnd)) !== content) return null;
+  if (sourceOffset < contentStart || sourceOffset > contentEnd) return null;
+  return normalize(source.slice(contentStart, sourceOffset)).length;
 }
 
 export function codeBoundaryNavigationSourceOffset(source, content, key, contentHead = 0) {
@@ -131,6 +197,22 @@ function legacySupport(parser) {
 }
 
 export const tetherCodeLanguages = [
+  LanguageDescription.of({
+    // An empty language name intentionally clears the Markdown fence info
+    // string. Crepe's picker renders it through tetherCodeLanguageLabel as
+    // “Text”, while the no-op mode also removes any previously active syntax
+    // highlighting instead of leaving stale colors behind.
+    name: "",
+    alias: ["text", "plain", "plaintext", "plain text"],
+    extensions: [],
+    load: async () => legacySupport({
+      startState: () => null,
+      token: (stream) => {
+        stream.skipToEnd();
+        return null;
+      }
+    })
+  }),
   LanguageDescription.of({
     name: "js",
     alias: ["javascript", "jsx", "mjs", "cjs"],

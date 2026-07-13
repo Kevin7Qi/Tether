@@ -44,6 +44,8 @@ import {
 } from "../src/renderer/lib/markdownParagraph.js";
 import {
   annotateBulletListMarkers,
+  isInteractiveTaskMarker,
+  listItemTextStart,
   sourceFaithfulBulletListSchema,
   sourceFaithfulBulletRemark,
   sourceFaithfulOrderedListSchema,
@@ -56,6 +58,7 @@ import {
   activeMarkdownBlockSyntax,
   continuousMarkdownSource,
   sourceCaretOffset,
+  sourceLineJumpTarget,
   sourceAwareClipboardText,
   sourceSelectionFromDocumentSelection,
   sourceFaithfulListMarkerBackspaceTransaction,
@@ -63,6 +66,23 @@ import {
   splitOrderedListItemWithSourceNumber,
   structuralSourceHandoffTarget
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
+
+test("only task markers consume pointer interaction", () => {
+  assert.equal(isInteractiveTaskMarker({ attrs: { checked: null, listType: "bullet" } }), false);
+  assert.equal(isInteractiveTaskMarker({ attrs: { checked: null, listType: "ordered" } }), false);
+  assert.equal(isInteractiveTaskMarker({ attrs: { checked: false, listType: "bullet" } }), true);
+  assert.equal(isInteractiveTaskMarker({ attrs: { checked: true, listType: "bullet" } }), true);
+});
+
+test("ordinary list markers place the caret at the first item text position", async () => {
+  const { parse } = await milkdownTransformer();
+  const doc = parse("- first\n- second\n");
+  const listPosition = 0;
+  const firstItemPosition = listPosition + 1;
+  const firstItem = doc.firstChild.firstChild;
+  assert.equal(listItemTextStart(firstItemPosition, firstItem), firstItemPosition + 2);
+  assert.equal(doc.resolve(listItemTextStart(firstItemPosition, firstItem)).parent.textContent, "first");
+});
 
 const milkdownTimerEvents = new EventTarget();
 globalThis.addEventListener ??= milkdownTimerEvents.addEventListener.bind(milkdownTimerEvents);
@@ -388,6 +408,22 @@ test("the active list source control exposes the exact complete root list", asyn
   const unit = activeMarkdownBlockSyntax(state);
   assert.equal(unit?.name, "ordered_list");
   assert.equal(continuousMarkdownSource(state, unit, serialize), source.trimEnd());
+});
+
+test("line-start jumps enter a list item's physical marker while line-end stays rendered", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "- first\n- second\n";
+  const doc = parse(source);
+  const second = textPosition(doc, "second") + 3;
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, second)
+  });
+  const start = sourceLineJumpTarget(state, "start", serialize);
+  assert.equal(start?.source, source.trimEnd());
+  assert.equal(start?.boundaryOffset, source.indexOf("- second"));
+  assert.equal(start?.caretOffset, source.indexOf("second") + 3);
+  assert.equal(sourceLineJumpTarget(state, "end", serialize), null);
 });
 
 test("an exact root-list source maps the caret into an unusually laid-out nested item", async () => {

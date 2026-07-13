@@ -13,6 +13,7 @@ import { editorViewCtx, remarkStringifyOptionsCtx, serializerCtx } from "@milkdo
 import { headingKeymap, listItemKeymap, remarkInlineLinkPlugin } from "@milkdown/kit/preset/commonmark";
 import { strikethroughInputRule } from "@milkdown/kit/preset/gfm";
 import { replaceAll } from "@milkdown/kit/utils";
+import { AllSelection, TextSelection } from "@milkdown/kit/prose/state";
 import {
   codeBoundaryDeletionKeyDirection,
   codeBoundaryNavigationSourceOffset,
@@ -20,6 +21,10 @@ import {
   codeBoundarySelectionKeyDirection,
   codeBoundarySourcePosition,
   codeContentSourcePosition,
+  codeDragDocumentRange,
+  documentDragIntoCodeRange,
+  isEditorHistoryShortcut,
+  isEditorSelectAllShortcut,
   tetherCodeExtensions,
   tetherCodeLanguageLabel,
   tetherCodeLanguages,
@@ -79,13 +84,18 @@ import {
   sourceFaithfulUpperTaskInputRule
 } from "./lib/markdownList.js";
 import {
+  applyDocumentSourceJump,
+  activateDocumentSourceSelection,
   activateMarkdownBlockSourceAt,
   activateMarkdownSourceAt,
   activateMarkdownTableSourceAt,
   continuousMarkdownSource,
+  documentSourceOffsetAtPosition,
   enclosingCodeBlock,
   flushActiveMarkdownSource,
+  markdownSourceTargetFromPointer,
   markdownSyntaxPlugin,
+  sourceDocumentJumpEdge,
   sourceFaithfulHeadingKeymapConfig,
   sourceFaithfulHeadingBackspaceKeymap,
   sourceFaithfulListItemKeymapConfig,
@@ -341,6 +351,44 @@ export default function WysiwygSurface({
       event.stopPropagation();
       activateMarkdownTableSourceAt(view, position);
     };
+    const focusTableTextFromPointer = (event) => {
+      if (readOnlyRef.current || event.button !== 0) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const paragraph = target?.closest(".milkdown-table-block table p");
+      if (!paragraph || target?.closest("button, input, textarea")) return;
+      const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+      const pointerTarget = view ? markdownSourceTargetFromPointer(view, event) : null;
+      if (!view || !pointerTarget) return;
+      pendingTableDrag = { view, anchor: pointerTarget.position };
+      activateMarkdownSourceAt(view, pointerTarget.position, {
+        atomPosition: pointerTarget.atomPosition ?? null,
+        sourceOffset: pointerTarget.sourceOffset ?? null
+      });
+      // The table node view otherwise turns a click near a cell-text edge into
+      // a paragraph NodeSelection. Own the captured pointer so a text caret wins.
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    const updateTableDragSelection = (event) => {
+      const pending = pendingTableDrag;
+      if (!pending || readOnlyRef.current || (event.type === "mousemove" && !(event.buttons & 1))) return;
+      const target = markdownSourceTargetFromPointer(pending.view, event);
+      if (!target || target.position === pending.anchor) return;
+      const doc = pending.view.state.doc;
+      const anchor = Math.max(0, Math.min(doc.content.size, pending.anchor));
+      const head = Math.max(0, Math.min(doc.content.size, target.position));
+      const selection = TextSelection.create(doc, anchor, head);
+      const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+      if (!serializer || !activateDocumentSourceSelection(pending.view, selection, serializer)) {
+        pending.view.dispatch(pending.view.state.tr.setSelection(selection).scrollIntoView());
+        pending.view.focus();
+      }
+    };
+    const finishTableDragSelection = (event) => {
+      if (!pendingTableDrag) return;
+      updateTableDragSelection(event);
+      pendingTableDrag = null;
+    };
     const activateBlockFormulaSource = (event) => {
       if (readOnlyRef.current) return;
       if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
@@ -367,11 +415,51 @@ export default function WysiwygSurface({
       event.stopPropagation();
       activateMarkdownBlockSourceAt(view, position);
     };
+    const handleCodeDocumentJump = (event) => {
+      if (readOnlyRef.current || event.isComposing || event.keyCode === 229) return;
+      if (!sourceDocumentJumpEdge(event)) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const codeView = tetherCodeViewForElement(target);
+      const block = target?.closest(".milkdown-code-block");
+      const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+      const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+      if (!codeView || !block || !view || !serializer) return;
+
+      let codeBlock;
+      try {
+        codeBlock = enclosingCodeBlock(view.state.doc, view.posAtDOM(block, 0, -1));
+      } catch {
+        return;
+      }
+      if (!codeBlock) return;
+      const codeSelection = codeView.state.selection.main;
+      const sourceOffsetForCodePosition = (position) => documentSourceOffsetAtPosition(
+        view.state,
+        codeContentSourcePosition(codeBlock.position, position),
+        serializer,
+        "forward"
+      );
+      const sourceHead = sourceOffsetForCodePosition(codeSelection.head);
+      const sourceAnchor = sourceOffsetForCodePosition(codeSelection.anchor);
+      if (!Number.isFinite(sourceHead)) return;
+      if (!applyDocumentSourceJump(view, event, serializer, sourceHead, sourceAnchor)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
     const handleCodeBoundaryKey = (event) => {
       if (readOnlyRef.current) return;
       if (event.isComposing || event.keyCode === 229) return;
       const target = event.target instanceof Element ? event.target : null;
       const codeView = tetherCodeViewForElement(target);
+      if (codeView && isEditorSelectAllShortcut(event)) {
+        const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+        if (!view) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        view.dispatch(view.state.tr.setSelection(new AllSelection(view.state.doc)));
+        view.focus();
+        return;
+      }
       const selectionDirection = codeView
         ? codeBoundarySelectionKeyDirection(codeView.state, event)
         : null;
@@ -454,6 +542,201 @@ export default function WysiwygSurface({
           sourceOffset
         }
       );
+    };
+    let pendingCodeDrag = null;
+    let pendingDocumentDrag = null;
+    let pendingTableDrag = null;
+    let codeDragFinishFrame = 0;
+    let historyFocusFrame = 0;
+    const restoreFocusAfterHistory = (event) => {
+      if (readOnlyRef.current || !isEditorHistoryShortcut(event)) return;
+      const target = event.target;
+      if (!(target instanceof Node) || !host.contains(target)) return;
+      const targetElement = target instanceof Element ? target : target.parentElement;
+      const originalCodeView = tetherCodeViewForElement(targetElement);
+      const originalView = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+      const block = targetElement?.closest(".milkdown-code-block");
+      let codeTarget = null;
+      if (originalCodeView && originalView && block) {
+        try {
+          const codeBlock = enclosingCodeBlock(
+            originalView.state.doc,
+            originalView.posAtDOM(block, 0, -1)
+          );
+          if (codeBlock) {
+            codeTarget = {
+              position: codeBlock.position,
+              head: originalCodeView.state.selection.main.head
+            };
+          }
+        } catch {
+          // The code node is already being replaced; the document fallback
+          // below will still restore a usable caret.
+        }
+      }
+      if (historyFocusFrame) window.cancelAnimationFrame(historyFocusFrame);
+      const restore = (remaining) => {
+        historyFocusFrame = window.requestAnimationFrame(() => {
+          historyFocusFrame = 0;
+          if (disposed || !host.isConnected) return;
+          // Give the code node view two frames to tear down and rebuild before
+          // focusing it; focusing the outgoing instance only loses the caret
+          // again when Milkdown replaces its DOM.
+          if (remaining > 6) {
+            restore(remaining - 1);
+            return;
+          }
+          const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+          if (!view) return;
+          const active = host.ownerDocument.activeElement;
+          if (
+            active
+            && active !== host.ownerDocument.body
+            && active !== view.dom
+          ) return;
+
+          if (codeTarget) {
+            const node = view.state.doc.nodeAt(codeTarget.position);
+            const nodeDOM = node?.type.name === "code_block"
+              ? view.nodeDOM(codeTarget.position)
+              : null;
+            const rebuiltCodeView = nodeDOM instanceof Element
+              ? tetherCodeViewForElement(nodeDOM.querySelector(".cm-content"))
+              : null;
+            if (rebuiltCodeView) {
+              const selectedCode = enclosingCodeBlock(
+                view.state.doc,
+                view.state.selection.from
+              );
+              const mappedHead = selectedCode?.position === codeTarget.position
+                ? view.state.selection.from - codeTarget.position - 1
+                : codeTarget.head;
+              const head = Math.max(
+                0,
+                Math.min(rebuiltCodeView.state.doc.length, mappedHead)
+              );
+              rebuiltCodeView.dispatch({ selection: { anchor: head }, scrollIntoView: true });
+              rebuiltCodeView.focus();
+              return;
+            }
+          }
+          if (remaining > 1) restore(remaining - 1);
+          else view.focus();
+        });
+      };
+      restore(8);
+    };
+    const beginCodeDragSelection = (event) => {
+      if (readOnlyRef.current || event.button !== 0) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const codeView = tetherCodeViewForElement(target);
+      const block = target?.closest(".milkdown-code-block");
+      const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+      if (!target || !view) return;
+      pendingCodeDrag = null;
+      pendingDocumentDrag = null;
+      if (!codeView || !block) {
+        if (
+          !view.dom.contains(target)
+          || target.closest("button, input, textarea, select, .tether-continuous-source")
+        ) return;
+        const hit = view.posAtCoords({ left: event.clientX, top: event.clientY });
+        if (hit) pendingDocumentDrag = { anchor: hit.pos };
+        return;
+      }
+      let blockPosition;
+      try {
+        blockPosition = view.posAtDOM(block, 0, -1);
+      } catch {
+        return;
+      }
+      const codeBlock = enclosingCodeBlock(view.state.doc, blockPosition);
+      if (!codeBlock) return;
+      pendingCodeDrag = { block, blockPosition: codeBlock.position, codeView };
+    };
+    const finishCodeDragSelection = (event) => {
+      const pending = pendingCodeDrag;
+      const pendingDocument = pendingDocumentDrag;
+      pendingCodeDrag = null;
+      pendingDocumentDrag = null;
+      if ((!pending && !pendingDocument) || readOnlyRef.current) return;
+      if (pendingDocument) {
+        const targetAtPoint = document.elementFromPoint(event.clientX, event.clientY);
+        const block = targetAtPoint?.closest(".milkdown-code-block");
+        const codeView = tetherCodeViewForElement(targetAtPoint);
+        if (!block || !codeView) return;
+        const point = { left: event.clientX, top: event.clientY };
+        if (codeDragFinishFrame) window.cancelAnimationFrame(codeDragFinishFrame);
+        codeDragFinishFrame = window.requestAnimationFrame(() => {
+          codeDragFinishFrame = 0;
+          const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+          const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+          if (!view || !serializer || !block.isConnected) return;
+          let blockPosition;
+          try {
+            blockPosition = view.posAtDOM(block, 0, -1);
+          } catch {
+            return;
+          }
+          const codeBlock = enclosingCodeBlock(view.state.doc, blockPosition);
+          const codeHead = codeView.posAtCoords({ x: point.left, y: point.top });
+          if (!codeBlock || codeHead == null) return;
+          const range = documentDragIntoCodeRange(
+            codeBlock.position,
+            codeBlock.node.content.size,
+            pendingDocument.anchor,
+            codeHead
+          );
+          if (!range) return;
+          const anchor = Math.min(range.anchor, view.state.doc.content.size);
+          const head = Math.min(range.head, view.state.doc.content.size);
+          activateDocumentSourceSelection(
+            view,
+            TextSelection.create(view.state.doc, anchor, head),
+            serializer
+          );
+        });
+        return;
+      }
+      // CodeMirror captures the pointer, so mouseup.target can still be inside
+      // the code DOM after the pointer has visibly crossed into surrounding
+      // prose. Geometry is the authoritative boundary here.
+      const blockRect = pending.block.getBoundingClientRect();
+      const endedInsideBlock = event.clientX >= blockRect.left
+        && event.clientX <= blockRect.right
+        && event.clientY >= blockRect.top
+        && event.clientY <= blockRect.bottom;
+      const hostRect = host.getBoundingClientRect();
+      const endedInsideHost = event.clientX >= hostRect.left
+        && event.clientX <= hostRect.right
+        && event.clientY >= hostRect.top
+        && event.clientY <= hostRect.bottom;
+      if (endedInsideBlock || !endedInsideHost) return;
+      const point = { left: event.clientX, top: event.clientY };
+      if (codeDragFinishFrame) window.cancelAnimationFrame(codeDragFinishFrame);
+      codeDragFinishFrame = window.requestAnimationFrame(() => {
+        codeDragFinishFrame = 0;
+        const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+        const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+        if (!view || !serializer || !pending.block.isConnected) return;
+        const hit = view.posAtCoords(point);
+        const node = view.state.doc.nodeAt(pending.blockPosition);
+        if (!hit || node?.type.name !== "code_block") return;
+        const range = codeDragDocumentRange(
+          pending.blockPosition,
+          node.content.size,
+          pending.codeView.state.selection.main.anchor,
+          hit.pos
+        );
+        if (!range) return;
+        const anchor = Math.min(range.anchor, view.state.doc.content.size);
+        const head = Math.min(range.head, view.state.doc.content.size);
+        activateDocumentSourceSelection(
+          view,
+          TextSelection.create(view.state.doc, anchor, head),
+          serializer
+        );
+      });
     };
     const prepareMarkdownWidgets = () => {
       const readOnly = readOnlyRef.current;
@@ -543,10 +826,17 @@ export default function WysiwygSurface({
     const previewObserver = new MutationObserver(prepareMarkdownWidgets);
     host.addEventListener("mousedown", ensureSyntheticTrailingAfterPointer, true);
     host.addEventListener("keydown", ensureSyntheticTrailing, true);
+    host.addEventListener("keydown", restoreFocusAfterHistory, true);
     host.addEventListener("beforeinput", ensureSyntheticTrailing, true);
     host.addEventListener("paste", ensureSyntheticTrailing, true);
     host.addEventListener("drop", ensureSyntheticTrailing, true);
+    host.addEventListener("keydown", handleCodeDocumentJump, true);
     host.addEventListener("keydown", handleCodeBoundaryKey, true);
+    host.addEventListener("mousedown", beginCodeDragSelection, true);
+    host.addEventListener("mousedown", focusTableTextFromPointer, true);
+    window.addEventListener("mousemove", updateTableDragSelection, true);
+    window.addEventListener("mouseup", finishTableDragSelection, true);
+    window.addEventListener("mouseup", finishCodeDragSelection, true);
     host.addEventListener("paste", blockTransientImage, true);
     host.addEventListener("drop", blockTransientImage, true);
     host.addEventListener("click", blockReadingCodeInteraction, true);
@@ -722,10 +1012,17 @@ export default function WysiwygSurface({
       disposed = true;
       host.removeEventListener("mousedown", ensureSyntheticTrailingAfterPointer, true);
       host.removeEventListener("keydown", ensureSyntheticTrailing, true);
+      host.removeEventListener("keydown", restoreFocusAfterHistory, true);
       host.removeEventListener("beforeinput", ensureSyntheticTrailing, true);
       host.removeEventListener("paste", ensureSyntheticTrailing, true);
       host.removeEventListener("drop", ensureSyntheticTrailing, true);
+      host.removeEventListener("keydown", handleCodeDocumentJump, true);
       host.removeEventListener("keydown", handleCodeBoundaryKey, true);
+      host.removeEventListener("mousedown", beginCodeDragSelection, true);
+      host.removeEventListener("mousedown", focusTableTextFromPointer, true);
+      window.removeEventListener("mousemove", updateTableDragSelection, true);
+      window.removeEventListener("mouseup", finishTableDragSelection, true);
+      window.removeEventListener("mouseup", finishCodeDragSelection, true);
       host.removeEventListener("paste", blockTransientImage, true);
       host.removeEventListener("drop", blockTransientImage, true);
       host.removeEventListener("click", blockReadingCodeInteraction, true);
@@ -743,6 +1040,8 @@ export default function WysiwygSurface({
       if (copyFeedbackTimer) window.clearTimeout(copyFeedbackTimer);
       if (settleFrame) window.cancelAnimationFrame(settleFrame);
       if (secondSettleFrame) window.cancelAnimationFrame(secondSettleFrame);
+      if (codeDragFinishFrame) window.cancelAnimationFrame(codeDragFinishFrame);
+      if (historyFocusFrame) window.cancelAnimationFrame(historyFocusFrame);
       if (crepeRef.current === crepe) crepeRef.current = null;
       if (created) void crepe.destroy();
     };

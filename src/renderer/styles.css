@@ -2060,7 +2060,7 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror ol {
   margin-top: 0;
   margin-bottom: 18px;
-  padding-left: 24px;
+  padding-inline-start: 12px;
 }
 
 .tether-wysiwyg .ProseMirror ul ul,
@@ -2073,17 +2073,44 @@ textarea:focus-visible,
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block > .list-item {
   min-height: 26px;
-  gap: 8px;
+  gap: 5px;
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label-wrapper,
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label {
-  width: 22px;
+  width: 18px;
   height: 26px;
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label {
   padding: 1px 0;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.bullet,
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered {
+  color: var(--ink2);
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label svg {
+  width: 18px;
+  height: 18px;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.bullet svg {
+  fill: currentColor;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered,
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label-wrapper:has(.label.ordered) {
+  width: 22px;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered {
+  justify-content: flex-end;
+  font-family: var(--ui);
+  font-size: 0.86em;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
 }
 
 .tether-wysiwyg .ProseMirror .list-item .content-dom > p {
@@ -2813,6 +2840,7 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .milkdown-code-block .cm-content {
+  min-height: 1.62em;
   padding: 0 16px 2px 8px;
 }
 

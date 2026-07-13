@@ -2,7 +2,7 @@ import { bulletListSchema, orderedListSchema } from "@milkdown/kit/preset/common
 import { extendListItemSchemaForTask } from "@milkdown/kit/preset/gfm";
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import { InputRule, wrappingInputRule } from "@milkdown/kit/prose/inputrules";
-import { Plugin } from "@milkdown/kit/prose/state";
+import { Plugin, TextSelection } from "@milkdown/kit/prose/state";
 import { $inputRule, $prose, $remark, $view } from "@milkdown/kit/utils";
 import { defaultHandlers } from "mdast-util-to-markdown";
 
@@ -368,6 +368,21 @@ function listItemLabelClass(node) {
   return node.attrs.checked ? "checked" : "unchecked";
 }
 
+export function isInteractiveTaskMarker(node) {
+  return node?.attrs?.checked != null;
+}
+
+export function listItemTextStart(position, node) {
+  if (!Number.isFinite(position) || !node) return null;
+  let childPosition = position + 1;
+  let textStart = null;
+  node.forEach((child) => {
+    if (textStart == null && child.isTextblock) textStart = childPosition + 1;
+    childPosition += child.nodeSize;
+  });
+  return textStart;
+}
+
 // Milkdown's stock list-item view replays a captured TextSelection in a later
 // animation frame. Its equality guard accepts a structurally equal replacement
 // document, even though ProseMirror selections must belong to the exact current
@@ -411,16 +426,32 @@ export const sourceFaithfulListItemView = $view(
         });
         label.innerHTML = typeof icon === "string" ? icon.trim() : "";
       };
-      const toggleChecked = (event) => {
+      const handleMarkerPointerDown = (event) => {
+        if (!isInteractiveTaskMarker(node)) {
+          if (!view.editable) return;
+          const position = getPos();
+          const currentNode = position == null ? null : view.state.doc.nodeAt(position);
+          const caret = listItemTextStart(position, currentNode);
+          if (caret == null) return;
+          event.preventDefault();
+          event.stopPropagation();
+          view.dispatch(
+            view.state.tr
+              .setSelection(TextSelection.create(view.state.doc, caret))
+              .scrollIntoView()
+          );
+          view.focus();
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
-        if (!view.editable || node.attrs.checked == null) return;
+        if (!view.editable) return;
         if (!view.hasFocus()) view.focus();
         const position = getPos();
         if (position == null || view.state.doc.nodeAt(position)?.type !== node.type) return;
         view.dispatch(view.state.tr.setNodeAttribute(position, "checked", !node.attrs.checked));
       };
-      labelWrapper.addEventListener("pointerdown", toggleChecked);
+      labelWrapper.addEventListener("pointerdown", handleMarkerPointerDown);
       render();
 
       return {
@@ -449,7 +480,7 @@ export const sourceFaithfulListItemView = $view(
           listItem.classList.remove("ProseMirror-selectednode");
         },
         destroy() {
-          labelWrapper.removeEventListener("pointerdown", toggleChecked);
+          labelWrapper.removeEventListener("pointerdown", handleMarkerPointerDown);
           dom.remove();
         }
       };

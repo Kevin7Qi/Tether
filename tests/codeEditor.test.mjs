@@ -4,6 +4,7 @@ import { EditorState } from "@codemirror/state";
 import {
   codeBoundaryDeletionKeyDirection,
   codeBoundaryDeletionDirection,
+  codeContentOffsetAtSourceOffset,
   codeBoundaryNavigationKeyDirection,
   codeBoundaryNavigationDirection,
   codeBoundaryNavigationSourceOffset,
@@ -11,9 +12,31 @@ import {
   codeBoundarySelectionDirection,
   codeBoundarySourcePosition,
   codeContentSourcePosition,
+  codeDragDocumentRange,
+  documentDragIntoCodeRange,
+  isEditorHistoryShortcut,
+  isEditorSelectAllShortcut,
   tetherCodeLanguageLabel,
   tetherCodeLanguages,
 } from "../src/renderer/lib/codeEditor.js";
+
+test("editor history shortcuts include undo and redo without matching unrelated modifiers", () => {
+  assert.equal(isEditorHistoryShortcut({ key: "z", metaKey: true }), true);
+  assert.equal(isEditorHistoryShortcut({ key: "Z", metaKey: true, shiftKey: true }), true);
+  assert.equal(isEditorHistoryShortcut({ key: "z", ctrlKey: true }), true);
+  assert.equal(isEditorHistoryShortcut({ key: "z", metaKey: true, altKey: true }), false);
+  assert.equal(isEditorHistoryShortcut({ key: "y", metaKey: true }), false);
+  assert.equal(isEditorHistoryShortcut({ key: "z" }), false);
+});
+
+test("editor Select All shortcuts escalate from CodeMirror to the Markdown document", () => {
+  assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true }), true);
+  assert.equal(isEditorSelectAllShortcut({ key: "A", ctrlKey: true }), true);
+  assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true, shiftKey: true }), false);
+  assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true, altKey: true }), false);
+  assert.equal(isEditorSelectAllShortcut({ key: "a" }), false);
+  assert.equal(isEditorSelectAllShortcut({ key: "z", metaKey: true }), false);
+});
 
 function codeState(head, length = 10, empty = true) {
   return {
@@ -85,6 +108,20 @@ test("CodeMirror boundary arrows enter the adjacent fenced-source character", ()
   );
 });
 
+test("raw fenced-source offsets map back into visible CodeMirror content", () => {
+  const source = "```js\r\nalpha\r\nbeta\r\n```";
+  const content = "alpha\nbeta";
+  assert.equal(
+    codeContentOffsetAtSourceOffset(source, content, source.indexOf("beta") + 2),
+    content.indexOf("beta") + 2
+  );
+  assert.equal(
+    codeContentOffsetAtSourceOffset(source, content, source.indexOf("```", 3)),
+    null
+  );
+  assert.equal(codeContentOffsetAtSourceOffset("```js\n```", "", "```js\n".length), 0);
+});
+
 test("empty code blocks still traverse their opening newline and closing fence", () => {
   const source = "~~~text\n~~~";
   const contentStart = source.indexOf("\n") + 1;
@@ -146,11 +183,22 @@ test("CodeMirror fence deletion ignores modifiers and targets the adjacent sourc
   assert.equal(codeContentSourcePosition(20, 7), 28);
 });
 
-test("code language choices use stable Markdown fence identifiers", () => {
+test("code mouse drags bridge a CodeMirror anchor to surrounding document prose", () => {
+  assert.deepEqual(codeDragDocumentRange(20, 12, 5, 40), { anchor: 26, head: 40 });
+  assert.deepEqual(codeDragDocumentRange(20, 12, 5, 8), { anchor: 26, head: 8 });
+  assert.deepEqual(codeDragDocumentRange(20, 12, 99, 40), { anchor: 33, head: 40 });
+  assert.equal(codeDragDocumentRange(20, 12, 5, 20), null);
+  assert.equal(codeDragDocumentRange(20, 12, 5, 34), null);
+  assert.deepEqual(documentDragIntoCodeRange(20, 12, 8, 5), { anchor: 8, head: 26 });
+  assert.deepEqual(documentDragIntoCodeRange(20, 12, 40, 99), { anchor: 40, head: 33 });
+  assert.equal(documentDragIntoCodeRange(20, 12, 22, 5), null);
+});
+
+test("code language choices include a real plain-text option and stable Markdown fence identifiers", async () => {
   assert.deepEqual(
     tetherCodeLanguages.map(({ name }) => name),
     [
-      "js", "ts", "json", "css", "scss", "sass", "html", "xml", "markdown", "python", "sql", "yaml",
+      "", "js", "ts", "json", "css", "scss", "sass", "html", "xml", "markdown", "python", "sql", "yaml",
       "cpp", "csharp", "go", "java", "kotlin", "swift", "rust", "ruby", "shell", "powershell", "toml",
       "lua", "diff"
     ]
@@ -158,6 +206,8 @@ test("code language choices use stable Markdown fence identifiers", () => {
   for (const { name, alias } of tetherCodeLanguages) {
     assert.ok(alias.includes(name), `${name} should load from its own picker value`);
   }
+  assert.ok(tetherCodeLanguages[0].alias.includes("text"));
+  assert.ok(await tetherCodeLanguages[0].load(), "plain text should actively clear stale syntax highlighting");
 });
 
 test("code language labels stay readable for canonical fence IDs and aliases", () => {
