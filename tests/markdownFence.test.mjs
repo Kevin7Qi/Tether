@@ -126,6 +126,14 @@ test("a fence grows only when edited content would collide with it", () => {
     tree.children[0].value += "\n~~~~";
   });
   assert.equal(result, "~~~~~js\nconst answer = 42;\n~~~~\n~~~~~\n");
+
+  const notAClosingLine = roundTrip(source, (tree) => {
+    tree.children[0].value += "\n~~~~not-a-close";
+  });
+  assert.equal(
+    notAClosingLine,
+    "~~~~js\nconst answer = 42;\n~~~~not-a-close\n~~~~~\n"
+  );
 });
 
 test("indented code keeps the existing canonical fenced output", () => {
@@ -135,6 +143,9 @@ test("indented code keeps the existing canonical fenced output", () => {
 test("an unchanged unclosed fence remains exact source instead of being repaired", () => {
   const source = "```js\ncode\n```After\n";
   assert.equal(roundTrip(source), source);
+  assert.equal(roundTrip("```js", (tree) => {
+    tree.children[0].lang = "ts";
+  }), "```ts\n");
 });
 
 test("fence annotation reads source coordinates without touching ordinary code nodes", () => {
@@ -162,6 +173,11 @@ test("nested fences preserve a longer physical closing run past container prefix
   assert.equal(code.fenceMarker, "~");
   assert.equal(code.fenceLength, 4);
   assert.equal(code.closingFenceLength, 5);
+
+  const crlf = "> ~~~~js\r\n> const quoted = true;\r\n> ~~~~~\r\n";
+  assert.equal(roundTrip(crlf, (nestedTree) => {
+    nestedTree.children[0].children[0].value = "const quoted = false;";
+  }), "> ~~~~js\r\n> const quoted = false;\r\n> ~~~~~\n");
 });
 
 test("Markdown stringify options compose the source-faithful code handler", () => {
@@ -181,6 +197,9 @@ test("Milkdown keeps fence attributes through a ProseMirror content edit", async
     fenceMarker: "~",
     fenceLength: 4,
     closingFenceLength: 5,
+    fenceClosed: true,
+    fenceLineEnding: "\n",
+    fenceTrailingLineEnding: "",
     fenceSource: source.trimEnd(),
     fenceSourceSignature: codeSemanticSignature({
       value: "const answer = 42;",
@@ -201,6 +220,35 @@ test("Milkdown keeps fence attributes through a ProseMirror content edit", async
   );
   const editedDoc = doc.type.create(null, [editedCode]);
   assert.equal(serialize(editedDoc), "~~~~js title=demo\nconst answer = 43;\n~~~~~\n");
+});
+
+test("edited fenced code preserves CRLF wrappers and unclosed source", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const crlf = "~~~~js title=demo\r\nconst answer = 42;\r\n~~~~~\r\n";
+  const crlfDoc = parse(crlf);
+  assert.equal(crlfDoc.firstChild.attrs.fenceLineEnding, "\r\n");
+  assert.equal(crlfDoc.firstChild.attrs.fenceClosed, true);
+  const editedCrlf = crlfDoc.firstChild.type.create(
+    crlfDoc.firstChild.attrs,
+    crlfDoc.type.schema.text("const answer = 43;")
+  );
+  assert.equal(
+    serialize(crlfDoc.type.create(crlfDoc.attrs, [editedCrlf])),
+    "~~~~js title=demo\r\nconst answer = 43;\r\n~~~~~\r\n"
+  );
+
+  const unclosed = "```js\r\ncode\r\n```After\r\n";
+  const unclosedDoc = parse(unclosed);
+  assert.equal(unclosedDoc.firstChild.attrs.fenceClosed, false);
+  assert.equal(unclosedDoc.firstChild.attrs.fenceLineEnding, "\r\n");
+  const editedUnclosed = unclosedDoc.firstChild.type.create(
+    unclosedDoc.firstChild.attrs,
+    unclosedDoc.type.schema.text(unclosedDoc.firstChild.textContent.replace("code", "changed"))
+  );
+  assert.equal(
+    serialize(unclosedDoc.type.create(unclosedDoc.attrs, [editedUnclosed])),
+    "```js\r\nchanged\r\n```After\r\n"
+  );
 });
 
 test("a partial code-to-prose selection includes the physical closing fence", async () => {

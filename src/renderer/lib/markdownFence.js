@@ -35,14 +35,28 @@ export function annotateFencedCodeMarkers(tree, file) {
         const opening = fenceRun(openingLine);
         const closing = closingFenceRun(closingLine);
         if (opening) {
+          const start = node.position?.start?.offset;
+          const openingLineEnd = Number.isFinite(start) ? source.indexOf("\n", start) : -1;
+          const lineEnding = openingLineEnd < 0
+            ? ""
+            : source[openingLineEnd - 1] === "\r" ? "\r\n" : "\n";
+          const validClosing = Boolean(
+            closing
+            && closing[0] === opening[0]
+            && closing.length >= opening.length
+          );
           node.fenceMarker = opening[0];
           node.fenceLength = opening.length;
-          node.closingFenceLength = closing?.[0] === opening[0] ? closing.length : opening.length;
+          node.closingFenceLength = validClosing ? closing.length : opening.length;
+          node.fenceClosed = validClosing;
+          node.fenceLineEnding = lineEnding;
           if (parent?.type === "root") {
-            const start = node.position?.start?.offset;
             const end = node.position?.end?.offset;
             if (Number.isFinite(start) && Number.isFinite(end)) {
               node.fenceSource = source.slice(start, end);
+              node.fenceTrailingLineEnding = node.fenceSource.endsWith("\r\n")
+                ? "\r\n"
+                : node.fenceSource.endsWith("\n") ? "\n" : "";
               node.fenceSourceSignature = codeSemanticSignature(node);
             }
           }
@@ -70,6 +84,9 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
       fenceMarker: { default: "`", validate: "string|null" },
       fenceLength: { default: 3, validate: "number" },
       closingFenceLength: { default: 3, validate: "number" },
+      fenceClosed: { default: true, validate: "boolean" },
+      fenceLineEnding: { default: "\n", validate: "string" },
+      fenceTrailingLineEnding: { default: "", validate: "string" },
       fenceSource: { default: null, validate: "string|null" },
       fenceSourceSignature: { default: null, validate: "string|null" },
       mathBlock: { default: false, validate: "boolean" },
@@ -88,6 +105,13 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
           fenceMarker: node.fenceMarker ?? null,
           fenceLength: node.fenceLength ?? 3,
           closingFenceLength: node.closingFenceLength ?? node.fenceLength ?? 3,
+          fenceClosed: node.fenceClosed !== false,
+          fenceLineEnding: node.fenceLineEnding === "\r\n"
+            ? "\r\n"
+            : node.fenceLineEnding === "" ? "" : "\n",
+          fenceTrailingLineEnding: node.fenceTrailingLineEnding === "\r\n"
+            ? "\r\n"
+            : node.fenceTrailingLineEnding === "\n" ? "\n" : "",
           fenceSource: node.fenceSource ?? null,
           fenceSourceSignature: node.fenceSourceSignature ?? null,
           mathBlock: Boolean(node.mathBlock),
@@ -121,6 +145,9 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
           fenceMarker: node.attrs.fenceMarker,
           fenceLength: node.attrs.fenceLength,
           closingFenceLength: node.attrs.closingFenceLength,
+          fenceClosed: node.attrs.fenceClosed,
+          fenceLineEnding: node.attrs.fenceLineEnding,
+          fenceTrailingLineEnding: node.attrs.fenceTrailingLineEnding,
           fenceSource: node.attrs.fenceSource,
           fenceSourceSignature: node.attrs.fenceSourceSignature
         });
@@ -129,16 +156,11 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
   };
 });
 
-function longestRun(value, marker) {
+function longestClosingRun(value, marker) {
   let longest = 0;
-  let current = 0;
-  for (const character of value) {
-    if (character === marker) {
-      current += 1;
-      longest = Math.max(longest, current);
-    } else {
-      current = 0;
-    }
+  for (const line of value.split(/\r?\n/)) {
+    const run = line.match(/^[\t ]{0,3}(`{3,}|~{3,})[\t ]*$/)?.[1];
+    if (run?.[0] === marker) longest = Math.max(longest, run.length);
   }
   return longest;
 }
@@ -168,10 +190,19 @@ export function sourceFaithfulCodeHandler(node, _parent, state, info) {
 
   const raw = node.value || "";
   const marker = node.fenceMarker === "~" ? "~" : "`";
-  const openingLength = Math.max(3, Number(node.fenceLength) || 3, longestRun(raw, marker) + 1);
+  const openingLength = Math.max(
+    3,
+    Number(node.fenceLength) || 3,
+    longestClosingRun(raw, marker) + 1
+  );
   const closingLength = Math.max(openingLength, Number(node.closingFenceLength) || openingLength);
   const opening = marker.repeat(openingLength);
   const closing = marker.repeat(closingLength);
+  const closed = node.fenceClosed !== false;
+  const storedLineEnding = node.fenceLineEnding === "\r\n"
+    ? "\r\n"
+    : node.fenceLineEnding === "" ? "" : "\n";
+  const lineEnding = storedLineEnding || (raw ? "\n" : "");
   const suffix = marker === "`" ? "GraveAccent" : "Tilde";
   const tracker = state.createTracker(info);
   const exit = state.enter("codeFenced");
@@ -199,9 +230,15 @@ export function sourceFaithfulCodeHandler(node, _parent, state, info) {
     metaExit();
   }
 
-  value += tracker.move("\n");
-  if (raw) value += tracker.move(`${raw}\n`);
-  value += tracker.move(closing);
+  value += tracker.move(lineEnding);
+  if (raw) {
+    value += tracker.move(raw.replace(/\r?\n/g, lineEnding || "\n"));
+    if (closed) value += tracker.move(lineEnding || "\n");
+  }
+  if (closed) value += tracker.move(closing);
+  else if (node.fenceTrailingLineEnding && !raw.endsWith("\n")) {
+    value += tracker.move(node.fenceTrailingLineEnding);
+  }
   exit();
   return value;
 }
