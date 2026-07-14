@@ -488,18 +488,40 @@ function sourceCharacterKind(character) {
 export function sourceWordOffset(source, offset, direction) {
   const bounded = Math.max(0, Math.min(source.length, offset));
   if (!source || !["backward", "forward"].includes(direction)) return bounded;
-  let next = bounded;
+  const boundaries = sourceCaretBoundaries(source);
+  const segments = boundaries.slice(0, -1).map((start, index) => {
+    const end = boundaries[index + 1];
+    const value = source.slice(start, end);
+    return { start, end, kind: sourceCharacterKind(value) };
+  });
   if (direction === "backward") {
-    while (next > 0 && sourceCharacterKind(source[next - 1]) === "space") next -= 1;
-    if (next === 0) return 0;
-    const kind = sourceCharacterKind(source[next - 1]);
-    while (next > 0 && sourceCharacterKind(source[next - 1]) === kind) next -= 1;
+    let index = segments.findLastIndex((segment) => segment.start < bounded);
+    let next = bounded;
+    while (index >= 0 && segments[index].kind === "space") {
+      next = segments[index].start;
+      index -= 1;
+    }
+    if (index < 0) return 0;
+    const kind = segments[index].kind;
+    while (index >= 0 && segments[index].kind === kind) {
+      next = segments[index].start;
+      index -= 1;
+    }
     return next;
   }
-  while (next < source.length && sourceCharacterKind(source[next]) === "space") next += 1;
-  if (next === source.length) return next;
-  const kind = sourceCharacterKind(source[next]);
-  while (next < source.length && sourceCharacterKind(source[next]) === kind) next += 1;
+  let index = segments.findIndex((segment) => segment.end > bounded);
+  if (index < 0) return source.length;
+  let next = bounded;
+  while (index < segments.length && segments[index].kind === "space") {
+    next = segments[index].end;
+    index += 1;
+  }
+  if (index >= segments.length) return source.length;
+  const kind = segments[index].kind;
+  while (index < segments.length && segments[index].kind === kind) {
+    next = segments[index].end;
+    index += 1;
+  }
   return next;
 }
 
@@ -523,18 +545,29 @@ export function sourcePointerSelectionRange(source, caret, clickCount = 1) {
     };
   }
   if (!source) return { start: 0, end: 0, direction: "none" };
-  let probe = Math.min(bounded, source.length - 1);
+  const boundaries = sourceCaretBoundaries(source);
+  const segments = boundaries.slice(0, -1).map((start, index) => {
+    const end = boundaries[index + 1];
+    return { start, end, kind: sourceCharacterKind(source.slice(start, end)) };
+  });
+  let index = segments.findIndex((segment) => bounded < segment.end);
+  if (index < 0) index = segments.length - 1;
   if (
-    probe > 0
-    && sourceCharacterKind(source[probe]) !== "word"
-    && sourceCharacterKind(source[probe - 1]) === "word"
-  ) probe -= 1;
-  const kind = sourceCharacterKind(source[probe]);
-  let start = probe;
-  let end = probe + 1;
-  while (start > 0 && sourceCharacterKind(source[start - 1]) === kind) start -= 1;
-  while (end < source.length && sourceCharacterKind(source[end]) === kind) end += 1;
-  return { start, end, direction: "forward" };
+    index > 0
+    && bounded === segments[index].start
+    && segments[index].kind !== "word"
+    && segments[index - 1].kind === "word"
+  ) index -= 1;
+  const kind = segments[index].kind;
+  let first = index;
+  let last = index;
+  while (first > 0 && segments[first - 1].kind === kind) first -= 1;
+  while (last + 1 < segments.length && segments[last + 1].kind === kind) last += 1;
+  return {
+    start: segments[first].start,
+    end: segments[last].end,
+    direction: "forward"
+  };
 }
 
 export function sourceWordJumpTarget(state, event, serializer) {
@@ -1821,19 +1854,58 @@ export function activateDocumentSourceSelection(view, selection, serializer) {
   return true;
 }
 
-function sourceOffsetAfterCharacter(source, offset, direction) {
-  if (direction === "forward") {
-    if (source.slice(offset, offset + 2) === "\r\n") return offset + 2;
-    const point = source.codePointAt(offset);
-    return point == null ? offset : offset + (point > 0xFFFF ? 2 : 1);
+let sourceGraphemeSegmenter = null;
+
+export function sourceCaretBoundaries(source) {
+  const value = String(source ?? "");
+  if (typeof Intl?.Segmenter === "function") {
+    sourceGraphemeSegmenter ||= new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    return [
+      ...new Set([
+        0,
+        ...Array.from(sourceGraphemeSegmenter.segment(value), ({ index, segment }) =>
+          index + segment.length
+        )
+      ])
+    ];
   }
-  if (source.slice(Math.max(0, offset - 2), offset) === "\r\n") return offset - 2;
-  const previous = source.charCodeAt(offset - 1);
-  const beforePrevious = source.charCodeAt(offset - 2);
-  return previous >= 0xDC00 && previous <= 0xDFFF
-    && beforePrevious >= 0xD800 && beforePrevious <= 0xDBFF
-    ? offset - 2
-    : offset - 1;
+
+  const boundaries = [0];
+  let offset = 0;
+  for (const point of value) {
+    offset += point.length;
+    // Keep a Windows line ending indivisible even in the compatibility path.
+    if (point === "\r" && value[offset] === "\n") continue;
+    boundaries.push(offset);
+  }
+  if (boundaries.at(-1) !== value.length) boundaries.push(value.length);
+  return boundaries;
+}
+
+function sourceOffsetAfterCharacter(source, offset, direction) {
+  const bounded = Math.max(0, Math.min(source.length, offset));
+  const boundaries = sourceCaretBoundaries(source);
+  if (direction === "forward") {
+    return boundaries.find((boundary) => boundary > bounded) ?? bounded;
+  }
+  return boundaries.findLast((boundary) => boundary < bounded) ?? bounded;
+}
+
+export function sourceCharacterDeletionRange(source, caret, direction) {
+  const bounded = Math.max(0, Math.min(source.length, caret));
+  if (direction === "backward") {
+    return {
+      from: sourceOffsetAfterCharacter(source, bounded, "backward"),
+      to: bounded
+    };
+  }
+  if (direction === "forward") {
+    return {
+      from: bounded,
+      to: sourceOffsetAfterCharacter(source, bounded, "forward")
+    };
+  }
+  return { from: bounded, to: bounded };
 }
 
 export function extendSourceSelection(sourceSelection, direction) {
@@ -2145,10 +2217,12 @@ function continuousSourceEditor(
   let startingCaret = Math.max(0, Math.min(editor.value.length, initialCaret));
   let startingSelection = null;
   if (initialDeleteDirection === "backward" && startingCaret > 0) {
-    editor.value = `${editor.value.slice(0, startingCaret - 1)}${editor.value.slice(startingCaret)}`;
-    startingCaret -= 1;
+    const deletion = sourceCharacterDeletionRange(editor.value, startingCaret, "backward");
+    editor.value = `${editor.value.slice(0, deletion.from)}${editor.value.slice(deletion.to)}`;
+    startingCaret = deletion.from;
   } else if (initialDeleteDirection === "forward" && startingCaret < editor.value.length) {
-    editor.value = `${editor.value.slice(0, startingCaret)}${editor.value.slice(startingCaret + 1)}`;
+    const deletion = sourceCharacterDeletionRange(editor.value, startingCaret, "forward");
+    editor.value = `${editor.value.slice(0, deletion.from)}${editor.value.slice(deletion.to)}`;
   } else if (initialSourceSelection) {
     startingSelection = {
       start: Math.max(0, Math.min(editor.value.length, initialSourceSelection.start)),
@@ -2191,7 +2265,7 @@ function continuousSourceEditor(
       + editor.scrollLeft;
     let nearest = 0;
     let nearestDistance = Number.POSITIVE_INFINITY;
-    for (let index = 0; index <= editor.value.length; index += 1) {
+    for (const index of sourceCaretBoundaries(editor.value)) {
       const distance = Math.abs(context.measureText(editor.value.slice(0, index)).width - textX);
       if (distance >= nearestDistance) continue;
       nearest = index;

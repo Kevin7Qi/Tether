@@ -35,6 +35,8 @@ import {
   mappedPosition,
   moveSourceSelectionHead,
   sourceCaretOffset,
+  sourceCaretBoundaries,
+  sourceCharacterDeletionRange,
   sourceBoundarySelectionRange,
   sourceInitialSelectionRange,
   sourceDocumentJumpEdge,
@@ -1612,6 +1614,51 @@ test("source boundary selections keep CRLF and Unicode code points indivisible",
     start: 1,
     end: 3,
     direction: "backward"
+  });
+});
+
+test("source editing uses native-like grapheme boundaries for deletion and pointer carets", () => {
+  const source = "A👨‍👩‍👧‍👦e\u0301\r\nB";
+  const afterFamily = source.indexOf("e");
+  const afterAccent = source.indexOf("\r");
+  const afterCrlf = source.indexOf("\n") + 1;
+  assert.deepEqual(sourceCaretBoundaries(source), [
+    0,
+    1,
+    afterFamily,
+    afterAccent,
+    afterCrlf,
+    source.length
+  ]);
+  assert.deepEqual(sourceCharacterDeletionRange(source, afterFamily, "backward"), {
+    from: 1,
+    to: afterFamily
+  });
+  assert.deepEqual(sourceCharacterDeletionRange(source, 1, "forward"), {
+    from: 1,
+    to: afterFamily
+  });
+  assert.deepEqual(sourceCharacterDeletionRange(source, afterCrlf, "backward"), {
+    from: afterAccent,
+    to: afterCrlf
+  });
+  assert.deepEqual(sourceCharacterDeletionRange(source, afterFamily, "forward"), {
+    from: afterFamily,
+    to: afterAccent
+  });
+  assert.equal(sourceWordOffset("e\u0301", "e\u0301".length, "backward"), 0);
+  assert.equal(sourceWordOffset("e\u0301", 0, "forward"), "e\u0301".length);
+  assert.equal(sourceWordOffset(source, 1, "forward"), afterFamily);
+  assert.equal(sourceWordOffset(source, afterFamily, "backward"), 1);
+  assert.deepEqual(sourcePointerSelectionRange("e\u0301 value", 1, 2), {
+    start: 0,
+    end: 2,
+    direction: "forward"
+  });
+  assert.deepEqual(sourcePointerSelectionRange("👨‍👩‍👧‍👦", 4, 2), {
+    start: 0,
+    end: "👨‍👩‍👧‍👦".length,
+    direction: "forward"
   });
 });
 

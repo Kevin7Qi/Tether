@@ -17,12 +17,18 @@ import {
 import { Clock, Container, Ctx } from "@milkdown/kit/ctx";
 import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import {
-  docSchema,
   imageAttr,
   linkAttr,
-  paragraphSchema,
   textSchema
 } from "@milkdown/kit/preset/commonmark";
+import {
+  sourceFaithfulDocumentRemark,
+  sourceFaithfulDocumentSchema
+} from "../src/renderer/lib/markdownDocument.js";
+import {
+  sourceFaithfulParagraphRemark,
+  sourceFaithfulParagraphSchema
+} from "../src/renderer/lib/markdownParagraph.js";
 import {
   annotateReferenceSources,
   referenceSyncTransaction,
@@ -69,8 +75,10 @@ async function milkdownTransformer() {
   const serializerHandler = serializer(ctx);
   ctx.inject(editorViewCtx, { state: { doc: { lastChild: null } } });
   const userHandlers = [
-    docSchema,
-    paragraphSchema,
+    sourceFaithfulDocumentRemark,
+    sourceFaithfulDocumentSchema,
+    sourceFaithfulParagraphRemark,
+    sourceFaithfulParagraphSchema,
     textSchema,
     linkAttr,
     imageAttr,
@@ -363,4 +371,35 @@ test("text selections across rendered images use the full physical image token",
   const edit = sourceClipboardEdit(state, "image", parse, serialize);
   assert.equal(edit?.selectedText, token);
   assert.equal(serialize(edit.transaction.doc), "Before image after.\n");
+});
+
+test("mixed link-to-image selections follow one literal Markdown source interval", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "Start [label](url  'single') + ![alt](x.png) end\n";
+  const doc = parse(source);
+  const labelPosition = textPosition(doc, "label");
+  let imagePosition = null;
+  doc.descendants((node, pos) => {
+    if (imagePosition == null && node.type.name === "image") imagePosition = pos;
+  });
+  const imageToken = "![alt](x.png)";
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, labelPosition + 2, imagePosition + 3)
+  });
+  const physicalFrom = source.indexOf("label") + 2;
+  const physicalTo = source.indexOf(imageToken) + imageToken.length + 2;
+  const selectedSource = source.slice(physicalFrom, physicalTo);
+  assert.equal(
+    sourceSelectionText(sourceSelectionFromDocumentSelection(state, serialize)),
+    selectedSource
+  );
+  assert.equal(sourceAwareClipboardText(state, serialize), selectedSource);
+
+  const edit = sourceClipboardEdit(state, "X", parse, serialize);
+  assert.equal(edit?.selectedText, selectedSource);
+  assert.equal(
+    serialize(edit.transaction.doc),
+    `${source.slice(0, physicalFrom)}X${source.slice(physicalTo)}`
+  );
 });
