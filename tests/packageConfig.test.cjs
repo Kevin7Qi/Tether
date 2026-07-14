@@ -81,7 +81,7 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(surface, /codeBoundaryDeletionKeyDirection/);
   assert.match(surface, /codeTabEdit/);
   assert.match(surface, /emptyCodeEnterSource/);
-  assert.match(surface, /emptyCodeSourceHistoryDirection/);
+  assert.match(surface, /codeSourceOnlyHistoryDirection/);
   assert.match(surface, /undo as undoProseMirror/);
   assert.match(surface, /redo as redoProseMirror/);
   assert.match(surface, /fenceSourceSignature: codeSemanticSignature/);
@@ -215,6 +215,8 @@ test("CodeMirror text insertion at an immediate closing fence edits literal Mark
   assert.match(surface, /emptyCodeClosingFenceSourceOffset\(source, codeBlock\.node\.textContent\)/);
   assert.match(surface, /documentSourceUnitStartOffset\(view\.state, unit, serializer\)/);
   assert.match(surface, /replaceSourceSelectionTransaction\(/);
+  assert.match(surface, /codeSourceOnlyHistory = \{/);
+  assert.match(surface, /afterContent: afterCodeBlock\.node\.textContent/);
   assert.match(surface, /const handleCodeSourceOnlyBeforeInput = \(event\) =>/);
   assert.match(surface, /const handleCodeSourceOnlyTransfer = \(event\) =>/);
   assert.match(surface, /addEventListener\("beforeinput", handleCodeSourceOnlyBeforeInput, true\)/);

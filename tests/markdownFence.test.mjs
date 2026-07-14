@@ -17,7 +17,9 @@ import {
 } from "@milkdown/kit/core";
 import { Clock, Container, Ctx } from "@milkdown/kit/ctx";
 import { AllSelection, EditorState, TextSelection } from "@milkdown/kit/prose/state";
+import { history, redo, undo } from "@milkdown/kit/prose/history";
 import { paragraphSchema, textSchema } from "@milkdown/kit/preset/commonmark";
+import { emptyCodeClosingFenceSourceOffset } from "../src/renderer/lib/codeEditor.js";
 import {
   sourceFaithfulDocumentRemark,
   sourceFaithfulDocumentSchema
@@ -35,8 +37,11 @@ import {
 } from "../src/renderer/lib/markdownFence.js";
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
+  continuousMarkdownSource,
   documentGapSourceSelection,
+  documentSourceSegments,
   documentSourceTarget,
+  documentSourceUnitStartOffset,
   replaceSourceSelectionTransaction,
   sourceAwareClipboardText,
   sourceClipboardEdit,
@@ -485,7 +490,7 @@ test("typing before an immediate closing fence inserts raw source without invent
   const source = "```text\n```\n";
   const closingStart = source.lastIndexOf("```");
   const doc = parse(source);
-  const state = EditorState.create({ doc });
+  const state = EditorState.create({ doc, plugins: [history()] });
   const transaction = replaceSourceSelectionTransaction(state, {
     anchor: closingStart,
     head: closingStart,
@@ -500,6 +505,60 @@ test("typing before an immediate closing fence inserts raw source without invent
   );
   assert.equal(transaction.doc.firstChild.attrs.fenceClosed, false);
   assert.equal(transaction.doc.firstChild.textContent, "x```");
+  assert.equal(transaction.selection.$from.parentOffset, 1);
+
+  const applied = state.apply(transaction);
+  let undone = null;
+  assert.equal(undo(applied, (next) => { undone = applied.apply(next); }), true);
+  assert.equal(serialize(undone.doc), source);
+  let redone = null;
+  assert.equal(redo(undone, (next) => { redone = undone.apply(next); }), true);
+  assert.equal(
+    serialize(redone.doc),
+    `${source.slice(0, closingStart)}x${source.slice(closingStart)}`
+  );
+});
+
+test("empty-fence insertion maps its local closing marker into the full document source", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "Before\n\n```text\n```\n\nAfter\n";
+  const doc = parse(source);
+  const state = EditorState.create({ doc });
+  let codePosition = null;
+  state.doc.descendants((node, position) => {
+    if (node.type.name !== "code_block") return true;
+    codePosition = position;
+    return false;
+  });
+  assert.ok(Number.isFinite(codePosition));
+  const codeNode = state.doc.nodeAt(codePosition);
+  const unit = {
+    from: codePosition,
+    to: codePosition + codeNode.nodeSize,
+    kind: "block",
+    name: "code_block"
+  };
+  const codeSource = continuousMarkdownSource(state, unit, serialize);
+  const unitStart = documentSourceUnitStartOffset(state, unit, serialize);
+  const localOffset = emptyCodeClosingFenceSourceOffset(codeSource, codeNode.textContent);
+  const documentSource = documentSourceSegments(state, serialize);
+  assert.equal(documentSource.fullSource, source);
+  assert.ok(Number.isFinite(unitStart));
+  assert.equal(localOffset, "```text\n".length);
+
+  const sourceOffset = unitStart + localOffset;
+  const transaction = replaceSourceSelectionTransaction(state, {
+    anchor: sourceOffset,
+    head: sourceOffset,
+    fullSource: documentSource.fullSource,
+    boundary: codePosition + 1
+  }, "x", parse);
+  assert.ok(transaction);
+  assert.equal(
+    serialize(transaction.doc),
+    `${source.slice(0, sourceOffset)}x${source.slice(sourceOffset)}`
+  );
+  assert.equal(transaction.selection.$from.parent.type.name, "code_block");
   assert.equal(transaction.selection.$from.parentOffset, 1);
 });
 

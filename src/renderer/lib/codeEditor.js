@@ -270,12 +270,22 @@ export function emptyCodeEnterSource(source) {
   return `${value.slice(0, contentStart)}${lineEnding}${value.slice(contentStart)}`;
 }
 
-export function emptyCodeSourceHistoryDirection(event, source, history, contentLength = 0) {
-  if (!history || contentLength !== 0 || !isEditorHistoryShortcut(event)) return null;
+export function codeSourceOnlyHistoryDirection(event, source, content, history) {
+  if (!history || !isEditorHistoryShortcut(event)) return null;
   const key = String(event.key || "").toLowerCase();
   const redo = key === "y" || (key === "z" && event.shiftKey);
-  if (redo && history.state === "undone" && source === history.beforeSource) return "redo";
-  if (!redo && history.state === "applied" && source === history.afterSource) return "undo";
+  if (
+    redo
+    && history.state === "undone"
+    && source === history.beforeSource
+    && content === history.beforeContent
+  ) return "redo";
+  if (
+    !redo
+    && history.state === "applied"
+    && source === history.afterSource
+    && content === history.afterContent
+  ) return "undo";
   return null;
 }
 

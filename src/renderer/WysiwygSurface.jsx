@@ -32,10 +32,10 @@ import {
   codeLineEndSourceOffset,
   codeLineStartSourceOffset,
   codeTabEdit,
+  codeSourceOnlyHistoryDirection,
   documentDragIntoCodeRange,
   emptyCodeClosingFenceSourceOffset,
   emptyCodeEnterSource,
-  emptyCodeSourceHistoryDirection,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
   shouldRestoreEditorHistoryFocus,
@@ -284,7 +284,7 @@ export default function WysiwygSurface({
     let copyFeedbackTimer = 0;
     let settleFrame = 0;
     let secondSettleFrame = 0;
-    let emptyFenceSourceHistory = null;
+    let codeSourceOnlyHistory = null;
     const ensureSyntheticTrailing = (event = null) => {
       // Composition owns the editor until it commits. Even a history-free
       // structural transaction can make the browser restart or drop an IME
@@ -654,6 +654,7 @@ export default function WysiwygSurface({
         fullSource: documentSource.fullSource,
         boundary: codeContentSourcePosition(codeBlock.position, 0)
       };
+      const beforeContent = codeView.state.doc.toString();
       const transaction = replaceSourceSelectionTransaction(
         view.state,
         sourceSelection,
@@ -665,10 +666,29 @@ export default function WysiwygSurface({
       event.preventDefault();
       event.stopImmediatePropagation();
       view.dispatch(transaction.scrollIntoView());
-      scheduleCodeFocusRestore({
-        position: codeBlock.position,
-        head: replacement.length
-      });
+      const afterSelection = view.state.selection;
+      const afterCodeBlock = enclosingCodeBlock(view.state.doc, afterSelection.head);
+      if (afterCodeBlock) {
+        const afterUnit = {
+          from: afterCodeBlock.position,
+          to: afterCodeBlock.position + afterCodeBlock.node.nodeSize,
+          kind: "block",
+          name: "code_block"
+        };
+        codeSourceOnlyHistory = {
+          beforeSource: source,
+          afterSource: continuousMarkdownSource(view.state, afterUnit, serializer),
+          beforeContent,
+          afterContent: afterCodeBlock.node.textContent,
+          state: "applied"
+        };
+        scheduleCodeFocusRestore({
+          position: afterCodeBlock.position,
+          head: afterSelection.$from.parentOffset
+        });
+      } else {
+        codeSourceOnlyHistory = null;
+      }
       return true;
     };
     const handleCodeSourceOnlyBeforeInput = (event) => {
@@ -692,7 +712,7 @@ export default function WysiwygSurface({
       if (isSourceInputComposing(event)) return;
       const target = event.target instanceof Element ? event.target : null;
       const codeView = tetherCodeViewForElement(target);
-      if (codeView && emptyFenceSourceHistory && isEditorHistoryShortcut(event)) {
+      if (codeView && codeSourceOnlyHistory && isEditorHistoryShortcut(event)) {
         const block = target?.closest(".milkdown-code-block");
         const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
         const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
@@ -710,11 +730,11 @@ export default function WysiwygSurface({
               kind: "block",
               name: "code_block"
             }, serializer);
-            const direction = emptyCodeSourceHistoryDirection(
+            const direction = codeSourceOnlyHistoryDirection(
               event,
               source,
-              emptyFenceSourceHistory,
-              codeView.state.doc.length
+              codeView.state.doc.toString(),
+              codeSourceOnlyHistory
             );
             const command = direction === "undo"
               ? undoProseMirror
@@ -722,7 +742,7 @@ export default function WysiwygSurface({
             if (command?.(view.state, view.dispatch)) {
               event.preventDefault();
               event.stopImmediatePropagation();
-              emptyFenceSourceHistory.state = direction === "undo" ? "undone" : "applied";
+              codeSourceOnlyHistory.state = direction === "undo" ? "undone" : "applied";
               return;
             }
           }
@@ -760,9 +780,11 @@ export default function WysiwygSurface({
               event.preventDefault();
               event.stopImmediatePropagation();
               const { node, position } = codeBlock;
-              emptyFenceSourceHistory = {
+              codeSourceOnlyHistory = {
                 beforeSource: source,
                 afterSource: nextSource,
+                beforeContent: "",
+                afterContent: "",
                 state: "applied"
               };
               view.dispatch(view.state.tr.setNodeMarkup(position, undefined, {

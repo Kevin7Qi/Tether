@@ -17,11 +17,11 @@ import {
   codeDragDocumentRange,
   codeLineEndSourceOffset,
   codeLineStartSourceOffset,
+  codeSourceOnlyHistoryDirection,
   codeTabEdit,
   documentDragIntoCodeRange,
   emptyCodeClosingFenceSourceOffset,
   emptyCodeEnterSource,
-  emptyCodeSourceHistoryDirection,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
   restoreCodeViewFocusAfterHistory,
@@ -344,53 +344,72 @@ test("one Enter in a physically empty closed fence inserts exactly one source ne
   assert.equal(emptyCodeEnterSource("```js\n"), null);
 });
 
-test("source-only empty-fence Enter joins CodeMirror's undo and redo sequence", () => {
+test("source-only code edits join CodeMirror's undo and redo sequence", () => {
   const history = {
     beforeSource: "```js\n```",
     afterSource: "```js\n\n```",
+    beforeContent: "",
+    afterContent: "",
     state: "applied"
   };
   assert.equal(
-    emptyCodeSourceHistoryDirection(
+    codeSourceOnlyHistoryDirection(
       { key: "z", metaKey: true },
       history.afterSource,
+      history.afterContent,
       history
     ),
     "undo"
   );
   assert.equal(
-    emptyCodeSourceHistoryDirection(
+    codeSourceOnlyHistoryDirection(
       { key: "z", metaKey: true },
       history.afterSource,
-      history,
-      1
+      "changed",
+      history
     ),
     null
   );
   history.state = "undone";
   assert.equal(
-    emptyCodeSourceHistoryDirection(
+    codeSourceOnlyHistoryDirection(
       { key: "z", metaKey: true, shiftKey: true },
       history.beforeSource,
+      history.beforeContent,
       history
     ),
     "redo"
   );
   assert.equal(
-    emptyCodeSourceHistoryDirection(
+    codeSourceOnlyHistoryDirection(
       { key: "y", ctrlKey: true },
       history.beforeSource,
+      history.beforeContent,
       history
     ),
     "redo"
   );
   assert.equal(
-    emptyCodeSourceHistoryDirection(
+    codeSourceOnlyHistoryDirection(
       { key: "z", metaKey: true },
       history.beforeSource,
+      history.beforeContent,
       history
     ),
     null
+  );
+
+  history.state = "applied";
+  history.afterSource = "```js\nx```";
+  history.afterContent = "x```";
+  assert.equal(
+    codeSourceOnlyHistoryDirection(
+      { key: "z", metaKey: true },
+      history.afterSource,
+      history.afterContent,
+      history
+    ),
+    "undo"
   );
 });
 
