@@ -78,6 +78,7 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(surface, /renderLanguage: tetherCodeLanguageLabel/);
   assert.match(surface, /codeBoundaryNavigationKeyDirection/);
   assert.match(surface, /codeBoundaryDeletionKeyDirection/);
+  assert.match(surface, /codeTabEdit/);
   assert.match(surface, /const codeBlock = enclosingCodeBlock/);
   assert.match(surface, /initialSelectionDirection: selectionMotion/);
   assert.match(surface, /codeBoundaryNavigationSourceOffset/);

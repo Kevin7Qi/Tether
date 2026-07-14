@@ -1,6 +1,7 @@
 import { HighlightStyle, LanguageDescription, LanguageSupport, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
+import { sourceTabEdit } from "./sourceEditing.js";
 
 const tetherCodeViews = new WeakMap();
 
@@ -41,6 +42,21 @@ export function isEditorSelectAllShortcut(event) {
     && !event.shiftKey
     && Boolean(event.metaKey || event.ctrlKey)
     && String(event.key || "").toLowerCase() === "a";
+}
+
+export function codeTabEdit(state, outdent = false) {
+  const ranges = state?.selection?.ranges || [];
+  if (ranges.length !== 1 || !state?.doc) return null;
+  const selection = ranges[0];
+  const source = state.doc.toString();
+  const edit = sourceTabEdit(source, selection.from, selection.to, outdent);
+  const backward = selection.anchor > selection.head;
+  return {
+    value: edit.value,
+    changed: edit.value !== source,
+    anchor: backward ? edit.selectionEnd : edit.selectionStart,
+    head: backward ? edit.selectionStart : edit.selectionEnd
+  };
 }
 
 export function codeBoundarySelectionDirection(state, key) {

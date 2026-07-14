@@ -22,6 +22,7 @@ import {
   codeBoundarySourcePosition,
   codeContentSourcePosition,
   codeDragDocumentRange,
+  codeTabEdit,
   documentDragIntoCodeRange,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
@@ -515,6 +516,31 @@ export default function WysiwygSurface({
       if (isSourceInputComposing(event)) return;
       const target = event.target instanceof Element ? event.target : null;
       const codeView = tetherCodeViewForElement(target);
+      if (
+        codeView
+        && event.key === "Tab"
+        && !event.altKey
+        && !event.ctrlKey
+        && !event.metaKey
+      ) {
+        const edit = codeTabEdit(codeView.state, event.shiftKey);
+        if (!edit) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const transaction = {
+          selection: { anchor: edit.anchor, head: edit.head },
+          scrollIntoView: true
+        };
+        if (edit.changed) {
+          transaction.changes = {
+            from: 0,
+            to: codeView.state.doc.length,
+            insert: edit.value
+          };
+        }
+        codeView.dispatch(transaction);
+        return;
+      }
       if (codeView && isEditorSelectAllShortcut(event)) {
         const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
         if (!view) return;

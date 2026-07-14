@@ -13,6 +13,7 @@ import {
   codeBoundarySourcePosition,
   codeContentSourcePosition,
   codeDragDocumentRange,
+  codeTabEdit,
   documentDragIntoCodeRange,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
@@ -89,6 +90,60 @@ test("editor Select All shortcuts escalate from CodeMirror to the Markdown docum
   assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true, altKey: true }), false);
   assert.equal(isEditorSelectAllShortcut({ key: "a" }), false);
   assert.equal(isEditorSelectAllShortcut({ key: "z", metaKey: true }), false);
+});
+
+test("CodeMirror Tab edits preserve the source editor's literal bytes and selection", () => {
+  const collapsed = EditorState.create({ doc: "alpha", selection: { anchor: 2 } });
+  assert.deepEqual(codeTabEdit(collapsed), {
+    value: "al\tpha",
+    changed: true,
+    anchor: 3,
+    head: 3
+  });
+
+  const forward = EditorState.create({
+    doc: "one\ntwo\nthree",
+    selection: { anchor: 1, head: 8 }
+  });
+  assert.deepEqual(codeTabEdit(forward), {
+    value: "\tone\n\ttwo\nthree",
+    changed: true,
+    anchor: 2,
+    head: 10
+  });
+
+  const backward = EditorState.create({
+    doc: "one\ntwo\nthree",
+    selection: { anchor: 8, head: 1 }
+  });
+  assert.deepEqual(codeTabEdit(backward), {
+    value: "\tone\n\ttwo\nthree",
+    changed: true,
+    anchor: 10,
+    head: 2
+  });
+});
+
+test("CodeMirror Shift-Tab removes tabs or one four-space source indentation unit", () => {
+  const selection = EditorState.create({
+    doc: "\talpha\n    beta\ngamma",
+    selection: { anchor: 0, head: 16 }
+  });
+  assert.deepEqual(codeTabEdit(selection, true), {
+    value: "alpha\nbeta\ngamma",
+    changed: true,
+    anchor: 0,
+    head: 11
+  });
+
+  const unchanged = EditorState.create({ doc: "alpha", selection: { anchor: 2 } });
+  assert.deepEqual(codeTabEdit(unchanged, true), {
+    value: "alpha",
+    changed: false,
+    anchor: 2,
+    head: 2
+  });
+  assert.equal(codeTabEdit({ selection: { ranges: [] }, doc: unchanged.doc }), null);
 });
 
 function codeState(head, length = 10, empty = true) {
