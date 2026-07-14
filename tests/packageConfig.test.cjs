@@ -209,6 +209,22 @@ test("CodeMirror line-edge jumps enter hidden indented and empty-fence source", 
   assert.match(surface, /removeEventListener\("keydown", handleCodeLineJump, true\)/);
 });
 
+test("CodeMirror text insertion at an immediate closing fence edits literal Markdown source", () => {
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
+  assert.match(surface, /const replaceCodeSourceOnlyInsertion = \(event, replacement\) =>/);
+  assert.match(surface, /emptyCodeClosingFenceSourceOffset\(source, codeBlock\.node\.textContent\)/);
+  assert.match(surface, /documentSourceUnitStartOffset\(view\.state, unit, serializer\)/);
+  assert.match(surface, /replaceSourceSelectionTransaction\(/);
+  assert.match(surface, /const handleCodeSourceOnlyBeforeInput = \(event\) =>/);
+  assert.match(surface, /const handleCodeSourceOnlyTransfer = \(event\) =>/);
+  assert.match(surface, /addEventListener\("beforeinput", handleCodeSourceOnlyBeforeInput, true\)/);
+  assert.match(surface, /addEventListener\("paste", handleCodeSourceOnlyTransfer, true\)/);
+  assert.match(surface, /addEventListener\("drop", handleCodeSourceOnlyTransfer, true\)/);
+  assert.match(surface, /removeEventListener\("beforeinput", handleCodeSourceOnlyBeforeInput, true\)/);
+  assert.match(surface, /removeEventListener\("paste", handleCodeSourceOnlyTransfer, true\)/);
+  assert.match(surface, /removeEventListener\("drop", handleCodeSourceOnlyTransfer, true\)/);
+});
+
 test("extended CodeMirror selections continue through physical fence source", () => {
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
   assert.match(surface, /!selection\.empty && !event\.shiftKey/);

@@ -246,11 +246,18 @@ export function codeLineStartSourceOffset(source, content, contentHead = 0) {
 
 export function codeLineEndSourceOffset(source, content) {
   const value = String(source ?? "");
+  return Number.isFinite(emptyCodeClosingFenceSourceOffset(value, content))
+    ? value.length
+    : null;
+}
+
+export function emptyCodeClosingFenceSourceOffset(source, content) {
+  const value = String(source ?? "");
   if (String(content ?? "") !== "") return null;
   const openingEnd = value.indexOf("\n");
   if (openingEnd < 0) return null;
   const contentStart = openingEnd + 1;
-  return closingFenceLineStart(value) === contentStart ? value.length : null;
+  return closingFenceLineStart(value) === contentStart ? contentStart : null;
 }
 
 export function emptyCodeEnterSource(source) {

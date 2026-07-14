@@ -480,6 +480,29 @@ test("a partial code-to-prose selection includes the physical closing fence", as
   assert.equal(serialize(paste.transaction.doc), "````js meta\nalP\nQter\n");
 });
 
+test("typing before an immediate closing fence inserts raw source without inventing a newline", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "```text\n```\n";
+  const closingStart = source.lastIndexOf("```");
+  const doc = parse(source);
+  const state = EditorState.create({ doc });
+  const transaction = replaceSourceSelectionTransaction(state, {
+    anchor: closingStart,
+    head: closingStart,
+    fullSource: source,
+    boundary: 1
+  }, "x", parse);
+
+  assert.ok(transaction);
+  assert.equal(
+    serialize(transaction.doc),
+    `${source.slice(0, closingStart)}x${source.slice(closingStart)}`
+  );
+  assert.equal(transaction.doc.firstChild.attrs.fenceClosed, false);
+  assert.equal(transaction.doc.firstChild.textContent, "x```");
+  assert.equal(transaction.selection.$from.parentOffset, 1);
+});
+
 test("Select All replacement includes leading and trailing root Markdown gaps", async () => {
   const { parse, serialize } = await milkdownTransformer();
   const source = "\nBefore\n\n```js\ncode\n```\n\n";

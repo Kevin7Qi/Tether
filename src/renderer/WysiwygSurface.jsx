@@ -9,7 +9,7 @@ import { listItem } from "@milkdown/crepe/feature/list-item";
 import { placeholder } from "@milkdown/crepe/feature/placeholder";
 import { table } from "@milkdown/crepe/feature/table";
 import { toolbar } from "@milkdown/crepe/feature/toolbar";
-import { editorViewCtx, remarkStringifyOptionsCtx, serializerCtx } from "@milkdown/kit/core";
+import { editorViewCtx, parserCtx, remarkStringifyOptionsCtx, serializerCtx } from "@milkdown/kit/core";
 import {
   createCodeBlockInputRule,
   headingKeymap,
@@ -33,6 +33,7 @@ import {
   codeLineStartSourceOffset,
   codeTabEdit,
   documentDragIntoCodeRange,
+  emptyCodeClosingFenceSourceOffset,
   emptyCodeEnterSource,
   emptyCodeSourceHistoryDirection,
   isEditorHistoryShortcut,
@@ -114,7 +115,9 @@ import {
   activateMarkdownSourceAt,
   activateMarkdownTableSourceAt,
   continuousMarkdownSource,
+  documentSourceSegments,
   documentSourceOffsetAtPosition,
+  documentSourceUnitStartOffset,
   enclosingCodeBlock,
   flushActiveMarkdownSource,
   markdownSourceTargetFromPointer,
@@ -130,6 +133,7 @@ import {
   sourceSelectionRangeAfterMotion,
   sourceWordOffset,
   sourceWordSelectionRange,
+  replaceSourceSelectionTransaction,
   structuralMarkerBackspaceKeymap
 } from "./lib/markdownSyntaxPlugin.js";
 
@@ -599,6 +603,89 @@ export default function WysiwygSurface({
           ? sourceWordSelectionRange(anchorOffset, targetOffset)
           : null
       });
+    };
+    const replaceCodeSourceOnlyInsertion = (event, replacement) => {
+      if (readOnlyRef.current || isSourceInputComposing(event) || typeof replacement !== "string") {
+        return false;
+      }
+      const target = event.target instanceof Element ? event.target : null;
+      const codeView = tetherCodeViewForElement(target);
+      const codeSelection = codeView?.state.selection.main;
+      const block = target?.closest(".milkdown-code-block");
+      const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+      const parser = crepeRef.current?.editor.action((ctx) => ctx.get(parserCtx));
+      const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+      if (
+        !codeView
+        || !codeSelection?.empty
+        || codeView.state.doc.length !== 0
+        || !block
+        || !view
+        || !parser
+        || !serializer
+      ) return false;
+
+      let codeBlock;
+      try {
+        codeBlock = enclosingCodeBlock(view.state.doc, view.posAtDOM(block, 0, -1));
+      } catch {
+        return false;
+      }
+      if (!codeBlock) return false;
+      const unit = {
+        from: codeBlock.position,
+        to: codeBlock.position + codeBlock.node.nodeSize,
+        kind: "block",
+        name: "code_block"
+      };
+      const source = continuousMarkdownSource(view.state, unit, serializer);
+      const localOffset = emptyCodeClosingFenceSourceOffset(source, codeBlock.node.textContent);
+      const documentSource = Number.isFinite(localOffset)
+        ? documentSourceSegments(view.state, serializer)
+        : null;
+      const unitStart = documentSource
+        ? documentSourceUnitStartOffset(view.state, unit, serializer)
+        : null;
+      if (!documentSource || !Number.isFinite(unitStart)) return false;
+      const sourceOffset = unitStart + localOffset;
+      const sourceSelection = {
+        anchor: sourceOffset,
+        head: sourceOffset,
+        fullSource: documentSource.fullSource,
+        boundary: codeContentSourcePosition(codeBlock.position, 0)
+      };
+      const transaction = replaceSourceSelectionTransaction(
+        view.state,
+        sourceSelection,
+        replacement,
+        parser
+      );
+      if (!transaction) return false;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      view.dispatch(transaction.scrollIntoView());
+      scheduleCodeFocusRestore({
+        position: codeBlock.position,
+        head: replacement.length
+      });
+      return true;
+    };
+    const handleCodeSourceOnlyBeforeInput = (event) => {
+      if (!["insertText", "insertReplacementText"].includes(event.inputType)) return;
+      if (typeof event.data !== "string" || event.data === "") return;
+      replaceCodeSourceOnlyInsertion(event, event.data);
+    };
+    const handleCodeSourceOnlyTransfer = (event) => {
+      const transfer = event.clipboardData || event.dataTransfer;
+      if (!transfer) return;
+      const hasImageFile = Array.from(transfer.items || transfer.files || []).some((item) =>
+        item.type?.startsWith("image/")
+      );
+      if (hasImageFile) return;
+      const text = transfer.getData?.("text/plain");
+      if (!text) return;
+      replaceCodeSourceOnlyInsertion(event, text);
     };
     const handleCodeBoundaryKey = (event) => {
       if (readOnlyRef.current) return;
@@ -1167,6 +1254,9 @@ export default function WysiwygSurface({
     host.addEventListener("keydown", ensureSyntheticTrailing, true);
     host.addEventListener("keydown", restoreFocusAfterHistory, true);
     host.addEventListener("focusin", rememberCodeFocus, true);
+    host.addEventListener("beforeinput", handleCodeSourceOnlyBeforeInput, true);
+    host.addEventListener("paste", handleCodeSourceOnlyTransfer, true);
+    host.addEventListener("drop", handleCodeSourceOnlyTransfer, true);
     host.addEventListener("beforeinput", ensureSyntheticTrailing, true);
     host.addEventListener("paste", ensureSyntheticTrailing, true);
     host.addEventListener("drop", ensureSyntheticTrailing, true);
@@ -1363,6 +1453,9 @@ export default function WysiwygSurface({
       host.removeEventListener("keydown", ensureSyntheticTrailing, true);
       host.removeEventListener("keydown", restoreFocusAfterHistory, true);
       host.removeEventListener("focusin", rememberCodeFocus, true);
+      host.removeEventListener("beforeinput", handleCodeSourceOnlyBeforeInput, true);
+      host.removeEventListener("paste", handleCodeSourceOnlyTransfer, true);
+      host.removeEventListener("drop", handleCodeSourceOnlyTransfer, true);
       host.removeEventListener("beforeinput", ensureSyntheticTrailing, true);
       host.removeEventListener("paste", ensureSyntheticTrailing, true);
       host.removeEventListener("drop", ensureSyntheticTrailing, true);

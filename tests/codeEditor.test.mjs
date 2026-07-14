@@ -19,6 +19,7 @@ import {
   codeLineStartSourceOffset,
   codeTabEdit,
   documentDragIntoCodeRange,
+  emptyCodeClosingFenceSourceOffset,
   emptyCodeEnterSource,
   emptyCodeSourceHistoryDirection,
   isEditorHistoryShortcut,
@@ -315,6 +316,15 @@ test("empty closed code line-end jumps reach the physical closing marker", () =>
   assert.equal(codeLineEndSourceOffset("```text\ncode\n```", "code"), null);
   assert.equal(codeLineEndSourceOffset("```text\n", ""), null);
   assert.equal(codeLineEndSourceOffset("    ", ""), null);
+});
+
+test("empty code insertion targets the start of the immediate closing marker", () => {
+  assert.equal(emptyCodeClosingFenceSourceOffset("```text\n```", ""), "```text\n".length);
+  assert.equal(emptyCodeClosingFenceSourceOffset("~~~\r\n~~~~  ", ""), "~~~\r\n".length);
+  assert.equal(emptyCodeClosingFenceSourceOffset("---\n---", ""), "---\n".length);
+  assert.equal(emptyCodeClosingFenceSourceOffset("```text\n\n```", ""), null);
+  assert.equal(emptyCodeClosingFenceSourceOffset("```text\ncode\n```", "code"), null);
+  assert.equal(emptyCodeClosingFenceSourceOffset("```text\n", ""), null);
 });
 
 test("empty code blocks still traverse their opening newline and closing fence", () => {
