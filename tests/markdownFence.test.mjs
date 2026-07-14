@@ -22,6 +22,7 @@ import {
   sourceFaithfulDocumentSchema
 } from "../src/renderer/lib/markdownDocument.js";
 import {
+  annotateFrontmatterBlock,
   annotateFencedCodeMarkers,
   codeSemanticSignature,
   sourceFaithfulCodeBlockSchema,
@@ -69,11 +70,11 @@ async function milkdownTransformer() {
   const serializerHandler = serializer(ctx);
   ctx.inject(editorViewCtx, { state: { doc: { lastChild: null } } });
   const userHandlers = [
+    sourceFaithfulFenceRemark,
     sourceFaithfulDocumentRemark,
     sourceFaithfulDocumentSchema,
     paragraphSchema,
     textSchema,
-    sourceFaithfulFenceRemark,
     sourceFaithfulCodeBlockSchema
   ].flat().map((plugin) => plugin(ctx));
 
@@ -119,6 +120,45 @@ test("fenced code preserves mixed marker styles, lengths, and metadata", () => {
     ""
   ].join("\n");
   assert.equal(roundTrip(source), source);
+});
+
+test("YAML front matter becomes one exact rendered code unit", () => {
+  const source = [
+    "---",
+    'title: "Demo"',
+    "tags:",
+    "  - alpha",
+    "  - beta",
+    "---",
+    "",
+    "# Body",
+    ""
+  ].join("\n");
+  const tree = unified().use(remarkParse).parse(source);
+  annotateFrontmatterBlock(tree, { value: source });
+  assert.deepEqual({
+    type: tree.children[0].type,
+    lang: tree.children[0].lang,
+    value: tree.children[0].value,
+    opening: tree.children[0].frontmatterOpening,
+    closing: tree.children[0].frontmatterClosing,
+    body: tree.children[1].type
+  }, {
+    type: "code",
+    lang: "yaml",
+    value: 'title: "Demo"\ntags:\n  - alpha\n  - beta',
+    opening: "---",
+    closing: "---",
+    body: "heading"
+  });
+  assert.equal(roundTrip(source), source);
+});
+
+test("edited front matter retains its YAML delimiters and line endings", () => {
+  const source = "---\r\ntitle: Demo\r\n...\r\n\r\nBody\r\n";
+  assert.equal(roundTrip(source, (tree) => {
+    tree.children[0].value = "title: Changed";
+  }), "---\r\ntitle: Changed\r\n...\n\nBody\n");
 });
 
 test("a fence grows only when edited content would collide with it", () => {
@@ -224,7 +264,10 @@ test("Milkdown keeps fence attributes through a ProseMirror content edit", async
     mathClosingLength: 2,
     mathOpeningSuffix: "",
     mathSource: null,
-    mathSourceValue: null
+    mathSourceValue: null,
+    frontmatterBlock: false,
+    frontmatterOpening: "---",
+    frontmatterClosing: "---"
   });
 
   const editedCode = doc.firstChild.type.create(
@@ -233,6 +276,48 @@ test("Milkdown keeps fence attributes through a ProseMirror content edit", async
   );
   const editedDoc = doc.type.create(null, [editedCode]);
   assert.equal(serialize(editedDoc), "~~~~js title=demo\nconst answer = 43;\n~~~~~\n");
+});
+
+test("Milkdown keeps front matter rendered as one editable YAML block", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "---\ntitle: Demo\ntags:\n  - alpha\n---\n\nBody\n";
+  const doc = parse(source);
+  const frontmatter = doc.firstChild;
+  assert.deepEqual({
+    language: frontmatter.attrs.language,
+    frontmatterBlock: frontmatter.attrs.frontmatterBlock,
+    opening: frontmatter.attrs.frontmatterOpening,
+    closing: frontmatter.attrs.frontmatterClosing,
+    value: frontmatter.textContent
+  }, {
+    language: "yaml",
+    frontmatterBlock: true,
+    opening: "---",
+    closing: "---",
+    value: "title: Demo\ntags:\n  - alpha"
+  });
+  assert.equal(serialize(doc), source);
+
+  const edited = frontmatter.type.create(
+    frontmatter.attrs,
+    doc.type.schema.text("title: Changed\ntags:\n  - alpha")
+  );
+  assert.equal(
+    serialize(doc.type.create(doc.attrs, [edited, doc.lastChild])),
+    "---\ntitle: Changed\ntags:\n  - alpha\n---\n\nBody\n"
+  );
+
+  const crlfSource = "---\r\ntitle: Demo\r\n...\r\n\r\nBody\r\n";
+  const crlfDoc = parse(crlfSource);
+  assert.equal(serialize(crlfDoc), crlfSource);
+  const editedCrlf = crlfDoc.firstChild.type.create(
+    crlfDoc.firstChild.attrs,
+    crlfDoc.type.schema.text("title: Changed")
+  );
+  assert.equal(
+    serialize(crlfDoc.type.create(crlfDoc.attrs, [editedCrlf, crlfDoc.lastChild])),
+    "---\r\ntitle: Changed\r\n...\r\n\r\nBody\r\n"
+  );
 });
 
 test("Milkdown preserves indented code through unrelated and content edits", async () => {

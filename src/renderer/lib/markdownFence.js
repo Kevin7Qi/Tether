@@ -13,6 +13,58 @@ function closingFenceRun(line) {
   return line.match(/(`{3,}|~{3,})[\t ]*$/)?.[1] || null;
 }
 
+function frontmatterBlock(source) {
+  const opening = source.match(/^(---[\t ]*)(\r\n|\n)/);
+  if (!opening) return null;
+  const lineEnding = opening[2];
+  const contentStart = opening[0].length;
+  let lineStart = contentStart;
+  let line = 2;
+
+  while (lineStart <= source.length) {
+    const newline = source.indexOf("\n", lineStart);
+    const lineEnd = newline < 0 ? source.length : newline;
+    const rawLine = source.slice(lineStart, lineEnd).replace(/\r$/, "");
+    if (/^(?:---|\.\.\.)[\t ]*$/.test(rawLine)) {
+      const closingEnd = lineStart + rawLine.length;
+      let value = source.slice(contentStart, lineStart);
+      if (value.endsWith("\r\n")) value = value.slice(0, -2);
+      else if (value.endsWith("\n")) value = value.slice(0, -1);
+      return {
+        type: "code",
+        lang: "yaml",
+        meta: null,
+        value: value.replace(/\r\n/g, "\n"),
+        frontmatterBlock: true,
+        frontmatterOpening: opening[1],
+        frontmatterClosing: rawLine,
+        fenceLineEnding: lineEnding,
+        position: {
+          start: { line: 1, column: 1, offset: 0 },
+          end: { line, column: rawLine.length + 1, offset: closingEnd }
+        }
+      };
+    }
+    if (newline < 0) break;
+    lineStart = newline + 1;
+    line += 1;
+  }
+  return null;
+}
+
+export function annotateFrontmatterBlock(tree, file) {
+  const source = sourceText(file);
+  const frontmatter = frontmatterBlock(source);
+  if (!frontmatter || tree?.type !== "root") return tree;
+  const end = frontmatter.position.end.offset;
+  const remaining = (tree.children || []).filter((child) => {
+    const start = child?.position?.start?.offset;
+    return Number.isFinite(start) && start >= end;
+  });
+  tree.children = [frontmatter, ...remaining];
+  return tree;
+}
+
 export function codeSemanticSignature(node) {
   return JSON.stringify({
     value: node?.value || "",
@@ -23,6 +75,7 @@ export function codeSemanticSignature(node) {
 
 export function annotateFencedCodeMarkers(tree, file) {
   const source = sourceText(file);
+  annotateFrontmatterBlock(tree, file);
   const sourceLines = source.split(/\r?\n/);
   const visit = (node, parent = null) => {
     if (node?.type === "code") {
@@ -95,7 +148,10 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
       mathClosingLength: { default: 2, validate: "number" },
       mathOpeningSuffix: { default: "", validate: "string" },
       mathSource: { default: null, validate: "string|null" },
-      mathSourceValue: { default: null, validate: "string|null" }
+      mathSourceValue: { default: null, validate: "string|null" },
+      frontmatterBlock: { default: false, validate: "boolean" },
+      frontmatterOpening: { default: "---", validate: "string" },
+      frontmatterClosing: { default: "---", validate: "string" }
     },
     parseMarkdown: {
       ...spec.parseMarkdown,
@@ -120,7 +176,10 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
           mathClosingLength: node.mathClosingLength || node.mathOpeningLength || 2,
           mathOpeningSuffix: node.mathOpeningSuffix || "",
           mathSource: node.mathSource ?? null,
-          mathSourceValue: node.mathSourceValue ?? null
+          mathSourceValue: node.mathSourceValue ?? null,
+          frontmatterBlock: Boolean(node.frontmatterBlock),
+          frontmatterOpening: node.frontmatterOpening || "---",
+          frontmatterClosing: node.frontmatterClosing || "---"
         });
         if (node.value) state.addText(node.value);
         state.closeNode();
@@ -150,7 +209,10 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
           fenceLineEnding: node.attrs.fenceLineEnding,
           fenceTrailingLineEnding: node.attrs.fenceTrailingLineEnding,
           fenceSource: node.attrs.fenceSource,
-          fenceSourceSignature: node.attrs.fenceSourceSignature
+          fenceSourceSignature: node.attrs.fenceSourceSignature,
+          frontmatterBlock: node.attrs.frontmatterBlock,
+          frontmatterOpening: node.attrs.frontmatterOpening,
+          frontmatterClosing: node.attrs.frontmatterClosing
         });
       }
     }
@@ -184,6 +246,14 @@ export function sourceFaithfulCodeHandler(node, _parent, state, info) {
     && node.fenceSourceSignature != null
     && codeSemanticSignature(node) === node.fenceSourceSignature
   ) return node.fenceSource;
+
+  if (node.frontmatterBlock) {
+    const lineEnding = node.fenceLineEnding === "\r\n" ? "\r\n" : "\n";
+    const opening = node.frontmatterOpening || "---";
+    const closing = node.frontmatterClosing || "---";
+    const raw = String(node.value || "").replace(/\r?\n/g, lineEnding);
+    return `${opening}${lineEnding}${raw}${raw ? lineEnding : ""}${closing}`;
+  }
 
   const indented = indentedCode(node, state);
   if (indented != null) return indented;

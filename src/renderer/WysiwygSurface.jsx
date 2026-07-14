@@ -935,6 +935,7 @@ export default function WysiwygSurface({
     };
     const prepareMarkdownWidgets = () => {
       const readOnly = readOnlyRef.current;
+      const editorView = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
       host.querySelectorAll(".milkdown-code-block .preview-panel").forEach((preview) => {
         let copyButton = preview.querySelector(".tether-content-copy");
         if (!copyButton) {
@@ -961,6 +962,18 @@ export default function WysiwygSurface({
         // receive the caret make keyboard navigation dishonest and confusing.
         block.removeAttribute("data-tether-fence");
         block.querySelector(".codemirror-host")?.removeAttribute("data-tether-fence");
+        let frontmatter = false;
+        if (editorView) {
+          try {
+            frontmatter = Boolean(
+              enclosingCodeBlock(editorView.state.doc, editorView.posAtDOM(block, 0, -1))
+                ?.node.attrs.frontmatterBlock
+            );
+          } catch {
+            frontmatter = false;
+          }
+        }
+        block.classList.toggle("tether-frontmatter-block", frontmatter);
       });
       host.querySelectorAll(".milkdown-table-block").forEach((tableBlock) => {
         const existing = tableBlock.querySelector(":scope > .tether-table-source");
@@ -1008,12 +1021,19 @@ export default function WysiwygSurface({
         else control.removeAttribute("tabindex");
       });
       host.querySelectorAll(".milkdown-code-block .language-button").forEach((control) => {
-        if (readOnly) {
+        const frontmatter = Boolean(control.closest(".tether-frontmatter-block"));
+        if (readOnly || frontmatter) {
           control.setAttribute("tabindex", "-1");
           control.setAttribute("aria-disabled", "true");
+          if (frontmatter) {
+            control.disabled = true;
+            control.setAttribute("title", "YAML front matter");
+          }
         } else {
           control.removeAttribute("tabindex");
           control.removeAttribute("aria-disabled");
+          control.disabled = false;
+          control.removeAttribute("title");
         }
       });
     };

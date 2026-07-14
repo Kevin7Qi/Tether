@@ -85,6 +85,9 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(surface, /undo as undoProseMirror/);
   assert.match(surface, /redo as redoProseMirror/);
   assert.match(surface, /fenceSourceSignature: codeSemanticSignature/);
+  assert.match(surface, /node\.attrs\.frontmatterBlock/);
+  assert.match(surface, /tether-frontmatter-block/);
+  assert.match(surface, /control\.disabled = true/);
   assert.match(surface, /const codeBlock = enclosingCodeBlock/);
   assert.match(surface, /initialSelectionDirection: selectionMotion/);
   assert.match(surface, /codeBoundaryNavigationSourceOffset/);

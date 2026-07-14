@@ -161,11 +161,14 @@ function closingFenceLineStart(source) {
   const openingLineEnd = source.indexOf("\n");
   if (openingLineEnd < 0) return null;
   const openingLine = source.slice(0, openingLineEnd).replace(/\r$/, "");
+  const lineStart = source.lastIndexOf("\n") + 1;
+  const closingLine = source.slice(lineStart).replace(/\r$/, "");
+  if (/^---[\t ]*$/.test(openingLine) && /^(?:---|\.\.\.)[\t ]*$/.test(closingLine)) {
+    return lineStart;
+  }
   const opening = openingLine.match(/^[\t ]{0,3}(`{3,}|~{3,})/);
   if (!opening) return null;
 
-  const lineStart = source.lastIndexOf("\n") + 1;
-  const closingLine = source.slice(lineStart).replace(/\r$/, "");
   const closing = closingLine.match(/^[\t ]{0,3}(`{3,}|~{3,})[\t ]*$/);
   if (!closing || closing[1][0] !== opening[1][0] || closing[1].length < opening[1].length) {
     return null;

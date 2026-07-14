@@ -239,6 +239,21 @@ test("raw fenced-source offsets map back into visible CodeMirror content", () =>
   assert.equal(codeContentOffsetAtSourceOffset("```js\n```", "", "```js\n".length), 0);
 });
 
+test("front matter maps like a fenced YAML editing block", () => {
+  const source = "---\r\ntitle: Demo\r\n---";
+  const content = "title: Demo";
+  const contentStart = source.indexOf("\n") + 1;
+  const closingStart = source.lastIndexOf("\n") + 1;
+  assert.equal(
+    codeContentOffsetAtSourceOffset(source, content, source.indexOf("Demo") + 2),
+    content.indexOf("Demo") + 2
+  );
+  assert.equal(codeContentOffsetAtSourceOffset(source, content, 1), null);
+  assert.equal(codeBoundaryNavigationSourceOffset(source, content, "ArrowLeft", 0), contentStart - 2);
+  assert.equal(codeBoundaryNavigationSourceOffset(source, content, "ArrowRight", content.length), closingStart);
+  assert.equal(codeBoundaryNavigationSourceOffset(source, content, "ArrowDown", 3), closingStart + 3);
+});
+
 test("indented code maps hidden line prefixes without inventing fences", () => {
   const source = "    alpha\r\n\tbeta";
   const content = "alpha\nbeta";

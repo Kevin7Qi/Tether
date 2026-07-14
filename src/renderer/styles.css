@@ -2832,6 +2832,10 @@ textarea:focus-visible,
   transition: opacity 100ms ease, color 100ms ease, border-color 100ms ease, background 100ms ease;
 }
 
+.tether-wysiwyg .milkdown-code-block.tether-frontmatter-block .language-button {
+  cursor: default;
+}
+
 .tether-wysiwyg .milkdown-code-block .tools .copy-button svg {
   width: 13px;
   height: 13px;
