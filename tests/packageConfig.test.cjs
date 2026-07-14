@@ -233,6 +233,14 @@ test("temporary Markdown source controls hand document jumps back to the full so
   assert.match(syntax, /baseOffset \+ localSelection\.anchor/);
 });
 
+test("temporary Markdown source controls keep extended selections exact across their boundaries", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /inlineSourceBoundarySelectionDirection\([\s\S]*editor\.selectionDirection/);
+  assert.match(syntax, /onBoundarySelect\([\s\S]*sourceInputSelection\(/);
+  assert.match(syntax, /const selectFromBoundary = \(direction, localSelection, mapping = null\) =>/);
+  assert.match(syntax, /sourceSelectionAcrossUnitBoundary\([\s\S]*action: "source-selection"/);
+});
+
 test("exact source-only selections own line and word jump commands", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /const exactWordDirection = sourceSelection[\s\S]*sourceSelectionWordJump\(/);

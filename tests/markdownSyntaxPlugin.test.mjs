@@ -47,6 +47,8 @@ import {
   sourceEditCaretOffset,
   sourceLineEndingAt,
   sourceBoundarySelectionRange,
+  sourceInputSelection,
+  sourceSelectionAcrossUnitBoundary,
   sourceInitialSelectionRange,
   sourceDocumentJumpEdge,
   sourceLineJumpEdge,
@@ -1626,8 +1628,65 @@ test("inline and block source shift-arrows extend selection across an outer boun
   assert.equal(inlineSourceBoundarySelectionDirection("ArrowLeft", 1, 1, 8, true), null);
   assert.equal(inlineSourceBoundarySelectionDirection("ArrowRight", 7, 7, 8, true), null);
   assert.equal(inlineSourceBoundarySelectionDirection("ArrowLeft", 0, 2, 8, true), null);
+  assert.equal(
+    inlineSourceBoundarySelectionDirection("ArrowLeft", 0, 2, 8, true, false, "backward"),
+    "backward"
+  );
+  assert.equal(
+    inlineSourceBoundarySelectionDirection("ArrowRight", 2, 8, 8, true, false, "forward"),
+    "forward"
+  );
+  assert.equal(
+    inlineSourceBoundarySelectionDirection("ArrowLeft", 0, 2, 8, true, false, "forward"),
+    null
+  );
+  assert.equal(
+    inlineSourceBoundarySelectionDirection("ArrowRight", 2, 8, 8, true, false, "backward"),
+    null
+  );
   assert.equal(inlineSourceBoundarySelectionDirection("ArrowRight", 8, 8, 8, false), null);
   assert.equal(inlineSourceBoundarySelectionDirection("ArrowRight", 8, 8, 8, true, true), null);
+});
+
+test("source controls preserve the selection anchor while crossing their outer boundary", () => {
+  assert.deepEqual(sourceInputSelection(0, 4, "backward"), { anchor: 4, head: 0 });
+  assert.deepEqual(sourceInputSelection(2, 8, "forward"), { anchor: 2, head: 8 });
+  assert.deepEqual(sourceInputSelection(3, 3, "none"), { anchor: 3, head: 3 });
+
+  const source = "before **bold**\r\nafter";
+  const unitStart = source.indexOf("**bold**");
+  assert.deepEqual(
+    sourceSelectionAcrossUnitBoundary(
+      source,
+      unitStart,
+      { anchor: 4, head: 0 },
+      "backward"
+    ),
+    {
+      anchor: unitStart + 4,
+      head: unitStart - 1,
+      fullSource: source
+    }
+  );
+  assert.deepEqual(
+    sourceSelectionAcrossUnitBoundary(
+      source,
+      unitStart,
+      { anchor: 2, head: "**bold**".length },
+      "forward"
+    ),
+    {
+      anchor: unitStart + 2,
+      head: unitStart + "**bold**".length + 2,
+      fullSource: source
+    }
+  );
+
+  const emoji = "a😀b";
+  assert.equal(
+    sourceSelectionAcrossUnitBoundary(emoji, 0, { anchor: 0, head: 1 }, "forward").head,
+    3
+  );
 });
 
 test("fenced source selection crosses hidden newlines and fence lines in source coordinates", () => {

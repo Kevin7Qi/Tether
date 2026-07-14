@@ -1116,12 +1116,58 @@ export function inlineSourceBoundarySelectionDirection(
   selectionEnd,
   sourceLength,
   shiftKey = false,
-  hasOtherModifier = false
+  hasOtherModifier = false,
+  selectionDirection = "none"
 ) {
-  if (!shiftKey || hasOtherModifier || selectionStart !== selectionEnd) return null;
-  if (key === "ArrowLeft" && selectionStart === 0) return "backward";
-  if (key === "ArrowRight" && selectionEnd === sourceLength) return "forward";
+  if (!shiftKey || hasOtherModifier) return null;
+  const collapsed = selectionStart === selectionEnd;
+  if (!collapsed && !["backward", "forward"].includes(selectionDirection)) return null;
+  const head = collapsed || selectionDirection !== "backward"
+    ? selectionEnd
+    : selectionStart;
+  if (key === "ArrowLeft" && head === 0) return "backward";
+  if (key === "ArrowRight" && head === sourceLength) return "forward";
   return null;
+}
+
+export function sourceInputSelection(
+  selectionStart,
+  selectionEnd,
+  selectionDirection = "none"
+) {
+  const backward = selectionDirection === "backward" && selectionStart !== selectionEnd;
+  return {
+    anchor: backward ? selectionEnd : selectionStart,
+    head: backward ? selectionStart : selectionEnd
+  };
+}
+
+export function sourceSelectionAcrossUnitBoundary(
+  fullSource,
+  unitStart,
+  localSelection,
+  direction
+) {
+  if (
+    typeof fullSource !== "string"
+    || !Number.isFinite(unitStart)
+    || !localSelection
+    || !["backward", "forward"].includes(direction)
+  ) return null;
+  const start = Math.max(0, Math.min(fullSource.length, unitStart));
+  const anchor = Math.max(
+    0,
+    Math.min(fullSource.length, start + (Number(localSelection.anchor) || 0))
+  );
+  const head = Math.max(
+    0,
+    Math.min(fullSource.length, start + (Number(localSelection.head) || 0))
+  );
+  return {
+    anchor,
+    head: sourceOffsetAfterCharacter(fullSource, head, direction),
+    fullSource
+  };
 }
 
 export function sourceBoundarySelectionRange(sourceOrLength, caret, direction) {
@@ -2639,7 +2685,8 @@ function continuousSourceEditor(
       editor.selectionEnd,
       editor.value.length,
       event.shiftKey,
-      event.altKey || event.ctrlKey || event.metaKey
+      event.altKey || event.ctrlKey || event.metaKey,
+      editor.selectionDirection
     );
     if (boundaryDirection || boundaryDeleteDirection || verticalDirection || boundarySelectionDirection) {
       event.preventDefault();
@@ -2649,7 +2696,17 @@ function continuousSourceEditor(
         if (boundaryDirection) onBoundaryNavigate(boundaryDirection, mapping);
         else if (boundaryDeleteDirection) onBoundaryDelete(boundaryDeleteDirection, mapping);
         else if (verticalDirection) onVerticalNavigate(verticalDirection, targetPoint, mapping);
-        else onBoundarySelect(boundarySelectionDirection, mapping);
+        else {
+          onBoundarySelect(
+            boundarySelectionDirection,
+            sourceInputSelection(
+              editor.selectionStart ?? 0,
+              editor.selectionEnd ?? editor.selectionStart ?? 0,
+              editor.selectionDirection
+            ),
+            mapping
+          );
+        }
       });
     } else if (event.key === "Escape") {
       event.preventDefault();
@@ -4522,7 +4579,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           );
           editorView.focus();
         };
-        const selectFromBoundary = (direction, mapping = null) => {
+        const selectFromBoundary = (direction, localSelection, mapping = null) => {
           if (!editorView?.dom.isConnected) return;
           const assoc = direction === "backward" ? -1 : 1;
           const originalPosition = direction === "backward" ? unit.from : unit.to;
@@ -4530,7 +4587,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             0,
             Math.min(mappedPosition(mapping, originalPosition, assoc), editorView.state.doc.content.size)
           );
-          if (unit.kind === "inline") {
+          const localSelectionIsCollapsed = localSelection?.anchor === localSelection?.head;
+          if (unit.kind === "inline" && localSelectionIsCollapsed) {
             const handoff = structuralSourceHandoffTarget(
               editorView.state,
               anchor,
@@ -4544,6 +4602,48 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 initialSelectionDirection: direction,
                 focusLock: true
               });
+              return;
+            }
+          }
+          if (!localSelectionIsCollapsed) {
+            const mappedUnit = {
+              ...unit,
+              from: Math.max(
+                0,
+                Math.min(mappedPosition(mapping, unit.from, -1), editorView.state.doc.content.size)
+              ),
+              to: Math.max(
+                0,
+                Math.min(mappedPosition(mapping, unit.to, 1), editorView.state.doc.content.size)
+              )
+            };
+            const documentSource = documentSourceSegments(editorView.state, serializer);
+            const unitStart = documentSourceUnitStartOffset(
+              editorView.state,
+              mappedUnit,
+              serializer
+            );
+            const exactSelection = documentSource && sourceSelectionAcrossUnitBoundary(
+              documentSource.fullSource,
+              unitStart,
+              localSelection,
+              direction
+            );
+            if (exactSelection) {
+              const selection = textSelectionAcrossBoundary(editorView.state, anchor, direction);
+              editorView.dispatch(
+                editorView.state.tr
+                  .setSelection(selection)
+                  .setMeta(markdownSyntaxKey, {
+                    action: "source-selection",
+                    sourceSelection: {
+                      ...exactSelection,
+                      boundary: anchor
+                    }
+                  })
+                  .scrollIntoView()
+              );
+              focusProseMirrorRoot(editorView);
               return;
             }
           }
