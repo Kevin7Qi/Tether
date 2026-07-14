@@ -137,8 +137,20 @@ test("a fence grows only when edited content would collide with it", () => {
   );
 });
 
-test("indented code keeps the existing canonical fenced output", () => {
-  assert.equal(roundTrip("    alpha\n    beta\n"), "```\nalpha\nbeta\n```\n");
+test("untouched indented code keeps its exact physical source", () => {
+  assert.equal(roundTrip("    alpha\n\n      beta\n"), "    alpha\n\n      beta\n");
+  assert.equal(roundTrip("\talpha\r\n\tbeta\r\n"), "\talpha\r\n\tbeta\n");
+});
+
+test("editing an indented code block preserves its source style", () => {
+  const source = "Before\n\n    alpha\n    beta\n\nAfter\n";
+  assert.equal(roundTrip(source, (tree) => {
+    tree.children[1].value = "alpha\nchanged";
+  }), "Before\n\n    alpha\n    changed\n\nAfter\n");
+
+  assert.equal(roundTrip(source, (tree) => {
+    tree.children[0].children[0].value = "Before!";
+  }), "Before!\n\n    alpha\n    beta\n\nAfter\n");
 });
 
 test("an unchanged unclosed fence remains exact source instead of being repaired", () => {
@@ -221,6 +233,20 @@ test("Milkdown keeps fence attributes through a ProseMirror content edit", async
   );
   const editedDoc = doc.type.create(null, [editedCode]);
   assert.equal(serialize(editedDoc), "~~~~js title=demo\nconst answer = 43;\n~~~~~\n");
+});
+
+test("Milkdown preserves indented code through unrelated and content edits", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "Before\n\n    alpha\n    beta\n\nAfter\n";
+  const doc = parse(source);
+  const code = doc.child(1);
+  assert.equal(code.attrs.fenceMarker, null);
+  assert.equal(code.attrs.fenceSource, "    alpha\n    beta");
+  assert.equal(serialize(doc), source);
+
+  const editedCode = code.type.create(code.attrs, doc.type.schema.text("alpha\nchanged"));
+  const editedDoc = doc.type.create(doc.attrs, [doc.firstChild, editedCode, doc.lastChild]);
+  assert.equal(serialize(editedDoc), "Before\n\n    alpha\n    changed\n\nAfter\n");
 });
 
 test("edited fenced code preserves CRLF wrappers and unclosed source", async () => {

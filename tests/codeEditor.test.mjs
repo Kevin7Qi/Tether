@@ -239,6 +239,28 @@ test("raw fenced-source offsets map back into visible CodeMirror content", () =>
   assert.equal(codeContentOffsetAtSourceOffset("```js\n```", "", "```js\n".length), 0);
 });
 
+test("indented code maps hidden line prefixes without inventing fences", () => {
+  const source = "    alpha\r\n\tbeta";
+  const content = "alpha\nbeta";
+  assert.equal(
+    codeContentOffsetAtSourceOffset(source, content, source.indexOf("beta") + 2),
+    content.indexOf("beta") + 2
+  );
+  assert.equal(codeContentOffsetAtSourceOffset(source, content, 2), null);
+  assert.equal(codeBoundaryNavigationSourceOffset(source, content, "ArrowLeft", 0), 3);
+  assert.equal(codeBoundaryNavigationSourceOffset(source, content, "ArrowUp", 3), 3);
+  assert.equal(
+    codeBoundaryNavigationSourceOffset(source, content, "ArrowRight", content.length),
+    source.length
+  );
+  assert.equal(
+    codeBoundaryNavigationSourceOffset(source, content, "ArrowDown", content.length),
+    source.length
+  );
+
+  assert.equal(codeBoundaryNavigationSourceOffset("\talpha", "alpha", "ArrowLeft", 0), 0);
+});
+
 test("empty code blocks still traverse their opening newline and closing fence", () => {
   const source = "~~~text\n~~~";
   const contentStart = source.indexOf("\n") + 1;

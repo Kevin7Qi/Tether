@@ -173,6 +173,53 @@ function closingFenceLineStart(source) {
   return lineStart;
 }
 
+function sourceLinesWithOffsets(source) {
+  const lines = [];
+  let start = 0;
+  for (const match of source.matchAll(/\r\n|\n/g)) {
+    lines.push({ start, text: source.slice(start, match.index) });
+    start = match.index + match[0].length;
+  }
+  lines.push({ start, text: source.slice(start) });
+  return lines;
+}
+
+function indentationColumns(prefix) {
+  let columns = 0;
+  for (const character of prefix) {
+    if (character === " ") columns += 1;
+    else if (character === "\t") columns += 4 - (columns % 4);
+    else return -1;
+  }
+  return columns;
+}
+
+function indentedCodeLayout(source, content) {
+  const sourceLines = sourceLinesWithOffsets(source);
+  const contentLines = String(content ?? "").split("\n");
+  if (sourceLines.length !== contentLines.length) return null;
+
+  let contentStart = 0;
+  const lines = [];
+  for (let index = 0; index < sourceLines.length; index += 1) {
+    const sourceLine = sourceLines[index];
+    const contentLine = contentLines[index];
+    if (!sourceLine.text.endsWith(contentLine)) return null;
+    const prefix = sourceLine.text.slice(0, sourceLine.text.length - contentLine.length);
+    if (contentLine && indentationColumns(prefix) < 4) return null;
+    if (!contentLine && /[^\t ]/.test(prefix)) return null;
+    const sourceStart = sourceLine.start + prefix.length;
+    lines.push({
+      contentStart,
+      contentEnd: contentStart + contentLine.length,
+      sourceStart,
+      sourceEnd: sourceStart + contentLine.length
+    });
+    contentStart += contentLine.length + (index + 1 < contentLines.length ? 1 : 0);
+  }
+  return { lines };
+}
+
 export function emptyCodeEnterSource(source) {
   const value = String(source ?? "");
   const openingEnd = value.indexOf("\n");
@@ -193,6 +240,16 @@ export function emptyCodeSourceHistoryDirection(event, source, history, contentL
 }
 
 export function codeContentOffsetAtSourceOffset(source, content, sourceOffset) {
+  const indented = indentedCodeLayout(source, content);
+  if (indented) {
+    for (const line of indented.lines) {
+      if (sourceOffset >= line.sourceStart && sourceOffset <= line.sourceEnd) {
+        return line.contentStart + sourceOffset - line.sourceStart;
+      }
+    }
+    return null;
+  }
+
   const openingEnd = source.indexOf("\n");
   if (openingEnd < 0) return null;
   const contentStart = openingEnd + 1;
@@ -215,6 +272,14 @@ export function codeContentOffsetAtSourceOffset(source, content, sourceOffset) {
 }
 
 export function codeBoundaryNavigationSourceOffset(source, content, key, contentHead = 0) {
+  const indented = indentedCodeLayout(source, content);
+  if (indented) {
+    const first = indented.lines[0];
+    if (key === "ArrowLeft") return Math.max(0, first.sourceStart - 1);
+    if (key === "ArrowUp") return Math.min(first.sourceStart, Math.max(0, contentHead));
+    return source.length;
+  }
+
   const openingEnd = source.indexOf("\n");
   if (openingEnd < 0) return key === "ArrowLeft" || key === "ArrowUp" ? 0 : source.length;
 

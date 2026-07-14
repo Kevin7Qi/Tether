@@ -34,8 +34,9 @@ export function annotateFencedCodeMarkers(tree, file) {
         const closingLine = sourceLines[endLine - 1] || "";
         const opening = fenceRun(openingLine);
         const closing = closingFenceRun(closingLine);
+        const start = node.position?.start?.offset;
+        const end = node.position?.end?.offset;
         if (opening) {
-          const start = node.position?.start?.offset;
           const openingLineEnd = Number.isFinite(start) ? source.indexOf("\n", start) : -1;
           const lineEnding = openingLineEnd < 0
             ? ""
@@ -50,16 +51,16 @@ export function annotateFencedCodeMarkers(tree, file) {
           node.closingFenceLength = validClosing ? closing.length : opening.length;
           node.fenceClosed = validClosing;
           node.fenceLineEnding = lineEnding;
-          if (parent?.type === "root") {
-            const end = node.position?.end?.offset;
-            if (Number.isFinite(start) && Number.isFinite(end)) {
-              node.fenceSource = source.slice(start, end);
-              node.fenceTrailingLineEnding = node.fenceSource.endsWith("\r\n")
-                ? "\r\n"
-                : node.fenceSource.endsWith("\n") ? "\n" : "";
-              node.fenceSourceSignature = codeSemanticSignature(node);
-            }
-          }
+        }
+        if (parent?.type === "root" && Number.isFinite(start) && Number.isFinite(end)) {
+          // Root indented code needs the same source snapshot as a fence. Without
+          // it, editing an unrelated paragraph silently rewrites four-space or
+          // tab-indented code as a fenced block.
+          node.fenceSource = source.slice(start, end);
+          node.fenceTrailingLineEnding = node.fenceSource.endsWith("\r\n")
+            ? "\r\n"
+            : node.fenceSource.endsWith("\n") ? "\n" : "";
+          node.fenceSourceSignature = codeSemanticSignature(node);
         }
       }
     }
@@ -169,7 +170,6 @@ function indentedCode(node, state) {
   const raw = node.value || "";
   if (
     node.fenceMarker != null
-    || state.options.fences !== false
     || !raw
     || node.lang
     || !/[^ \r\n]/.test(raw)
