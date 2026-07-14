@@ -13,6 +13,7 @@
     "check": "vite build",
     "package:win": "node scripts/package-win-portable.cjs",
     "package:mac": "vite build && electron-builder --mac --arm64 && node scripts/verify-mac-package.cjs",
+    "verify:list-markers": "electron scripts/verify-list-marker-alignment.mjs",
     "test": "node --test tests/*.test.cjs tests/*.test.mjs",
     "test:backend": "node --test tests/*.test.cjs",
     "test:renderer": "node --test tests/*.test.mjs",
