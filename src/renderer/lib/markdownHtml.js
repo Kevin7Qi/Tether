@@ -1,4 +1,261 @@
-import { $markSchema, $remark } from "@milkdown/kit/utils";
+import DOMPurify from "dompurify";
+import { $markSchema, $nodeSchema, $remark } from "@milkdown/kit/utils";
+
+const blockHtmlContainers = new Set([
+  "root",
+  "blockquote",
+  "listItem",
+  "footnoteDefinition"
+]);
+
+const blockHtmlTags = [
+  "a",
+  "article",
+  "aside",
+  "b",
+  "blockquote",
+  "br",
+  "code",
+  "dd",
+  "del",
+  "details",
+  "div",
+  "dl",
+  "dt",
+  "em",
+  "figcaption",
+  "figure",
+  "footer",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "hr",
+  "i",
+  "ins",
+  "kbd",
+  "li",
+  "main",
+  "mark",
+  "nav",
+  "ol",
+  "p",
+  "pre",
+  "s",
+  "section",
+  "small",
+  "span",
+  "strong",
+  "sub",
+  "summary",
+  "sup",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "tr",
+  "u",
+  "ul"
+];
+
+const blockHtmlAttributes = [
+  "aria-label",
+  "aria-labelledby",
+  "aria-describedby",
+  "class",
+  "colspan",
+  "open",
+  "reversed",
+  "rowspan",
+  "scope",
+  "start",
+  "title",
+  "value"
+];
+
+const blockHtmlTagSet = new Set(blockHtmlTags);
+const blockHtmlAttributeSet = new Set(blockHtmlAttributes);
+const droppedBlockHtmlTags = new Set([
+  "audio",
+  "base",
+  "button",
+  "canvas",
+  "embed",
+  "form",
+  "iframe",
+  "img",
+  "input",
+  "link",
+  "math",
+  "meta",
+  "noscript",
+  "object",
+  "picture",
+  "script",
+  "select",
+  "source",
+  "style",
+  "svg",
+  "template",
+  "textarea",
+  "video"
+]);
+
+function copySafeBlockHtmlNode(node, documentLike) {
+  if (node.nodeType === 3) return documentLike.createTextNode(node.nodeValue || "");
+  if (node.nodeType !== 1) return null;
+  const tag = String(node.localName || node.tagName || "").toLowerCase();
+  if (droppedBlockHtmlTags.has(tag)) return null;
+
+  if (!blockHtmlTagSet.has(tag)) {
+    const fragment = documentLike.createDocumentFragment();
+    for (const child of node.childNodes || []) {
+      const safeChild = copySafeBlockHtmlNode(child, documentLike);
+      if (safeChild) fragment.append(safeChild);
+    }
+    return fragment;
+  }
+
+  const safe = documentLike.createElement(tag);
+  for (const attribute of node.attributes || []) {
+    const name = String(attribute.name || "").toLowerCase();
+    if (!blockHtmlAttributeSet.has(name)) continue;
+    safe.setAttribute(name, attribute.value || "");
+  }
+  for (const child of node.childNodes || []) {
+    const safeChild = copySafeBlockHtmlNode(child, documentLike);
+    if (safeChild) safe.append(safeChild);
+  }
+  return safe;
+}
+
+export function nativeSanitizeBlockHtml(value, documentLike) {
+  if (!documentLike?.createElement || !documentLike?.createTextNode) return String(value || "");
+  const template = documentLike.createElement("template");
+  template.innerHTML = String(value || "");
+  const output = documentLike.createElement("div");
+  for (const node of template.content?.childNodes || []) {
+    const safeNode = copySafeBlockHtmlNode(node, documentLike);
+    if (safeNode) output.append(safeNode);
+  }
+  return output.innerHTML;
+}
+
+export function sanitizeBlockHtml(
+  value,
+  purifier = DOMPurify,
+  windowLike = typeof window === "undefined" ? null : window,
+  documentLike = windowLike?.document || null
+) {
+  const raw = String(value || "");
+  let candidate = raw;
+  try {
+    const activePurifier = typeof purifier?.sanitize === "function"
+      ? purifier
+      : typeof purifier === "function" && windowLike
+        ? purifier(windowLike)
+        : null;
+    if (typeof activePurifier?.sanitize === "function") {
+      const sanitized = activePurifier.sanitize(raw, {
+        ALLOWED_TAGS: blockHtmlTags,
+        ALLOWED_ATTR: blockHtmlAttributes,
+        ALLOW_ARIA_ATTR: true,
+        ALLOW_DATA_ATTR: false,
+        FORBID_ATTR: ["style"],
+        RETURN_TRUSTED_TYPE: false
+      });
+      const clean = typeof sanitized === "string" ? sanitized : String(sanitized || "");
+      // An unsupported DOMPurify instance returns an empty string for every
+      // input. The native reconstruction below remains the mandatory final
+      // barrier and can safely recover the allowed portion in that case.
+      if (clean || !raw.trim()) candidate = clean;
+    }
+  } catch {}
+  return nativeSanitizeBlockHtml(candidate, documentLike);
+}
+
+function renderBlockHtmlChildren(node) {
+  if (!Array.isArray(node?.children)) return node;
+  node.children = node.children.map((child) => {
+    if (child?.type === "html" && blockHtmlContainers.has(node.type)) {
+      return {
+        type: "htmlBlockElement",
+        value: child.value || "",
+        position: child.position
+      };
+    }
+    return renderBlockHtmlChildren(child);
+  });
+  return node;
+}
+
+export function renderSafeBlockHtml(tree) {
+  return renderBlockHtmlChildren(tree);
+}
+
+export const renderedBlockHtmlRemark = $remark(
+  "tetherRenderedBlockHtml",
+  () => () => renderSafeBlockHtml
+);
+
+function htmlBlockDOM(node) {
+  const value = node.attrs.value || "";
+  const wrapper = document.createElement("div");
+  wrapper.className = "tether-html-block";
+  wrapper.setAttribute("data-md-html-block", "");
+  wrapper.setAttribute("data-md-html-source", value);
+  wrapper.setAttribute("contenteditable", "false");
+
+  const preview = document.createElement("div");
+  preview.className = "tether-html-block-preview";
+  preview.innerHTML = sanitizeBlockHtml(value, DOMPurify, document.defaultView, document);
+  const hasPreview = preview.children.length > 0 || Boolean(preview.textContent?.trim());
+  if (hasPreview) {
+    wrapper.classList.add("is-rendered");
+    wrapper.setAttribute("aria-label", "Rendered HTML block. Select to edit Markdown source.");
+    wrapper.append(preview);
+  } else {
+    wrapper.classList.add("is-literal");
+    wrapper.setAttribute("aria-label", "HTML source block. Select to edit Markdown source.");
+    const literal = document.createElement("pre");
+    literal.className = "tether-html-block-literal";
+    literal.textContent = value;
+    wrapper.append(literal);
+  }
+  return wrapper;
+}
+
+export const renderedBlockHtmlSchema = $nodeSchema("html_block", () => ({
+  atom: true,
+  group: "block",
+  selectable: true,
+  isolating: true,
+  attrs: {
+    value: { default: "", validate: "string" }
+  },
+  toDOM: htmlBlockDOM,
+  parseDOM: [{
+    tag: "div[data-md-html-block]",
+    getAttrs: (dom) => ({ value: dom.getAttribute?.("data-md-html-source") || "" })
+  }],
+  parseMarkdown: {
+    match: (node) => node.type === "htmlBlockElement",
+    runner: (state, node, type) => state.addNode(type, { value: node.value || "" })
+  },
+  toMarkdown: {
+    match: (node) => node.type.name === "html_block",
+    runner: (state, node) => state.addNode("htmlBlockElement", undefined, node.attrs.value || "")
+  }
+}));
+
+export function renderedBlockHtmlHandler(node) {
+  return node.value || "";
+}
 
 const renderedTags = new Set([
   "b",

@@ -75,6 +75,7 @@
     "@lezer/highlight": "^1.2.3",
     "@milkdown/crepe": "^7.21.2",
     "@milkdown/kit": "^7.21.2",
+    "dompurify": "^3.4.11",
     "lucide-react": "^0.468.0",
     "mdast-util-gfm-footnote": "^2.1.0",
     "micromark-extension-gfm-footnote": "^2.1.0",

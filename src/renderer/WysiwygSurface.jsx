@@ -14,6 +14,7 @@ import {
   createCodeBlockInputRule,
   headingKeymap,
   listItemKeymap,
+  remarkHtmlTransformer,
   remarkInlineLinkPlugin
 } from "@milkdown/kit/preset/commonmark";
 import { strikethroughInputRule } from "@milkdown/kit/preset/gfm";
@@ -70,7 +71,12 @@ import {
   sourceFaithfulDocumentRemark,
   sourceFaithfulDocumentSchema
 } from "./lib/markdownDocument.js";
-import { renderedInlineHtmlRemark, renderedInlineHtmlSchema } from "./lib/markdownHtml.js";
+import {
+  renderedBlockHtmlRemark,
+  renderedBlockHtmlSchema,
+  renderedInlineHtmlRemark,
+  renderedInlineHtmlSchema
+} from "./lib/markdownHtml.js";
 import {
   sourceFaithfulFootnoteDefinitionSchema,
   sourceFaithfulFootnoteReferenceSchema,
@@ -1103,6 +1109,7 @@ export default function WysiwygSurface({
       .addFeature(table)
       .addFeature(latex);
     crepe.setReadonly(readOnlyRef.current);
+    void crepe.editor.remove(remarkHtmlTransformer);
     void crepe.editor.remove(remarkInlineLinkPlugin);
     void crepe.editor.remove(strikethroughInputRule);
     void crepe.editor.remove(createCodeBlockInputRule);
@@ -1113,6 +1120,8 @@ export default function WysiwygSurface({
       .use(sourceFaithfulCodeBlockEnterShortcut)
       .use(sourceFaithfulMathRemark)
       .use(sourceFaithfulInlineMathSchema)
+      .use(renderedBlockHtmlRemark)
+      .use(renderedBlockHtmlSchema)
       .use(renderedInlineHtmlRemark)
       .use(renderedInlineHtmlSchema)
       .use(sourceFaithfulFootnoteDefinitionSchema)

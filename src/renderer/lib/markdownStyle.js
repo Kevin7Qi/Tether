@@ -23,7 +23,7 @@ import {
   sourceFaithfulMathBlockHandler
 } from "./markdownMath.js";
 import { sourceFaithfulParagraphHandler } from "./markdownParagraph.js";
-import { renderedInlineHtmlHandler } from "./markdownHtml.js";
+import { renderedBlockHtmlHandler, renderedInlineHtmlHandler } from "./markdownHtml.js";
 import {
   sourceFaithfulFootnoteDefinitionHandler,
   sourceFaithfulFootnoteReferenceHandler
@@ -82,6 +82,7 @@ export function tetherStringifyOptions(options = {}) {
       footnoteDefinition: sourceFaithfulFootnoteDefinitionHandler,
       footnoteReference: sourceFaithfulFootnoteReferenceHandler,
       heading: sourceFaithfulHeadingHandler,
+      htmlBlockElement: renderedBlockHtmlHandler,
       htmlInlineElement: renderedInlineHtmlHandler,
       image: sourceFaithfulImageHandler,
       imageReference: sourceFaithfulImageReferenceHandler,

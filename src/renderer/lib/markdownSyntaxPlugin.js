@@ -27,6 +27,7 @@ const sourceAtomNames = new Set([
   "hr",
   "footnote_reference",
   "html",
+  "html_block",
   "math_inline",
   "hardbreak",
   "link_definition"

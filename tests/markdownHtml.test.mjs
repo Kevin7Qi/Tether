@@ -12,7 +12,7 @@ import {
   serializerCtx
 } from "@milkdown/kit/core";
 import { Clock, Container, Ctx } from "@milkdown/kit/ctx";
-import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
+import { EditorState, NodeSelection, TextSelection } from "@milkdown/kit/prose/state";
 import {
   docSchema,
   htmlSchema,
@@ -20,13 +20,18 @@ import {
   textSchema
 } from "@milkdown/kit/preset/commonmark";
 import {
+  renderedBlockHtmlRemark,
+  renderedBlockHtmlSchema,
   renderedInlineHtmlRemark,
-  renderedInlineHtmlSchema
+  renderedInlineHtmlSchema,
+  renderSafeBlockHtml,
+  sanitizeBlockHtml
 } from "../src/renderer/lib/markdownHtml.js";
 import { sourceFaithfulParagraphRemark, sourceFaithfulParagraphSchema } from "../src/renderer/lib/markdownParagraph.js";
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   activeMarkdownSyntax,
+  activeMarkdownAtomSyntax,
   continuousMarkdownSource,
   sourceAwareClipboardText,
   sourceSelectionFromDocumentSelection,
@@ -56,6 +61,8 @@ async function milkdownTransformer() {
     paragraphSchema,
     textSchema,
     htmlSchema,
+    renderedBlockHtmlRemark,
+    renderedBlockHtmlSchema,
     renderedInlineHtmlRemark,
     renderedInlineHtmlSchema,
     sourceFaithfulParagraphRemark,
@@ -78,6 +85,106 @@ async function milkdownTransformer() {
     globalThis.setTimeout = nativeSetTimeout;
   }
 }
+
+test("block HTML nodes are separated from inline HTML before schema parsing", () => {
+  const tree = {
+    type: "root",
+    children: [
+      { type: "html", value: "<div>Block</div>" },
+      {
+        type: "paragraph",
+        children: [{ type: "html", value: "<kbd>" }, { type: "text", value: "K" }]
+      }
+    ]
+  };
+  renderSafeBlockHtml(tree);
+  assert.equal(tree.children[0].type, "htmlBlockElement");
+  assert.equal(tree.children[0].value, "<div>Block</div>");
+  assert.equal(tree.children[1].children[0].type, "html");
+});
+
+test("block HTML sanitization uses a strict non-active allowlist", () => {
+  let captured = null;
+  const result = sanitizeBlockHtml("<div onclick=\"bad()\">Safe</div>", {
+    sanitize(value, options) {
+      captured = { value, options };
+      return "<div>Safe</div>";
+    }
+  });
+  assert.equal(result, "<div>Safe</div>");
+  assert.equal(captured.value, "<div onclick=\"bad()\">Safe</div>");
+  assert.ok(captured.options.ALLOWED_TAGS.includes("div"));
+  assert.ok(!captured.options.ALLOWED_TAGS.includes("script"));
+  assert.ok(!captured.options.ALLOWED_TAGS.includes("iframe"));
+  assert.ok(!captured.options.ALLOWED_TAGS.includes("img"));
+  assert.ok(!captured.options.ALLOWED_ATTR.includes("href"));
+  assert.ok(!captured.options.ALLOWED_ATTR.includes("src"));
+  assert.deepEqual(captured.options.FORBID_ATTR, ["style"]);
+  assert.equal(captured.options.ALLOW_DATA_ATTR, false);
+
+  const windowLike = { name: "renderer-window" };
+  let receivedWindow = null;
+  const factoryResult = sanitizeBlockHtml("<strong>Safe</strong>", (candidateWindow) => {
+    receivedWindow = candidateWindow;
+    return { sanitize: () => "<strong>Safe</strong>" };
+  }, windowLike);
+  assert.equal(receivedWindow, windowLike);
+  assert.equal(factoryResult, "<strong>Safe</strong>");
+});
+
+test("safe block HTML renders as one exact source-faithful atom", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = [
+    "Before.",
+    "",
+    '<div class="callout">',
+    "  <strong>Rendered</strong>",
+    "  <em>content</em>",
+    "</div>",
+    "",
+    "After.",
+    ""
+  ].join("\n");
+  const doc = parse(source);
+  assert.deepEqual([...Array(doc.childCount)].map((_, index) => doc.child(index).type.name), [
+    "paragraph",
+    "html_block",
+    "paragraph"
+  ]);
+  const html = doc.child(1);
+  assert.equal(html.attrs.value, '<div class="callout">\n  <strong>Rendered</strong>\n  <em>content</em>\n</div>');
+  assert.equal(serialize(doc), source);
+
+  const changed = html.type.create({
+    value: html.attrs.value.replace("Rendered", "Changed")
+  });
+  assert.equal(
+    serialize(doc.type.create(doc.attrs, [doc.firstChild, changed, doc.lastChild])),
+    source.replace("Rendered", "Changed")
+  );
+});
+
+test("selected block HTML exposes its complete physical source", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "Before.\n\n<div>Rendered <strong>HTML</strong></div>\n\nAfter.\n";
+  const doc = parse(source);
+  let htmlPosition = null;
+  doc.descendants((node, position) => {
+    if (htmlPosition == null && node.type.name === "html_block") htmlPosition = position;
+  });
+  const state = EditorState.create({
+    doc,
+    selection: NodeSelection.create(doc, htmlPosition)
+  });
+  const unit = activeMarkdownAtomSyntax(state);
+  assert.equal(unit.name, "html_block");
+  assert.equal(unit.kind, "block");
+  assert.equal(
+    continuousMarkdownSource(state, unit, serialize),
+    "<div>Rendered <strong>HTML</strong></div>"
+  );
+  assert.equal(sourceAwareClipboardText(state, serialize), "<div>Rendered <strong>HTML</strong></div>");
+});
 
 function textPosition(doc, text) {
   let position = null;

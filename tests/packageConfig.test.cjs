@@ -101,8 +101,13 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(surface, /use\(sourceFaithfulCodeBlockEnterShortcut\)/);
   assert.match(surface, /use\(sourceFaithfulMathRemark\)/);
   assert.match(surface, /use\(sourceFaithfulInlineMathSchema\)/);
+  assert.match(surface, /remove\(remarkHtmlTransformer\)/);
+  assert.match(surface, /use\(renderedBlockHtmlRemark\)/);
+  assert.match(surface, /use\(renderedBlockHtmlSchema\)/);
   assert.match(surface, /use\(renderedInlineHtmlRemark\)/);
   assert.match(surface, /use\(renderedInlineHtmlSchema\)/);
+  assert.match(styles, /\.tether-html-block\.is-rendered/);
+  assert.match(styles, /\.tether-html-block-literal/);
   assert.match(styles, /kbd\[data-md-html-inline\]/);
   assert.match(surface, /use\(sourceFaithfulFootnoteRemark\)/);
   assert.match(surface, /use\(sourceFaithfulFootnoteDefinitionSchema\)/);
