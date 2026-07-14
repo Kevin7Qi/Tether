@@ -2141,6 +2141,34 @@ export function moveSourceSelectionHead(sourceSelection, motion) {
   };
 }
 
+export function sourceSelectionLineJump(sourceSelection, edge, extend = false) {
+  if (!sourceSelection || !["start", "end"].includes(edge)) return null;
+  const bounds = sourceLineBounds(sourceSelection.fullSource, sourceSelection.head);
+  const head = edge === "start" ? bounds.start : bounds.end;
+  return {
+    ...sourceSelection,
+    anchor: extend ? sourceSelection.anchor : head,
+    head,
+    verticalColumn: null
+  };
+}
+
+export function sourceSelectionWordJump(sourceSelection, direction, extend = false) {
+  if (!sourceSelection || !["backward", "forward"].includes(direction)) return null;
+  const collapsed = sourceSelection.anchor === sourceSelection.head;
+  const head = !extend && !collapsed
+    ? direction === "backward"
+      ? Math.min(sourceSelection.anchor, sourceSelection.head)
+      : Math.max(sourceSelection.anchor, sourceSelection.head)
+    : sourceWordOffset(sourceSelection.fullSource, sourceSelection.head, direction);
+  return {
+    ...sourceSelection,
+    anchor: extend ? sourceSelection.anchor : head,
+    head,
+    verticalColumn: null
+  };
+}
+
 export function replaceSourceSelectionTransaction(
   state,
   sourceSelection,
@@ -3782,6 +3810,39 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             return true;
           }
           const serializer = ctx.get(serializerCtx);
+          const exactWordDirection = sourceSelection
+            && event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && ["ArrowLeft", "ArrowRight"].includes(event.key)
+            ? event.key === "ArrowLeft" ? "backward" : "forward"
+            : null;
+          if (exactWordDirection) {
+            const next = sourceSelectionWordJump(
+              sourceSelection,
+              exactWordDirection,
+              Boolean(event.shiftKey)
+            );
+            event.preventDefault();
+            if (
+              next.anchor === next.head
+              && activateDocumentSourceOffset(
+                _view,
+                next,
+                next.head,
+                exactWordDirection,
+                serializer
+              )
+            ) return true;
+            _view.dispatch(
+              _view.state.tr.setMeta(markdownSyntaxKey, {
+                action: "source-selection",
+                sourceSelection: next
+              })
+            );
+            focusProseMirrorRoot(_view);
+            return true;
+          }
           const wordJump = sourceWordJumpTarget(_view.state, event, serializer);
           if (wordJump && !activeSourceControl?.element?.isConnected) {
             event.preventDefault();
@@ -3796,6 +3857,33 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             return true;
           }
           const lineJumpEdge = sourceLineJumpEdge(event);
+          if (sourceSelection && lineJumpEdge) {
+            const next = sourceSelectionLineJump(
+              sourceSelection,
+              lineJumpEdge,
+              Boolean(event.shiftKey)
+            );
+            const direction = lineJumpEdge === "start" ? "backward" : "forward";
+            event.preventDefault();
+            if (
+              next.anchor === next.head
+              && activateDocumentSourceOffset(
+                _view,
+                next,
+                next.head,
+                direction,
+                serializer
+              )
+            ) return true;
+            _view.dispatch(
+              _view.state.tr.setMeta(markdownSyntaxKey, {
+                action: "source-selection",
+                sourceSelection: next
+              })
+            );
+            focusProseMirrorRoot(_view);
+            return true;
+          }
           if (
             lineJumpEdge
             && _view.state.selection.empty

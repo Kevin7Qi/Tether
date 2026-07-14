@@ -225,6 +225,14 @@ test("temporary Markdown source controls hand document jumps back to the full so
   assert.match(syntax, /baseOffset \+ localSelection\.anchor/);
 });
 
+test("exact source-only selections own line and word jump commands", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /const exactWordDirection = sourceSelection[\s\S]*sourceSelectionWordJump\(/);
+  assert.match(syntax, /const lineJumpEdge = sourceLineJumpEdge\(event\);[\s\S]*sourceSelectionLineJump\(/);
+  assert.match(syntax, /sourceSelectionWordJump\([\s\S]*activateDocumentSourceOffset\(/);
+  assert.match(syntax, /sourceSelectionLineJump\([\s\S]*activateDocumentSourceOffset\(/);
+});
+
 test("exact source edits preserve source-only carets or refocus the rendered surface", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /function focusExactEditSelection\(view\)/);

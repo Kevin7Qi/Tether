@@ -59,7 +59,9 @@ import {
   sourceSelectionFromDocumentSelection,
   sourceSelectionAfterEdit,
   sourceSelectionHasAdjacentBlocks,
+  sourceSelectionLineJump,
   sourceSelectionText,
+  sourceSelectionWordJump,
   sourceVerticalOffset,
   sourceWordJumpTarget,
   sourceWordOffset,
@@ -1675,6 +1677,78 @@ test("line-jump shortcuts distinguish physical line edges from word and document
   assert.equal(sourceLineJumpEdge({ key: "ArrowLeft", ctrlKey: true }), null);
   assert.equal(sourceLineJumpEdge({ key: "Home", metaKey: true }), null);
   assert.equal(sourceLineJumpEdge({ key: "Home", altKey: true }), null);
+});
+
+test("exact source selections own physical line and word jumps across CRLF gaps", () => {
+  const fullSource = "First\r\n\r\n**bold** tail";
+  const gapCaret = fullSource.indexOf("\r\n", fullSource.indexOf("\r\n") + 2);
+  const sourceSelection = {
+    anchor: gapCaret,
+    head: gapCaret,
+    fullSource,
+    boundary: 7
+  };
+
+  assert.deepEqual(sourceSelectionLineJump(sourceSelection, "start"), {
+    ...sourceSelection,
+    verticalColumn: null
+  });
+  assert.deepEqual(sourceSelectionLineJump(sourceSelection, "end"), {
+    ...sourceSelection,
+    verticalColumn: null
+  });
+
+  const nextLineCaret = fullSource.indexOf("**bold**");
+  const nextLineSelection = {
+    ...sourceSelection,
+    anchor: nextLineCaret + 4,
+    head: nextLineCaret + 4
+  };
+  assert.deepEqual(sourceSelectionLineJump(nextLineSelection, "start"), {
+    ...nextLineSelection,
+    anchor: nextLineCaret,
+    head: nextLineCaret,
+    verticalColumn: null
+  });
+  assert.deepEqual(sourceSelectionLineJump(nextLineSelection, "end", true), {
+    ...nextLineSelection,
+    head: fullSource.length,
+    verticalColumn: null
+  });
+
+  const afterFirst = "First".length;
+  const wordStart = sourceWordOffset(fullSource, afterFirst, "forward");
+  assert.equal(wordStart, nextLineCaret + 2);
+  assert.deepEqual(sourceSelectionWordJump({
+    ...sourceSelection,
+    anchor: afterFirst,
+    head: afterFirst
+  }, "forward"), {
+    ...sourceSelection,
+    anchor: wordStart,
+    head: wordStart,
+    verticalColumn: null
+  });
+  assert.deepEqual(sourceSelectionWordJump({
+    ...sourceSelection,
+    anchor: afterFirst,
+    head: wordStart
+  }, "backward"), {
+    ...sourceSelection,
+    anchor: afterFirst,
+    head: afterFirst,
+    verticalColumn: null
+  });
+  assert.deepEqual(sourceSelectionWordJump({
+    ...sourceSelection,
+    anchor: afterFirst,
+    head: wordStart
+  }, "forward", true), {
+    ...sourceSelection,
+    anchor: afterFirst,
+    head: nextLineCaret + "**bold".length,
+    verticalColumn: null
+  });
 });
 
 test("document-jump shortcuts cover native macOS and Windows key combinations", () => {
