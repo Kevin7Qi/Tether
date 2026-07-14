@@ -24,11 +24,14 @@ import {
   exactSourceSelectionAfterUndo,
   exactSourceSelectionAfterHistory,
   extendSourceSelection,
+  focusProseMirrorRoot,
+  dispatchFocusedSourceSelection,
   inlineSourceBoundaryDeleteDirection,
   inlineSourceBoundaryDirection,
   inlineSourceBoundarySelectionDirection,
   inlineSourceContentOffset,
   inlineSourceVerticalDirection,
+  isUnmarkedFullDocumentReplacement,
   isSourceInputComposing,
   hardbreakBoundaryBackspaceTransaction,
   hardbreakSourceReplacement,
@@ -78,6 +81,7 @@ import {
   sourceWordOffset,
   sourceWordSelectionRange,
   sourceWordSelectionAcrossUnitBoundary,
+  shouldRejectStaleExactSourceReplacement,
   serializedDocumentGaps,
   structuralBoundarySourceTarget,
   structuralSourceHandoffTarget,
@@ -113,6 +117,56 @@ test("activeMarkdownSyntax exposes one continuous strong source range", () => {
   assert.deepEqual(syntax.names, ["strong"]);
   assert.equal(syntax.kind, "inline");
   assert.equal(syntax.to - syntax.from, "marked".length);
+});
+
+test("only metadata-free whole-document replacements match stale DOM reconciliation", () => {
+  const before = schema.node("doc", null, [schema.node("paragraph", null, [schema.text("before")])]);
+  const after = schema.node("doc", null, [schema.node("paragraph", null, [schema.text("after")])]);
+  const state = EditorState.create({ doc: before });
+  const fullReplacement = state.tr.replace(
+    0,
+    state.doc.content.size,
+    after.slice(0, after.content.size)
+  );
+  assert.equal(isUnmarkedFullDocumentReplacement(fullReplacement, state), true);
+  assert.equal(
+    isUnmarkedFullDocumentReplacement(fullReplacement.setMeta("tetherExternalMarkdown", true), state),
+    false
+  );
+
+  const localEdit = state.tr.insertText("!", 2);
+  assert.equal(isUnmarkedFullDocumentReplacement(localEdit, state), false);
+});
+
+test("exact-source protection rejects only a conflicting stale root replacement", () => {
+  const before = schema.node("doc", null, [schema.node("paragraph", null, [schema.text("before")])]);
+  const expected = schema.node("doc", null, [schema.node("paragraph", null, [schema.text("expected")])]);
+  const stale = schema.node("doc", null, [schema.node("paragraph", null, [schema.text("stale")])]);
+  const state = EditorState.create({ doc: before });
+  const replaceWith = (doc) => state.tr.replace(
+    0,
+    state.doc.content.size,
+    doc.slice(0, doc.content.size)
+  );
+  const serialize = (doc) => doc.textContent;
+
+  assert.equal(
+    shouldRejectStaleExactSourceReplacement(replaceWith(stale), state, "expected", serialize),
+    true
+  );
+  assert.equal(
+    shouldRejectStaleExactSourceReplacement(replaceWith(expected), state, "expected", serialize),
+    false
+  );
+  assert.equal(
+    shouldRejectStaleExactSourceReplacement(
+      replaceWith(stale).setMeta("tetherExternalMarkdown", true),
+      state,
+      "expected",
+      serialize
+    ),
+    false
+  );
 });
 
 test("source activation enters textblocks instead of selecting the whole paragraph", () => {
@@ -2268,6 +2322,44 @@ test("source editing uses native-like grapheme boundaries for deletion and point
     end: "👨‍👩‍👧‍👦".length,
     direction: "forward"
   });
+});
+
+test("source handoffs focus through ProseMirror after blurring embedded editors", () => {
+  const calls = [];
+  const embeddedEditor = { blur: () => calls.push("blur") };
+  const dom = {
+    ownerDocument: { activeElement: embeddedEditor },
+    contains: (element) => element === embeddedEditor,
+    focus: () => calls.push("raw-dom-focus")
+  };
+  const view = {
+    dom,
+    focus: () => calls.push("prosemirror-focus")
+  };
+
+  focusProseMirrorRoot(view);
+  assert.deepEqual(calls, ["blur", "prosemirror-focus"]);
+});
+
+test("exact source handoffs focus the root before dispatch and synchronize afterward", () => {
+  const calls = [];
+  const embedded = { blur: () => calls.push("blur") };
+  const dom = {
+    ownerDocument: { activeElement: embedded },
+    isConnected: true,
+    contains: (element) => element === embedded,
+    focus: () => calls.push("root-focus")
+  };
+  const transaction = { exact: true };
+  const view = {
+    dom,
+    dispatch: (value) => calls.push(value === transaction ? "dispatch" : "wrong-transaction"),
+    focus: () => calls.push("prosemirror-focus")
+  };
+
+  dispatchFocusedSourceSelection(view, transaction);
+
+  assert.deepEqual(calls, ["blur", "root-focus", "dispatch", "prosemirror-focus"]);
 });
 
 test("temporary source controls undo and redo activation-time deletion", () => {

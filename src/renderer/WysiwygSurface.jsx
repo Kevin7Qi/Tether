@@ -18,7 +18,7 @@ import {
   remarkInlineLinkPlugin
 } from "@milkdown/kit/preset/commonmark";
 import { strikethroughInputRule } from "@milkdown/kit/preset/gfm";
-import { replaceAll } from "@milkdown/kit/utils";
+import { Slice } from "@milkdown/kit/prose/model";
 import { AllSelection, TextSelection } from "@milkdown/kit/prose/state";
 import { redo as redoProseMirror, undo as undoProseMirror } from "@milkdown/kit/prose/history";
 import {
@@ -120,6 +120,7 @@ import {
   documentSourceUnitStartOffset,
   enclosingCodeBlock,
   flushActiveMarkdownSource,
+  externalMarkdownTransactionMeta,
   markdownSourceTargetFromPointer,
   markdownSyntaxPlugin,
   isSourceInputComposing,
@@ -136,6 +137,19 @@ import {
   replaceSourceSelectionTransaction,
   structuralMarkerBackspaceKeymap
 } from "./lib/markdownSyntaxPlugin.js";
+
+function replaceAllMarkdown(markdown) {
+  return (ctx) => {
+    const view = ctx.get(editorViewCtx);
+    const doc = ctx.get(parserCtx)(markdown);
+    if (!doc) return;
+    view.dispatch(
+      view.state.tr
+        .replace(0, view.state.doc.content.size, new Slice(doc.content, 0, 0))
+        .setMeta(externalMarkdownTransactionMeta, true)
+    );
+  };
+}
 
 const copyIcon = `
   <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1444,7 +1458,7 @@ export default function WysiwygSurface({
         prepareMarkdownWidgets();
         const latestMarkdown = contentRef.current || "";
         if (latestMarkdown !== initialMarkdown) {
-          crepe.editor.action(replaceAll(latestMarkdown));
+          crepe.editor.action(replaceAllMarkdown(latestMarkdown));
         }
         lastMarkdownRef.current = latestMarkdown;
         settleFrame = window.requestAnimationFrame(() => {
@@ -1544,7 +1558,7 @@ export default function WysiwygSurface({
     if (nextMarkdown === lastMarkdownRef.current) return;
 
     applyingExternalRef.current = true;
-    crepe.editor.action(replaceAll(nextMarkdown));
+    crepe.editor.action(replaceAllMarkdown(nextMarkdown));
     lastMarkdownRef.current = nextMarkdown;
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {

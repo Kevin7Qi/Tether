@@ -41,6 +41,9 @@ import {
   documentGapSourceSelection,
   documentSourceSegments,
   documentSourceTarget,
+  documentSourceUnitBoundaryGapTarget,
+  documentSourceUnitSegment,
+  documentSourceUnitBoundaryNavigationOffset,
   documentSourceUnitStartOffset,
   replaceSourceSelectionTransaction,
   sourceAwareClipboardText,
@@ -560,6 +563,60 @@ test("empty-fence insertion maps its local closing marker into the full document
   );
   assert.equal(transaction.selection.$from.parent.type.name, "code_block");
   assert.equal(transaction.selection.$from.parentOffset, 1);
+});
+
+test("typing after traversing a closing fence preserves the fenced block", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "Before code.\n\n```javascript\nalpha\n```\n\nAfter code.\n";
+  const doc = parse(source);
+  const state = EditorState.create({ doc });
+  let codePosition = null;
+  doc.descendants((node, position) => {
+    if (node.type.name !== "code_block") return true;
+    codePosition = position;
+    return false;
+  });
+  const codeNode = doc.nodeAt(codePosition);
+  const unit = {
+    from: codePosition,
+    to: codePosition + codeNode.nodeSize,
+    kind: "block",
+    name: "code_block"
+  };
+  const sourceOffset = documentSourceUnitBoundaryNavigationOffset(
+    state,
+    unit,
+    "forward",
+    serialize
+  );
+  const target = documentSourceTarget(state, sourceOffset, serialize, "forward");
+  const directTarget = documentSourceUnitBoundaryGapTarget(
+    state,
+    unit,
+    "forward",
+    serialize,
+    continuousMarkdownSource(state, unit, serialize).length
+  );
+  const selection = documentGapSourceSelection(target, sourceOffset);
+  const transaction = replaceSourceSelectionTransaction(state, selection, "X", parse);
+
+  assert.equal(target.kind, "gap");
+  assert.equal(directTarget.kind, "gap");
+  assert.equal(directTarget.sourceOffset, sourceOffset);
+  assert.equal(
+    documentSourceUnitSegment(
+      state,
+      { ...unit, from: unit.from + 1, to: unit.to + 8 },
+      serialize
+    ).segment.node.type.name,
+    "code_block"
+  );
+  assert.equal(selection.anchor, source.indexOf("\n\nAfter") + 1);
+  assert.equal(selection.anchor, selection.head);
+  assert.equal(
+    serialize(transaction.doc),
+    `${source.slice(0, selection.anchor)}X${source.slice(selection.anchor)}`
+  );
 });
 
 test("Select All replacement includes leading and trailing root Markdown gaps", async () => {

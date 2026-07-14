@@ -18,6 +18,29 @@ import { sourceTabEdit } from "./sourceEditing.js";
 export { sourceTabEdit } from "./sourceEditing.js";
 
 const markdownSyntaxKey = new PluginKey("TETHER_MARKDOWN_SYNTAX");
+export const externalMarkdownTransactionMeta = "tetherExternalMarkdown";
+
+export function isUnmarkedFullDocumentReplacement(transaction, state) {
+  if (
+    !transaction?.docChanged
+    || transaction.getMeta(externalMarkdownTransactionMeta)
+    || Object.keys(transaction.meta || {}).length
+    || transaction.steps.length !== 1
+  ) return false;
+  const [step] = transaction.steps;
+  return step?.from === 0 && step?.to === state.doc.content.size;
+}
+
+export function shouldRejectStaleExactSourceReplacement(
+  transaction,
+  state,
+  protectedSource,
+  serializer
+) {
+  if (protectedSource == null || typeof serializer !== "function") return false;
+  return serializer(transaction.doc) !== protectedSource
+    && isUnmarkedFullDocumentReplacement(transaction, state);
+}
 
 const supportedMarks = ["inlineCode", "link", "strike_through", "strong", "emphasis", "html_inline"];
 const sourceBlockNames = new Set(["bullet_list", "ordered_list", "blockquote", "footnote_definition"]);
@@ -98,15 +121,33 @@ export function markdownSourceSelectionAt(doc, position, atomPosition = null) {
   return Selection.near(resolved);
 }
 
-function focusProseMirrorRoot(view) {
+export function focusProseMirrorRoot(view) {
   // ProseMirror considers a focused CodeMirror descendant to be focused too,
   // so view.focus() can leave keyboard input in the code block after a jump
-  // into a virtual source selection.
+  // into a virtual source selection. Blur that descendant first, then use the
+  // view's focus method so ProseMirror also synchronizes the DOM selection to
+  // the transaction selection. Focusing view.dom directly leaves the browser's
+  // old DOM range behind, so the next character can land in unrelated prose or
+  // replace the adjacent code block instead of editing the exact source gap.
   const activeElement = view.dom.ownerDocument?.activeElement;
   if (activeElement !== view.dom && view.dom.contains(activeElement)) {
     activeElement.blur?.();
   }
+  view.focus();
+}
+
+export function dispatchFocusedSourceSelection(view, transaction) {
+  const activeElement = view.dom.ownerDocument?.activeElement;
+  if (activeElement !== view.dom && view.dom.contains(activeElement)) {
+    activeElement.blur?.();
+  }
+  // Move keyboard ownership away from an embedded editor without asking
+  // ProseMirror to restore its still-stale code selection. Once the exact
+  // source transaction is installed, view.focus() can safely synchronize the
+  // browser range to that new selection.
   view.dom.focus();
+  view.dispatch(transaction);
+  view.focus();
 }
 
 function pruneStaleCodeBlockDom(view) {
@@ -185,7 +226,8 @@ function activateDocumentSourceOffset(
   if (target.kind === "gap") {
     const gapSelection = documentGapSourceSelection(target, sourceOffset);
     if (!gapSelection) return false;
-    view.dispatch(
+    dispatchFocusedSourceSelection(
+      view,
       view.state.tr
         .setSelection(markdownSourceSelectionAt(view.state.doc, target.position))
         .setMeta(markdownSyntaxKey, {
@@ -194,7 +236,6 @@ function activateDocumentSourceOffset(
         })
         .scrollIntoView()
     );
-    focusProseMirrorRoot(view);
     return true;
   }
   if (target.kind === "block") {
@@ -230,7 +271,8 @@ function activateDocumentSourceOffset(
 
   const before = target.beforeSegment;
   const after = target.afterSegment;
-  view.dispatch(
+  dispatchFocusedSourceSelection(
+    view,
     view.state.tr
       .setSelection(markdownSourceSelectionAt(view.state.doc, target.position))
       .setMeta(markdownSyntaxKey, {
@@ -258,7 +300,6 @@ function activateDocumentSourceOffset(
         }
       })
   );
-  focusProseMirrorRoot(view);
   return true;
 }
 
@@ -2183,11 +2224,89 @@ export function documentSourceUnitBoundaryOffset(state, unit, direction, seriali
   return start + continuousMarkdownSource(state, unit, serializer).length;
 }
 
-export function documentSourceUnitBoundaryNavigationOffset(state, unit, direction, serializer) {
-  const boundary = documentSourceUnitBoundaryOffset(state, unit, direction, serializer);
+export function documentSourceUnitSegment(state, unit, serializer) {
+  if (!unit) return null;
   const documentSource = documentSourceSegments(state, serializer);
-  if (!Number.isFinite(boundary) || !documentSource) return null;
+  if (!documentSource) return null;
+  const exact = documentSource.segments.find((candidate) => (
+    candidate.position === unit.from
+    && candidate.position + candidate.node.nodeSize === unit.to
+  ));
+  if (exact) return { segment: exact, documentSource };
+  const sameType = documentSource.segments
+    .filter((candidate) => candidate.node.type.name === unit.name)
+    .sort((left, right) => (
+      Math.abs(left.position - unit.from) - Math.abs(right.position - unit.from)
+    ));
+  return sameType[0] ? { segment: sameType[0], documentSource } : null;
+}
+
+export function documentSourceUnitBoundaryNavigationOffset(state, unit, direction, serializer) {
+  const resolved = documentSourceUnitSegment(state, unit, serializer);
+  const documentSource = resolved?.documentSource;
+  if (!documentSource) return null;
+  // Complete block controls already correspond to one exact serialized
+  // segment. Prefer that identity over reverse-mapping a rendered caret at the
+  // block edge, where NodeViews can resolve to the following prose block.
+  const segment = resolved.segment;
+  const boundary = segment
+    ? direction === "backward" ? segment.from : segment.to
+    : documentSourceUnitBoundaryOffset(state, unit, direction, serializer);
+  if (!Number.isFinite(boundary)) return null;
   return sourceOffsetAfterCharacter(documentSource.fullSource, boundary, direction);
+}
+
+export function documentSourceUnitBoundaryGapTarget(
+  state,
+  unit,
+  direction,
+  serializer,
+  visibleSourceLength = null
+) {
+  if (!unit || !["backward", "forward"].includes(direction)) return null;
+  const resolved = documentSourceUnitSegment(state, unit, serializer);
+  const segment = resolved?.segment;
+  const documentSource = resolved?.documentSource;
+  if (!segment || !documentSource) return null;
+  const beforeSegment = direction === "forward"
+    ? segment
+    : documentSource.segments[segment.index - 1] || null;
+  const afterSegment = direction === "forward"
+    ? documentSource.segments[segment.index + 1] || null
+    : segment;
+  const visibleBoundary = direction === "forward" && Number.isFinite(visibleSourceLength)
+    ? Math.max(segment.from, Math.min(segment.to, segment.from + visibleSourceLength))
+    : null;
+  const gapFrom = direction === "forward"
+    ? Math.min(segment.gapFrom, visibleBoundary ?? segment.gapFrom)
+    : beforeSegment?.gapFrom ?? 0;
+  const gapTo = direction === "forward"
+    ? segment.gapTo
+    : beforeSegment?.gapTo ?? segment.from;
+  if (gapFrom >= gapTo) return null;
+  const boundary = direction === "forward"
+    ? visibleBoundary ?? segment.to
+    : segment.from;
+  const sourceOffset = sourceOffsetAfterCharacter(
+    documentSource.fullSource,
+    boundary,
+    direction
+  );
+  if (sourceOffset < gapFrom || sourceOffset > gapTo || sourceOffset === boundary) return null;
+  return {
+    kind: "gap",
+    boundary,
+    position: direction === "forward"
+      ? segment.position + segment.node.nodeSize
+      : segment.position,
+    sourceOffset,
+    gapFrom,
+    gapTo,
+    beforeSegment,
+    afterSegment,
+    segment,
+    documentSource
+  };
 }
 
 export function sourceSelectionFromDocumentSelection(
@@ -2858,6 +2977,12 @@ function continuousSourceEditor(
     if (sync) run();
     else requestAnimationFrame(run);
   };
+  // Keyboard input can arrive again before the next animation frame. Finish
+  // keyboard-driven handoffs in the same event turn so the destination owns
+  // the very next character; pointer and blur exits can remain deferred.
+  const finishKeyboardHandoff = (commit, afterFinish = null) => {
+    finish(commit, afterFinish, true);
+  };
   setActiveControl({ element: editor, finish });
 
   const applyInitialHistoryCommand = (command) => {
@@ -3026,7 +3151,10 @@ function continuousSourceEditor(
       };
       event.preventDefault();
       event.stopPropagation();
-      finish(true, (mapping) => onDocumentJump(shortcut, sourceSelection, mapping));
+      finishKeyboardHandoff(
+        true,
+        (mapping) => onDocumentJump(shortcut, sourceSelection, mapping)
+      );
       return;
     }
     const wordJumpDirection = sourceInputWordJumpDirection(
@@ -3106,7 +3234,7 @@ function continuousSourceEditor(
       event.preventDefault();
       event.stopPropagation();
       const targetPoint = verticalDirection ? caretTargetPoint(verticalDirection) : null;
-      finish(true, (mapping) => {
+      finishKeyboardHandoff(true, (mapping) => {
         if (wordJumpDirection) {
           onWordJump(
             wordJumpDirection,
@@ -3127,7 +3255,7 @@ function continuousSourceEditor(
       });
     } else if (event.key === "Escape") {
       event.preventDefault();
-      finish(false);
+      finishKeyboardHandoff(false);
     } else if (
       isBlock
       && event.key === "Tab"
@@ -3154,10 +3282,13 @@ function continuousSourceEditor(
         resize();
       }
       const value = editor.value;
-      finish(true, (mapping) => onInlineEnter(value, sourceOffset, mapping));
+      finishKeyboardHandoff(
+        true,
+        (mapping) => onInlineEnter(value, sourceOffset, mapping)
+      );
     } else if (isBlock && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      finish(true);
+      finishKeyboardHandoff(true);
     }
   });
   resize();
@@ -3955,6 +4086,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
   let activeSourceControl = null;
   const exactEditHistory = [];
   let exactHistoryFrame = 0;
+  let exactSourceDispatchDepth = 0;
+  let protectedExactSource = null;
 
   const rememberExactEdit = (sourceSelection, transaction, afterSourceSelection = null) => {
     if (!sourceSelection || !transaction?.docChanged) return;
@@ -4025,8 +4158,18 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       transaction,
       preserveSourcePosition ? afterSelection : null
     );
-    transaction.setMeta(markdownSyntaxKey, "close");
-    view.dispatch(transaction.scrollIntoView());
+    transaction.setMeta(markdownSyntaxKey, { action: "exact-source-edit" });
+    // The browser can report one stale whole-root DOM reconciliation after a
+    // virtual gap edit moves focus out of an embedded CodeMirror. Remember the
+    // source installed by this exact transaction so that reconciliation cannot
+    // replace the newly edited document with the rendered DOM snapshot.
+    protectedExactSource = afterSource;
+    exactSourceDispatchDepth += 1;
+    try {
+      view.dispatch(transaction.scrollIntoView());
+    } finally {
+      exactSourceDispatchDepth -= 1;
+    }
     if (
       preserveSourcePosition
       && afterSelection
@@ -4090,21 +4233,60 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
 
   return new Plugin({
     key: markdownSyntaxKey,
+    filterTransaction(transaction, state) {
+      const meta = transaction.getMeta(markdownSyntaxKey);
+      if (!transaction.docChanged) {
+        if (transaction.selectionSet && meta?.action !== "source-selection") {
+          protectedExactSource = null;
+        }
+        return true;
+      }
+
+      const serializer = ctx.get(serializerCtx);
+      const candidateSource = serializer(transaction.doc);
+      if (shouldRejectStaleExactSourceReplacement(
+        transaction,
+        state,
+        protectedExactSource,
+        serializer
+      )) return false;
+
+      if (meta?.action !== "exact-source-edit" && candidateSource !== protectedExactSource) {
+        protectedExactSource = null;
+      }
+      return true;
+    },
     state: {
       // Milkdown starts with a selection in the first block. Source mode only
       // becomes active after an actual pointer/keyboard interaction.
       init: inactivePluginState,
       apply(transaction, pluginState) {
         const meta = transaction.getMeta(markdownSyntaxKey);
-        if (meta === "close") return inactivePluginState();
-        if (meta?.action === "smart-input") return inactivePluginState();
+        if (meta === "close") {
+          pendingActivation = false;
+          return inactivePluginState();
+        }
+        if (meta?.action === "smart-input") {
+          pendingActivation = false;
+          return inactivePluginState();
+        }
+        if (meta?.action === "exact-source-edit") {
+          pendingActivation = false;
+          return inactivePluginState();
+        }
         if (meta?.action === "source-selection") {
+          // This transaction already specifies the exact physical source
+          // selection. A pending activation from the arrow that entered the
+          // temporary control must not replace it with the browser's stale DOM
+          // caret when focus returns to ProseMirror.
+          pendingActivation = false;
           return {
             ...inactivePluginState(),
             sourceSelection: meta.sourceSelection
           };
         }
         if (meta?.action === "activate") {
+          pendingActivation = false;
           return {
             active: true,
             atomPosition: meta.atomPosition ?? null,
@@ -4153,13 +4335,20 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             sourceSelection: null
           };
         }
-        if (transaction.selectionSet && pluginState.sourceSelection) return inactivePluginState();
+        // Exact Markdown offsets remain authoritative while focus and DOM
+        // selection reconcile. Real pointer interaction clears them explicitly
+        // below; treating every ProseMirror selection update as user intent can
+        // turn a gap caret into a code-block NodeSelection.
+        if (transaction.selectionSet && pluginState.sourceSelection) return pluginState;
         return pluginState;
       }
     },
     appendTransaction(transactions, _oldState, newState) {
       if (!transactions.some((transaction) => transaction.docChanged)) return null;
-      if (transactions.some((transaction) => transaction.getMeta(markdownSyntaxKey)?.action === "smart-input")) return null;
+      if (exactSourceDispatchDepth > 0) return null;
+      if (transactions.some((transaction) => ["smart-input", "exact-source-edit"].includes(
+        transaction.getMeta(markdownSyntaxKey)?.action
+      ))) return null;
       const mathRevert = revertInvalidInlineMath(newState);
       if (mathRevert) return mathRevert;
       return smartInlineInputTransaction(newState, ctx.get(parserCtx));
@@ -4284,6 +4473,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         mousedown(view, event) {
           if (!view.editable) return false;
           if (event.target instanceof Element && event.target.closest(".tether-continuous-source")) return false;
+          if (markdownSyntaxKey.getState(view.state)?.sourceSelection) {
+            pendingActivation = false;
+            view.dispatch(view.state.tr.setMeta(markdownSyntaxKey, "close"));
+          }
           const sourceToFinish = activeSourceControl?.element?.isConnected ? activeSourceControl : null;
           const target = markdownSourceTargetFromPointer(view, event);
           if (!target) return false;
@@ -4855,17 +5048,50 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               return;
             }
           }
+          const mappedFrom = Math.max(
+            0,
+            Math.min(mappedPosition(mapping, unit.from, -1), editorView.state.doc.content.size)
+          );
+          const mappedNode = editorView.state.doc.nodeAt(mappedFrom);
           const mappedUnit = {
             ...unit,
-            from: Math.max(
-              0,
-              Math.min(mappedPosition(mapping, unit.from, -1), editorView.state.doc.content.size)
-            ),
-            to: Math.max(
-              0,
-              Math.min(mappedPosition(mapping, unit.to, 1), editorView.state.doc.content.size)
-            )
+            from: mappedFrom,
+            to: mappedNode?.type.name === unit.name
+              ? mappedFrom + mappedNode.nodeSize
+              : Math.max(
+                  0,
+                  Math.min(mappedPosition(mapping, unit.to, 1), editorView.state.doc.content.size)
+                )
           };
+          const boundaryGap = unit.kind === "block"
+            ? documentSourceUnitBoundaryGapTarget(
+                editorView.state,
+                mappedUnit,
+                direction,
+                serializer,
+                source.length
+              )
+            : null;
+          if (boundaryGap) {
+            const gapSelection = documentGapSourceSelection(
+              boundaryGap,
+              boundaryGap.sourceOffset
+            );
+            dispatchFocusedSourceSelection(
+              editorView,
+              editorView.state.tr
+                .setSelection(markdownSourceSelectionAt(
+                  editorView.state.doc,
+                  boundaryGap.position
+                ))
+                .setMeta(markdownSyntaxKey, {
+                  action: "source-selection",
+                  sourceSelection: gapSelection
+                })
+                .scrollIntoView()
+            );
+            return;
+          }
           const sourceOffset = unit.kind === "block"
             ? documentSourceUnitBoundaryNavigationOffset(
                 editorView.state,

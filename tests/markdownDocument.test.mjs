@@ -263,6 +263,15 @@ test("typing replaces the selected physical newline in full Markdown source", as
     15
   );
   assert.equal(
+    documentSourceUnitBoundaryNavigationOffset(
+      state,
+      { ...codeUnit, to: codeUnit.to - 1 },
+      "forward",
+      serialize
+    ),
+    15
+  );
+  assert.equal(
     documentSourceTarget(
       state,
       documentSourceUnitBoundaryOffset(state, codeUnit, "forward", serialize),

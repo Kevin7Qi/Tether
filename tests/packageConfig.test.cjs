@@ -256,11 +256,41 @@ test("multi-click activation carries word and line selection into raw Markdown c
 
 test("temporary Markdown source controls hand document jumps back to the full source map", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
   assert.match(syntax, /const documentJumpEdge = sourceDocumentJumpEdge\(event\)/);
-  assert.match(syntax, /finish\(true, \(mapping\) => onDocumentJump\(shortcut, sourceSelection, mapping\)\)/);
+  assert.match(
+    syntax,
+    /finishKeyboardHandoff\([\s\S]*onDocumentJump\(shortcut, sourceSelection, mapping\)/
+  );
   assert.match(syntax, /const jumpFromSource = \(event, localSelection, mapping = null\) =>/);
   assert.match(syntax, /baseOffset \+ localSelection\.head/);
   assert.match(syntax, /baseOffset \+ localSelection\.anchor/);
+  assert.match(syntax, /meta\?\.action === "source-selection"[\s\S]*pendingActivation = false/);
+  assert.match(syntax, /focusProseMirrorRoot\(view\)[\s\S]*view\.focus\(\)/);
+  assert.match(syntax, /if \(target\.kind === "gap"\)[\s\S]*dispatchFocusedSourceSelection\(/);
+  assert.match(
+    syntax,
+    /transaction\.selectionSet[\s\S]*pluginState\.sourceSelection[\s\S]*return pluginState/
+  );
+  assert.match(
+    syntax,
+    /mousedown\(view, event\)[\s\S]*sourceSelection[\s\S]*setMeta\(markdownSyntaxKey, "close"\)/
+  );
+  assert.match(syntax, /const finishKeyboardHandoff = [\s\S]*finish\(commit, afterFinish, true\)/);
+  assert.match(syntax, /finishKeyboardHandoff\(true, \(mapping\) => \{[\s\S]*onBoundaryNavigate/);
+  assert.match(syntax, /const sameType = documentSource\.segments[\s\S]*candidate\.node\.type\.name === unit\.name/);
+  assert.match(syntax, /mappedNode\?\.type\.name === unit\.name[\s\S]*mappedFrom \+ mappedNode\.nodeSize/);
+  assert.match(syntax, /const boundaryGap = unit\.kind === "block"[\s\S]*documentSourceUnitBoundaryGapTarget/);
+  assert.match(syntax, /documentSourceUnitBoundaryGapTarget\([\s\S]*source\.length/);
+  assert.match(syntax, /transaction\.setMeta\(markdownSyntaxKey, \{ action: "exact-source-edit" \}\)/);
+  assert.match(syntax, /\["smart-input", "exact-source-edit"\]\.includes/);
+  assert.match(syntax, /exactSourceDispatchDepth \+= 1[\s\S]*view\.dispatch[\s\S]*exactSourceDispatchDepth -= 1/);
+  assert.match(syntax, /appendTransaction[\s\S]*if \(exactSourceDispatchDepth > 0\) return null/);
+  assert.match(
+    syntax,
+    /shouldRejectStaleExactSourceReplacement\([\s\S]*protectedExactSource[\s\S]*serializer/
+  );
+  assert.match(surface, /function replaceAllMarkdown[\s\S]*setMeta\(externalMarkdownTransactionMeta, true\)/);
 });
 
 test("temporary Markdown source controls keep extended selections exact across their boundaries", () => {
