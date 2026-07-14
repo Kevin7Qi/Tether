@@ -94,11 +94,17 @@ async function verifyAlignment() {
     return [...document.querySelectorAll("[data-kind]")].map((row) => {
       const marker = center(visualRect(row.querySelector(".label")));
       const rowRect = row.getBoundingClientRect();
-      const contentRect = row.querySelector(".content-dom > p").getBoundingClientRect();
+      const content = row.querySelector(".content-dom > p");
+      const contentRect = content.getBoundingClientRect();
+      const textRange = document.createRange();
+      textRange.selectNodeContents(content);
+      const text = center(textRange.getBoundingClientRect());
       return {
         kind: row.dataset.kind,
         markerX: marker.x,
         markerYFromRow: marker.y - rowRect.top,
+        textYFromRow: text.y - rowRect.top,
+        markerToTextY: marker.y - text.y,
         markerToText: contentRect.left - marker.x,
         contentIndent: contentRect.left - rowRect.left,
         markerWidth: visualRect(row.querySelector(".label")).width
@@ -108,12 +114,23 @@ async function verifyAlignment() {
 
   const markerXs = measurements.map(({ markerX }) => markerX);
   const markerYs = measurements.map(({ markerYFromRow }) => markerYFromRow);
+  const markerToTextY = measurements.map(({ markerToTextY: value }) => value);
   const contentIndents = measurements.map(({ contentIndent }) => contentIndent);
   const markerToText = measurements.map(({ markerToText: value }) => value);
   if (spread(markerXs) > 0.25) throw new Error(`marker horizontal centers diverge by ${spread(markerXs)}px`);
   if (spread(markerYs) > 0.25) throw new Error(`marker vertical centers diverge by ${spread(markerYs)}px`);
+  if (spread(markerToTextY) > 0.25) throw new Error(`marker-to-text vertical offsets diverge by ${spread(markerToTextY)}px`);
   if (spread(contentIndents) > 0.25) throw new Error(`text indents diverge by ${spread(contentIndents)}px`);
   if (spread(markerToText) > 0.25) throw new Error(`marker-to-text offsets diverge by ${spread(markerToText)}px`);
+  // Range geometry follows the font's ink box rather than the CSS line box.
+  // Keep every marker at, or just below, that optical center: a negative value
+  // is the visibly high-marker regression this harness is meant to catch.
+  if (Math.min(...markerToTextY) < -0.25) {
+    throw new Error("a marker center sits visibly above its first-line text");
+  }
+  if (Math.max(...markerToTextY) > 3) {
+    throw new Error("a marker center sits visibly below its first-line text");
+  }
   near(contentIndents[0], 20, 0.25, "list content indent");
   near(markerToText[0], 11, 0.25, "marker center to text offset");
   if (Math.max(...measurements.map(({ markerWidth }) => markerWidth)) > 16.25) {
