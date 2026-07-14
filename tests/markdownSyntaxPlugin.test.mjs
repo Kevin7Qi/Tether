@@ -16,6 +16,7 @@ import {
   downgradeAtxHeadingAtCursor,
   enclosingCodeBlock,
   exactSourceSelectionAfterUndo,
+  exactSourceSelectionAfterHistory,
   inlineSourceBoundaryDeleteDirection,
   inlineSourceBoundaryDirection,
   inlineSourceBoundarySelectionDirection,
@@ -37,6 +38,7 @@ import {
   sourceCaretOffset,
   sourceCaretBoundaries,
   sourceCharacterDeletionRange,
+  sourceEditCaretOffset,
   sourceBoundarySelectionRange,
   sourceInitialSelectionRange,
   sourceDocumentJumpEdge,
@@ -1106,6 +1108,37 @@ test("undo matches an exact source edit before restoring its original selection"
   assert.equal(exactSourceSelectionAfterUndo(history, "Else", "Before"), null);
   assert.equal(exactSourceSelectionAfterUndo(history, "B", "Different"), null);
   assert.equal(exactSourceSelectionAfterUndo(history, "Before", "Before"), null);
+});
+
+test("exact source history restores the original range on undo and the edited caret on redo", () => {
+  const sourceSelection = {
+    anchor: 2,
+    head: 6,
+    fullSource: "Before",
+    boundary: 3
+  };
+  const afterSourceSelection = {
+    anchor: 3,
+    head: 3,
+    fullSource: "BeX",
+    boundary: 4
+  };
+  const history = [{
+    beforeSource: "Before",
+    afterSource: "BeX",
+    sourceSelection,
+    afterSourceSelection
+  }];
+  assert.deepEqual(
+    exactSourceSelectionAfterHistory(history, "BeX", "Before"),
+    sourceSelection
+  );
+  assert.deepEqual(
+    exactSourceSelectionAfterHistory(history, "Before", "BeX"),
+    afterSourceSelection
+  );
+  assert.equal(exactSourceSelectionAfterHistory(history, "Else", "BeX"), null);
+  assert.equal(sourceEditCaretOffset(sourceSelection, "BeX"), 3);
 });
 
 test("activeMarkdownBlockSyntax leaves table cells visual even inside a blockquote", () => {

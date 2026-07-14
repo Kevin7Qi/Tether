@@ -2,13 +2,14 @@ import { parserCtx, serializerCtx } from "@milkdown/kit/core";
 import { Fragment, Slice } from "@milkdown/kit/prose/model";
 import { joinBackward, joinForward, lift, splitBlock } from "@milkdown/kit/prose/commands";
 import { liftListItem, splitListItem } from "@milkdown/kit/prose/schema-list";
-import { AllSelection, Plugin, PluginKey, Selection, TextSelection } from "@milkdown/kit/prose/state";
+import { AllSelection, EditorState, Plugin, PluginKey, Selection, TextSelection } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet } from "@milkdown/kit/prose/view";
 import { $prose, $shortcut } from "@milkdown/kit/utils";
 import { documentGaps } from "./markdownDocument.js";
 import { tableCellSourceOffsetAtPosition } from "./markdownTable.js";
 import {
   codeContentOffsetAtSourceOffset,
+  isEditorHistoryShortcut,
   tetherCodeViewForElement
 } from "./codeEditor.js";
 
@@ -1549,6 +1550,49 @@ export function exactSourceSelectionAfterUndo(history, beforeUndoSource, afterUn
     };
   }
   return null;
+}
+
+export function exactSourceSelectionAfterHistory(history, beforeHistorySource, afterHistorySource) {
+  if (!Array.isArray(history) || beforeHistorySource === afterHistorySource) return null;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry = history[index];
+    if (
+      entry?.afterSource === beforeHistorySource
+      && entry?.beforeSource === afterHistorySource
+      && entry?.sourceSelection
+    ) {
+      return {
+        ...entry.sourceSelection,
+        fullSource: afterHistorySource
+      };
+    }
+    if (
+      entry?.beforeSource === beforeHistorySource
+      && entry?.afterSource === afterHistorySource
+      && entry?.afterSourceSelection
+    ) {
+      return {
+        ...entry.afterSourceSelection,
+        fullSource: afterHistorySource
+      };
+    }
+  }
+  return null;
+}
+
+export function sourceEditCaretOffset(sourceSelection, afterSource) {
+  if (!sourceSelection || typeof afterSource !== "string") return null;
+  const beforeSource = sourceSelection.fullSource;
+  if (typeof beforeSource !== "string") return null;
+  const to = Math.max(sourceSelection.anchor, sourceSelection.head);
+  const maximumSuffix = Math.max(0, beforeSource.length - to);
+  let suffixLength = 0;
+  while (
+    suffixLength < maximumSuffix
+    && beforeSource[beforeSource.length - 1 - suffixLength]
+      === afterSource[afterSource.length - 1 - suffixLength]
+  ) suffixLength += 1;
+  return Math.max(0, afterSource.length - suffixLength);
 }
 
 export function documentSourceSegments(state, serializer) {
@@ -3261,31 +3305,56 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
   let pendingActivation = false;
   let activeSourceControl = null;
   const exactEditHistory = [];
+  let exactHistoryFrame = 0;
 
   const rememberExactEdit = (sourceSelection, transaction) => {
     if (!sourceSelection || !transaction?.docChanged) return;
     const beforeSource = sourceSelection.fullSource;
-    const afterSource = ctx.get(serializerCtx)(transaction.doc);
+    const serializer = ctx.get(serializerCtx);
+    const afterSource = serializer(transaction.doc);
     if (beforeSource === afterSource) return;
+    const afterState = EditorState.create({
+      doc: transaction.doc,
+      selection: transaction.selection
+    });
+    const mappedCaret = documentSourceOffsetAtPosition(
+      afterState,
+      transaction.selection.head,
+      serializer,
+      "forward"
+    );
+    const afterCaret = Number.isFinite(mappedCaret)
+      ? mappedCaret
+      : sourceEditCaretOffset(sourceSelection, afterSource);
     exactEditHistory.push({
       beforeSource,
       afterSource,
-      sourceSelection: { ...sourceSelection }
+      sourceSelection: { ...sourceSelection },
+      afterSourceSelection: Number.isFinite(afterCaret)
+        ? {
+            anchor: afterCaret,
+            head: afterCaret,
+            fullSource: afterSource,
+            boundary: transaction.selection.head
+          }
+        : null
     });
     if (exactEditHistory.length > 20) exactEditHistory.shift();
   };
 
-  const restoreExactSelectionAfterUndo = (view) => {
+  const restoreExactSelectionAfterHistory = (view) => {
     if (!exactEditHistory.length) return;
     const serializer = ctx.get(serializerCtx);
-    const beforeUndoSource = serializer(view.state.doc);
-    requestAnimationFrame(() => {
+    const beforeHistorySource = serializer(view.state.doc);
+    if (exactHistoryFrame) cancelAnimationFrame(exactHistoryFrame);
+    exactHistoryFrame = requestAnimationFrame(() => {
+      exactHistoryFrame = 0;
       if (!view.dom.isConnected) return;
-      const afterUndoSource = serializer(view.state.doc);
-      const sourceSelection = exactSourceSelectionAfterUndo(
+      const afterHistorySource = serializer(view.state.doc);
+      const sourceSelection = exactSourceSelectionAfterHistory(
         exactEditHistory,
-        beforeUndoSource,
-        afterUndoSource
+        beforeHistorySource,
+        afterHistorySource
       );
       if (!sourceSelection) return;
       view.dispatch(
@@ -3476,6 +3545,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       },
       handleDOMEvents: {
         beforeinput(view, event) {
+          if (["historyUndo", "historyRedo"].includes(event.inputType)) {
+            restoreExactSelectionAfterHistory(view);
+            return false;
+          }
           return replaceExactTextInput(view, event);
         },
         copy(view, event) {
@@ -3534,13 +3607,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         keydown(_view, event) {
           if (!_view.editable) return false;
           if (isSourceInputComposing(event)) return false;
-          if (
-            !event.altKey
-            && !event.shiftKey
-            && Boolean(event.metaKey || event.ctrlKey)
-            && String(event.key || "").toLowerCase() === "z"
-          ) {
-            restoreExactSelectionAfterUndo(_view);
+          if (isEditorHistoryShortcut(event)) {
+            restoreExactSelectionAfterHistory(_view);
             return false;
           }
           const pluginState = markdownSyntaxKey.getState(_view.state);
