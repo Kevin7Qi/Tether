@@ -233,6 +233,13 @@ test("exact source-only selections own line and word jump commands", () => {
   assert.match(syntax, /sourceSelectionLineJump\([\s\S]*activateDocumentSourceOffset\(/);
 });
 
+test("exact source-only selections keep Tab indentation inside the Markdown document", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /sourceSelection[\s\S]*event\.key === "Tab"[\s\S]*sourceSelectionTabEdit\(/);
+  assert.match(syntax, /sourceSelectionTabEdit\([\s\S]*replaceSourceSelectionTransaction\(/);
+  assert.match(syntax, /dispatchExactEdit\([\s\S]*fullSelection,[\s\S]*next/);
+});
+
 test("exact source edits preserve source-only carets or refocus the rendered surface", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /function focusExactEditSelection\(view\)/);

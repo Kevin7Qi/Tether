@@ -60,6 +60,7 @@ import {
   sourceSelectionAfterEdit,
   sourceSelectionHasAdjacentBlocks,
   sourceSelectionLineJump,
+  sourceSelectionTabEdit,
   sourceSelectionText,
   sourceSelectionWordJump,
   sourceVerticalOffset,
@@ -1747,6 +1748,60 @@ test("exact source selections own physical line and word jumps across CRLF gaps"
     ...sourceSelection,
     anchor: afterFirst,
     head: nextLineCaret + "**bold".length,
+    verticalColumn: null
+  });
+});
+
+test("exact source selections indent physical lines without losing direction", () => {
+  const fullSource = "one\r\ntwo\r\nthree";
+  const forward = {
+    anchor: 1,
+    head: fullSource.indexOf("three"),
+    fullSource,
+    boundary: 4
+  };
+  assert.deepEqual(sourceSelectionTabEdit(forward), {
+    ...forward,
+    anchor: 2,
+    head: fullSource.indexOf("three") + 2,
+    fullSource: "\tone\r\n\ttwo\r\nthree",
+    verticalColumn: null
+  });
+
+  const backward = { ...forward, anchor: forward.head, head: forward.anchor };
+  assert.deepEqual(sourceSelectionTabEdit(backward), {
+    ...backward,
+    anchor: fullSource.indexOf("three") + 2,
+    head: 2,
+    fullSource: "\tone\r\n\ttwo\r\nthree",
+    verticalColumn: null
+  });
+
+  const gapSource = "one\r\n\r\nthree";
+  const blankLine = gapSource.indexOf("\r\n") + 2;
+  assert.deepEqual(sourceSelectionTabEdit({
+    ...forward,
+    anchor: blankLine,
+    head: blankLine,
+    fullSource: gapSource
+  }), {
+    ...forward,
+    anchor: blankLine + 1,
+    head: blankLine + 1,
+    fullSource: "one\r\n\t\r\nthree",
+    verticalColumn: null
+  });
+
+  assert.deepEqual(sourceSelectionTabEdit({
+    ...forward,
+    anchor: 2,
+    head: 2,
+    fullSource: "\tone"
+  }, true), {
+    ...forward,
+    anchor: 1,
+    head: 1,
+    fullSource: "one",
     verticalColumn: null
   });
 });

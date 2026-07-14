@@ -2169,6 +2169,21 @@ export function sourceSelectionWordJump(sourceSelection, direction, extend = fal
   };
 }
 
+export function sourceSelectionTabEdit(sourceSelection, outdent = false) {
+  if (!sourceSelection || typeof sourceSelection.fullSource !== "string") return null;
+  const backward = sourceSelection.anchor > sourceSelection.head;
+  const start = Math.min(sourceSelection.anchor, sourceSelection.head);
+  const end = Math.max(sourceSelection.anchor, sourceSelection.head);
+  const edit = sourceTabEdit(sourceSelection.fullSource, start, end, outdent);
+  return {
+    ...sourceSelection,
+    anchor: backward ? edit.selectionEnd : edit.selectionStart,
+    head: backward ? edit.selectionStart : edit.selectionEnd,
+    fullSource: edit.value,
+    verticalColumn: null
+  };
+}
+
 export function replaceSourceSelectionTransaction(
   state,
   sourceSelection,
@@ -3497,10 +3512,21 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     view,
     transaction,
     historySelection,
-    editSelection
+    editSelection,
+    requestedAfterSelection = null
   ) => {
     const serializer = ctx.get(serializerCtx);
-    const afterSelection = sourceSelectionAfterEdit(transaction, editSelection, serializer);
+    const afterSource = serializer(transaction.doc);
+    const afterSelection = requestedAfterSelection?.fullSource === afterSource
+      ? {
+          ...requestedAfterSelection,
+          fullSource: afterSource,
+          boundary: Math.max(
+            0,
+            Math.min(transaction.selection.head, transaction.doc.content.size)
+          )
+        }
+      : sourceSelectionAfterEdit(transaction, editSelection, serializer);
     const afterState = { doc: transaction.doc, selection: transaction.selection };
     const afterTarget = afterSelection
       ? documentSourceTarget(afterState, afterSelection.head, serializer, "forward")
@@ -3810,6 +3836,37 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             return true;
           }
           const serializer = ctx.get(serializerCtx);
+          if (
+            sourceSelection
+            && event.key === "Tab"
+            && !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+          ) {
+            const next = sourceSelectionTabEdit(sourceSelection, Boolean(event.shiftKey));
+            event.preventDefault();
+            if (next.fullSource === sourceSelection.fullSource) return true;
+            const fullSelection = {
+              ...sourceSelection,
+              anchor: 0,
+              head: sourceSelection.fullSource.length
+            };
+            const transaction = replaceSourceSelectionTransaction(
+              _view.state,
+              fullSelection,
+              next.fullSource,
+              ctx.get(parserCtx)
+            );
+            if (!transaction) return true;
+            dispatchExactEdit(
+              _view,
+              transaction,
+              sourceSelection,
+              fullSelection,
+              next
+            );
+            return true;
+          }
           const exactWordDirection = sourceSelection
             && event.altKey
             && !event.ctrlKey
