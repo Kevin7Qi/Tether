@@ -46,6 +46,7 @@ import {
   annotateBulletListMarkers,
   isInteractiveTaskMarker,
   listItemTextStart,
+  renderedListItemLabel,
   sourceFaithfulBulletListSchema,
   sourceFaithfulBulletRemark,
   sourceFaithfulOrderedListSchema,
@@ -334,6 +335,36 @@ test("ordered lists retain repeated, nonsequential, and nested item numbers", ()
     ""
   ].join("\n");
   assert.equal(roundTrip(source), source);
+});
+
+test("rendered ordered markers use each physical source number and delimiter", async () => {
+  const { parse } = await milkdownTransformer();
+  const dotted = parse("1. one\n1. repeated\n9. jumped\n100. wide\n123456789. maximum\n").firstChild;
+  assert.deepEqual(
+    [...Array(dotted.childCount)].map((_, index) => renderedListItemLabel(
+      dotted.child(index),
+      dotted.attrs.orderedDelimiter
+    )),
+    ["1.", "1.", "9.", "100.", "123456789."]
+  );
+
+  const parenthesized = parse("3) alpha\n8) beta\n").firstChild;
+  assert.deepEqual(
+    [...Array(parenthesized.childCount)].map((_, index) => renderedListItemLabel(
+      parenthesized.child(index),
+      parenthesized.attrs.orderedDelimiter
+    )),
+    ["3)", "8)"]
+  );
+
+  const newItem = parenthesized.firstChild.type.create({
+    ...parenthesized.firstChild.attrs,
+    label: "4.",
+    listType: "ordered",
+    orderedNumber: null
+  }, parenthesized.firstChild.content);
+  assert.equal(renderedListItemLabel(newItem, parenthesized.attrs.orderedDelimiter), "4)");
+  assert.equal(renderedListItemLabel({ attrs: { listType: "bullet", label: "•" } }), "•");
 });
 
 test("task lists retain uppercase, lowercase, and unchecked source markers", () => {

@@ -368,6 +368,33 @@ function listItemLabelClass(node) {
   return node.attrs.checked ? "checked" : "unchecked";
 }
 
+export function renderedListItemLabel(node, orderedDelimiter = ".") {
+  const attrs = node?.attrs || {};
+  if (attrs.checked != null) return attrs.label;
+  const sourceNumber = Number.isInteger(attrs.orderedNumber) ? attrs.orderedNumber : null;
+  if (sourceNumber == null && attrs.listType !== "ordered") return attrs.label;
+  const delimiter = orderedDelimiter === ")" ? ")" : ".";
+  if (sourceNumber != null) return `${sourceNumber}${delimiter}`;
+  const label = String(attrs.label ?? "");
+  return /^\d+[.)]$/.test(label) ? `${label.slice(0, -1)}${delimiter}` : label;
+}
+
+function orderedListDelimiterAtPosition(view, position) {
+  if (!Number.isFinite(position)) return ".";
+  try {
+    const resolved = view.state.doc.resolve(position);
+    for (let depth = resolved.depth; depth >= 0; depth -= 1) {
+      const ancestor = resolved.node(depth);
+      if (ancestor.type.name === "ordered_list") {
+        return ancestor.attrs.orderedDelimiter === ")" ? ")" : ".";
+      }
+    }
+  } catch {
+    // A node view can briefly outlive its document position during replacement.
+  }
+  return ".";
+}
+
 export function isInteractiveTaskMarker(node) {
   return node?.attrs?.checked != null;
 }
@@ -418,8 +445,23 @@ export const sourceFaithfulListItemView = $view(
       const render = () => {
         label.className = `milkdown-icon label ${listItemLabelClass(node)}`;
         label.classList.toggle("readonly", !view.editable);
+        let position = null;
+        try {
+          position = getPos();
+        } catch {
+          // Fall back to the semantic label while this node view is being replaced.
+        }
+        const renderedLabel = renderedListItemLabel(
+          node,
+          orderedListDelimiterAtPosition(view, position)
+        );
+        const orderedMarker = typeof renderedLabel === "string"
+          ? renderedLabel.match(/^(\d+)[.)]$/)
+          : null;
+        if (orderedMarker) label.dataset.markerDigits = `${orderedMarker[1].length}`;
+        else delete label.dataset.markerDigits;
         const icon = config.renderLabel({
-          label: node.attrs.label,
+          label: renderedLabel,
           listType: node.attrs.listType,
           checked: node.attrs.checked,
           readonly: !view.editable

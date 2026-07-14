@@ -159,6 +159,9 @@ test("rendered lists use compact indentation and intentional marker colors", () 
   assert.match(styles, /\.label\.bullet,\s*\.tether-wysiwyg \.ProseMirror \.milkdown-list-item-block \.label\.ordered\s*\{[^}]*color:\s*var\(--ink\)/s);
   assert.match(styles, /\.milkdown-list-item-block \.label svg\s*\{[^}]*display:\s*block[^}]*width:\s*17px[^}]*height:\s*17px/s);
   assert.match(styles, /\.label\.ordered\s*\{[^}]*justify-content:\s*center[^}]*font-variant-numeric:\s*tabular-nums/s);
+  assert.match(styles, /transform:\s*translateY\(2px\) scaleX\(var\(--tether-list-marker-scale, 1\)\)/);
+  assert.match(styles, /\.label\.ordered\[data-marker-digits="2"\]\s*\{[^}]*--tether-list-marker-scale:\s*0\.84/s);
+  assert.match(styles, /\.label\.ordered\[data-marker-digits="9"\]\s*\{[^}]*justify-content:\s*flex-end[^}]*font-size:\s*0\.68em[^}]*padding-inline-end:\s*3px[^}]*white-space:\s*nowrap/s);
   assert.doesNotMatch(styles, /label-wrapper:has\(\.label\.ordered\)/);
 });
 

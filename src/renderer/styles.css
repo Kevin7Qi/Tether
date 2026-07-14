@@ -2100,7 +2100,7 @@ textarea:focus-visible,
   padding: 0;
   text-align: center;
   line-height: 1;
-  transform: translateY(2px);
+  transform: translateY(2px) scaleX(var(--tether-list-marker-scale, 1));
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.bullet,
@@ -2121,9 +2121,29 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered {
   justify-content: center;
   font-family: var(--ui);
-  font-size: 0.86em;
+  font-size: 0.8em;
   font-variant-numeric: tabular-nums;
   font-weight: 500;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="2"] {
+  --tether-list-marker-scale: 0.84;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="3"] {
+  --tether-list-marker-scale: 0.65;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="4"],
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="5"],
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="6"],
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="7"],
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="8"],
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="9"] {
+  justify-content: flex-end;
+  font-size: 0.68em;
+  padding-inline-end: 3px;
+  white-space: nowrap;
 }
 
 .tether-wysiwyg .ProseMirror .list-item .content-dom > p {
