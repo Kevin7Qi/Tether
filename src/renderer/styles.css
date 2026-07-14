@@ -2058,9 +2058,58 @@ textarea:focus-visible,
 
 .tether-wysiwyg .ProseMirror ul,
 .tether-wysiwyg .ProseMirror ol {
+  --tether-list-item-gap: 2px;
   margin-top: 0;
   margin-bottom: 18px;
   padding-inline-start: 0;
+}
+
+.tether-wysiwyg .ProseMirror ol:has(
+  > .milkdown-list-item-block > .list-item > .label-wrapper > .label.ordered[data-marker-digits="2"]
+) {
+  --tether-list-item-gap: 4px;
+}
+
+.tether-wysiwyg .ProseMirror ol:has(
+  > .milkdown-list-item-block > .list-item > .label-wrapper > .label.ordered[data-marker-digits="3"]
+) {
+  --tether-list-item-gap: 8px;
+}
+
+.tether-wysiwyg .ProseMirror ol:has(
+  > .milkdown-list-item-block > .list-item > .label-wrapper > .label.ordered[data-marker-digits="4"]
+) {
+  --tether-list-item-gap: 10px;
+}
+
+.tether-wysiwyg .ProseMirror ol:has(
+  > .milkdown-list-item-block > .list-item > .label-wrapper > .label.ordered[data-marker-digits="5"]
+) {
+  --tether-list-item-gap: 13px;
+}
+
+.tether-wysiwyg .ProseMirror ol:has(
+  > .milkdown-list-item-block > .list-item > .label-wrapper > .label.ordered[data-marker-digits="6"]
+) {
+  --tether-list-item-gap: 17px;
+}
+
+.tether-wysiwyg .ProseMirror ol:has(
+  > .milkdown-list-item-block > .list-item > .label-wrapper > .label.ordered[data-marker-digits="7"]
+) {
+  --tether-list-item-gap: 21px;
+}
+
+.tether-wysiwyg .ProseMirror ol:has(
+  > .milkdown-list-item-block > .list-item > .label-wrapper > .label.ordered[data-marker-digits="8"]
+) {
+  --tether-list-item-gap: 24px;
+}
+
+.tether-wysiwyg .ProseMirror ol:has(
+  > .milkdown-list-item-block > .list-item > .label-wrapper > .label.ordered[data-marker-digits="9"]
+) {
+  --tether-list-item-gap: 28px;
 }
 
 .tether-wysiwyg .ProseMirror ul ul,
@@ -2076,7 +2125,7 @@ textarea:focus-visible,
   --tether-list-line-height: 1.72em;
   min-height: var(--tether-list-line-height);
   align-items: flex-start;
-  gap: 2px;
+  gap: var(--tether-list-item-gap, 2px);
   list-style: none;
 }
 
@@ -2100,9 +2149,7 @@ textarea:focus-visible,
   padding: 0;
   text-align: center;
   line-height: 1;
-  transform:
-    translateY(var(--tether-list-marker-shift, 2px))
-    scaleX(var(--tether-list-marker-scale, 1));
+  transform: translateY(var(--tether-list-marker-shift, 2px));
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.bullet,
@@ -2122,19 +2169,14 @@ textarea:focus-visible,
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered {
   --tether-list-marker-shift: 2.1px;
+  width: max-content;
+  min-width: var(--tether-list-marker-width);
   justify-content: center;
   font-family: var(--ui);
   font-size: 0.8em;
   font-variant-numeric: tabular-nums;
   font-weight: 500;
-}
-
-.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="2"] {
-  --tether-list-marker-scale: 0.76;
-}
-
-.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="3"] {
-  --tether-list-marker-scale: 0.54;
+  white-space: nowrap;
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="4"],
@@ -2145,31 +2187,6 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="9"] {
   --tether-list-marker-shift: 2.36px;
   font-size: 0.68em;
-  white-space: nowrap;
-}
-
-.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="4"] {
-  --tether-list-marker-scale: 0.46;
-}
-
-.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="5"] {
-  --tether-list-marker-scale: 0.38;
-}
-
-.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="6"] {
-  --tether-list-marker-scale: 0.33;
-}
-
-.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="7"] {
-  --tether-list-marker-scale: 0.29;
-}
-
-.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="8"] {
-  --tether-list-marker-scale: 0.255;
-}
-
-.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="9"] {
-  --tether-list-marker-scale: 0.23;
 }
 
 .tether-wysiwyg .ProseMirror .list-item .content-dom > p {
@@ -3110,7 +3127,9 @@ textarea:focus-visible,
   fill: var(--accent);
 }
 
-.tether-wysiwyg .milkdown-list-item-block .list-item:has(.label.checked) .content-dom {
+.tether-wysiwyg .milkdown-list-item-block .list-item:has(
+  > .label-wrapper > .label.checked
+) > .children > .content-dom > :not(ul, ol) {
   color: var(--ink2);
   text-decoration: line-through;
   text-decoration-color: color-mix(in srgb, var(--accent) 54%, var(--ink3));
