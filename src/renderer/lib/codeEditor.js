@@ -1,4 +1,11 @@
-import { HighlightStyle, LanguageDescription, LanguageSupport, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
+import {
+  HighlightStyle,
+  LanguageDescription,
+  LanguageSupport,
+  StreamLanguage,
+  indentUnit,
+  syntaxHighlighting
+} from "@codemirror/language";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { sourceTabEdit } from "./sourceEditing.js";
@@ -506,6 +513,7 @@ const tetherHighlightStyle = HighlightStyle.define([
 export const tetherCodeExtensions = [
   tetherCodeViewBridge,
   tetherCodeHistoryFocus,
+  indentUnit.of("\t"),
   tetherCodeTheme,
   syntaxHighlighting(tetherHighlightStyle)
 ];

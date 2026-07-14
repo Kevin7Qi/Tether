@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { indentUnit } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
 import {
   codeBoundaryDeletionKeyDirection,
@@ -19,6 +20,7 @@ import {
   isEditorSelectAllShortcut,
   restoreCodeViewFocusAfterHistory,
   shouldRestoreEditorHistoryFocus,
+  tetherCodeExtensions,
   tetherCodeLanguageLabel,
   tetherCodeLanguages,
 } from "../src/renderer/lib/codeEditor.js";
@@ -144,6 +146,11 @@ test("CodeMirror Shift-Tab removes tabs or one four-space source indentation uni
     head: 2
   });
   assert.equal(codeTabEdit({ selection: { ranges: [] }, doc: unchanged.doc }), null);
+});
+
+test("CodeMirror language auto-indentation uses the same literal tab as source Tab edits", () => {
+  const state = EditorState.create({ extensions: tetherCodeExtensions });
+  assert.equal(state.facet(indentUnit), "\t");
 });
 
 function codeState(head, length = 10, empty = true) {
