@@ -46,10 +46,15 @@ export function annotateReferenceSources(tree, file) {
       const end = node.position?.end?.offset;
       if (Number.isFinite(start) && Number.isFinite(end)) {
         const raw = source.slice(start, end);
+        const firstChildStart = node.children?.[0]?.position?.start?.offset;
         const lastChildEnd = node.children?.[node.children.length - 1]?.position?.end?.offset;
+        node.linkSource = raw;
         if (raw.startsWith("<") && raw.endsWith(">")) {
           node.linkSourceKind = "autolink";
           node.linkSourceText = node.children?.[0]?.value || raw.slice(1, -1);
+        } else if (firstChildStart === start && lastChildEnd === end) {
+          node.linkSourceKind = "literal";
+          node.linkSourceText = node.children?.map((child) => child.value || "").join("") || raw;
         } else if (Number.isFinite(lastChildEnd)) {
           const labelEnd = lastChildEnd - start;
           if (raw[labelEnd] === "]") {
@@ -107,6 +112,7 @@ const referenceAttrs = {
 
 const inlineLinkSourceAttrs = {
   linkSourceKind: { default: null, validate: "string|null" },
+  linkSource: { default: null, validate: "string|null" },
   linkSourceSuffix: { default: null, validate: "string|null" },
   linkSourceText: { default: null, validate: "string|null" },
   linkSourceHref: { default: null, validate: "string|null" },
@@ -133,6 +139,7 @@ function stripReferenceDomAttrs(attributes = {}) {
     referenceHref: _referenceHref,
     referenceTitle: _referenceTitle,
     linkSourceKind: _linkSourceKind,
+    linkSource: _linkSource,
     linkSourceSuffix: _linkSourceSuffix,
     linkSourceText: _linkSourceText,
     linkSourceHref: _linkSourceHref,
@@ -162,6 +169,7 @@ function referenceDataAttrs(attrs) {
     } : {}),
     ...(attrs.linkSourceKind ? {
       "data-md-link-source-kind": attrs.linkSourceKind,
+      ...(attrs.linkSource == null ? {} : { "data-md-link-source": attrs.linkSource }),
       ...(attrs.linkSourceSuffix == null ? {} : { "data-md-link-source-suffix": attrs.linkSourceSuffix }),
       ...(attrs.linkSourceText == null ? {} : { "data-md-link-source-text": attrs.linkSourceText }),
       "data-md-link-source-href": attrs.linkSourceHref || "",
@@ -207,6 +215,7 @@ function parsedReferenceData(dom) {
     } : {}),
     ...(dom.dataset.mdLinkSourceKind ? {
       linkSourceKind: dom.dataset.mdLinkSourceKind,
+      linkSource: dom.hasAttribute("data-md-link-source") ? dom.dataset.mdLinkSource || "" : null,
       linkSourceSuffix: dom.hasAttribute("data-md-link-source-suffix")
         ? dom.dataset.mdLinkSourceSuffix || ""
         : null,
@@ -276,6 +285,7 @@ export const sourceFaithfulReferenceLinkSchema = linkSchema.extendSchema((previo
             href: node.url,
             title: node.title,
             linkSourceKind: node.linkSourceKind || null,
+            linkSource: node.linkSource ?? null,
             linkSourceSuffix: node.linkSourceSuffix ?? null,
             linkSourceText: node.linkSourceText ?? null,
             linkSourceHref: node.linkSourceHref ?? node.url,
@@ -302,6 +312,7 @@ export const sourceFaithfulReferenceLinkSchema = linkSchema.extendSchema((previo
             title: mark.attrs.title,
             url: mark.attrs.href,
             linkSourceKind: mark.attrs.linkSourceKind,
+            linkSource: mark.attrs.linkSource,
             linkSourceSuffix: mark.attrs.linkSourceSuffix,
             linkSourceText: mark.attrs.linkSourceText,
             linkSourceHref: mark.attrs.linkSourceHref,
@@ -519,6 +530,16 @@ export function sourceFaithfulDefinitionHandler(node, _parent, _state, _info) {
 
 export function sourceFaithfulLinkHandler(node, parent, state, info) {
   const canonical = defaultHandlers.link(node, parent, state, info);
+  const plainText = node.children?.every((child) => child.type === "text")
+    ? node.children.map((child) => child.value || "").join("")
+    : null;
+  if (
+    ["autolink", "literal"].includes(node.linkSourceKind)
+    && node.linkSource != null
+    && plainText === node.linkSourceText
+    && node.url === node.linkSourceHref
+    && (node.title ?? null) === (node.linkSourceTitle ?? null)
+  ) return node.linkSource;
   if (
     node.linkSourceKind === "inline"
     && node.linkSourceSuffix
@@ -586,6 +607,7 @@ function clearInlineLinkSourceAttrs(attrs) {
   return {
     ...attrs,
     linkSourceKind: null,
+    linkSource: null,
     linkSourceSuffix: null,
     linkSourceText: null,
     linkSourceHref: null,

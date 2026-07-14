@@ -21,6 +21,7 @@ import {
   linkAttr,
   textSchema
 } from "@milkdown/kit/preset/commonmark";
+import { remarkGFMPlugin } from "@milkdown/kit/preset/gfm";
 import {
   sourceFaithfulDocumentRemark,
   sourceFaithfulDocumentSchema
@@ -79,6 +80,7 @@ async function milkdownTransformer() {
     sourceFaithfulDocumentSchema,
     sourceFaithfulParagraphRemark,
     sourceFaithfulParagraphSchema,
+    remarkGFMPlugin,
     textSchema,
     linkAttr,
     imageAttr,
@@ -136,6 +138,46 @@ test("inline links retain explicit, literal-destination, and title-delimiter syn
     "<person@example.com>\n"
   ];
   for (const source of sources) assert.equal(roundTrip(source), source);
+});
+
+test("editing beside GFM autolink literals preserves their physical source form", async () => {
+  const source = [
+    "Prefix bare https://example.com/a_b?x=1 and www.example.net/path.",
+    "",
+    "Angle <https://example.org/a%20b>.",
+    "",
+    "Email person+tag@example.com and <other@example.net>.",
+    ""
+  ].join("\n");
+  const { parse, serialize } = await milkdownTransformer();
+  const doc = parse(source);
+  const links = [];
+  doc.descendants((node) => {
+    if (!node.isText) return;
+    for (const mark of node.marks) {
+      if (mark.type.name === "link") links.push(mark);
+    }
+  });
+  assert.deepEqual(links.map((mark) => mark.attrs.linkSourceKind), [
+    "literal",
+    "literal",
+    "autolink",
+    "literal",
+    "autolink"
+  ]);
+  assert.equal(links[0].attrs.linkSource, "https://example.com/a_b?x=1");
+  assert.equal(links[1].attrs.linkSource, "www.example.net/path");
+  assert.equal(links[2].attrs.linkSource, "<https://example.org/a%20b>");
+  const literalDOM = links[0].type.spec.toDOM(links[0]);
+  assert.equal(literalDOM[1]["data-md-link-source"], "https://example.com/a_b?x=1");
+  assert.equal(literalDOM[1].linkSource, undefined);
+
+  const prefixPosition = textPosition(doc, "Prefix bare ");
+  const edited = EditorState.create({ doc }).tr.insertText(
+    "changed ",
+    prefixPosition + "Prefix ".length
+  ).doc;
+  assert.equal(serialize(edited), source.replace("Prefix bare", "Prefix changed bare"));
 });
 
 test("inline images retain destinations, title delimiters, spacing, and escaped labels", () => {
