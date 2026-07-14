@@ -17,6 +17,7 @@ import {
   documentSelectionFromCodeBoundary,
   documentSourceUnitStartOffset,
   documentPositionAtSourceOffset,
+  documentSourceOffsetFromPointerTarget,
   documentSourceTarget,
   downgradeAtxHeadingAtCursor,
   enclosingCodeBlock,
@@ -56,6 +57,7 @@ import {
   sourceDocumentJumpEdge,
   sourceLineJumpEdge,
   sourcePointerSelectionRange,
+  sourcePointerDragSelection,
   sourceAtomNearPosition,
   sourceAwareClipboardText,
   sourceNewlineClipboardText,
@@ -1847,6 +1849,34 @@ test("physical source offsets map back to rendered text but not hidden delimiter
   assert.equal(documentPositionAtSourceOffset(state, source.indexOf("after"), serialize), 1 + "Bold ".length);
   assert.equal(documentPositionAtSourceOffset(state, 0, serialize), null);
   assert.equal(documentPositionAtSourceOffset(state, 1, serialize), null);
+  assert.equal(
+    documentSourceOffsetFromPointerTarget(state, { position: 1 + "Bold ".length, assoc: 1 }, serialize),
+    source.indexOf("after")
+  );
+});
+
+test("source-control pointer drags preserve their physical source anchor", () => {
+  const fullSource = "before **bold** after";
+  const unitStart = fullSource.indexOf("**bold**");
+  assert.deepEqual(
+    sourcePointerDragSelection(fullSource, unitStart, 4, fullSource.length),
+    {
+      anchor: unitStart + 4,
+      head: fullSource.length,
+      fullSource,
+      verticalColumn: null
+    }
+  );
+  assert.deepEqual(
+    sourcePointerDragSelection(fullSource, unitStart, 4, 0),
+    {
+      anchor: unitStart + 4,
+      head: 0,
+      fullSource,
+      verticalColumn: null
+    }
+  );
+  assert.equal(sourcePointerDragSelection(fullSource, Number.NaN, 4, 0), null);
 });
 
 test("fenced source selection crosses hidden newlines and fence lines in source coordinates", () => {

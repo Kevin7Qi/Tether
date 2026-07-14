@@ -254,6 +254,16 @@ test("temporary Markdown source controls continue Option-word navigation across 
   assert.match(syntax, /focusExactEditSelection\(editorView\)/);
 });
 
+test("temporary Markdown source controls bridge pointer drags into rendered prose", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /pointerDragWindow\?\.addEventListener\("mouseup", handlePointerDragEnd, true\)/);
+  assert.match(syntax, /finish\(true, \(mapping\) => onPointerDrag\(localAnchor, pointer, mapping\)\)/);
+  assert.match(syntax, /const dragFromSource = \(localAnchor, event, mapping = null\) =>/);
+  assert.match(syntax, /documentSourceOffsetFromPointerTarget\(/);
+  assert.match(syntax, /sourcePointerDragSelection\(/);
+  assert.match(syntax, /action: "source-selection"/);
+});
+
 test("exact source-only selections own line and word jump commands", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /const exactWordDirection = sourceSelection[\s\S]*sourceSelectionWordJump\(/);
