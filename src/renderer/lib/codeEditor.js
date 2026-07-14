@@ -5,10 +5,34 @@ import { tags } from "@lezer/highlight";
 const tetherCodeViews = new WeakMap();
 
 export function isEditorHistoryShortcut(event) {
-  return Boolean(event)
-    && !event.altKey
-    && Boolean(event.metaKey || event.ctrlKey)
-    && String(event.key || "").toLowerCase() === "z";
+  if (!event || event.altKey || !(event.metaKey || event.ctrlKey)) return false;
+  const key = String(event.key || "").toLowerCase();
+  return key === "z" || (key === "y" && !event.shiftKey);
+}
+
+export function shouldRestoreEditorHistoryFocus(activeElement, editorHost) {
+  const ownerDocument = editorHost?.ownerDocument;
+  return !activeElement
+    || activeElement === ownerDocument?.body
+    || activeElement === ownerDocument?.documentElement
+    || Boolean(editorHost?.contains?.(activeElement));
+}
+
+export function restoreCodeViewFocusAfterHistory(codeView, scheduleFrame = globalThis.requestAnimationFrame) {
+  if (!codeView || typeof scheduleFrame !== "function") return false;
+  scheduleFrame(() => scheduleFrame(() => {
+    const dom = codeView.dom;
+    const ownerDocument = dom?.ownerDocument;
+    const activeElement = ownerDocument?.activeElement;
+    const canRestore = dom?.isConnected && (
+      !activeElement
+      || activeElement === ownerDocument?.body
+      || activeElement === ownerDocument?.documentElement
+      || dom.contains(activeElement)
+    );
+    if (canRestore && !codeView.hasFocus) codeView.focus();
+  }));
+  return true;
 }
 
 export function isEditorSelectAllShortcut(event) {
@@ -182,6 +206,13 @@ const tetherCodeViewBridge = ViewPlugin.fromClass(class {
 
   destroy() {
     tetherCodeViews.delete(this.view.dom);
+  }
+});
+
+const tetherCodeHistoryFocus = EditorView.domEventHandlers({
+  keydown(event, codeView) {
+    if (isEditorHistoryShortcut(event)) restoreCodeViewFocusAfterHistory(codeView);
+    return false;
   }
 });
 
@@ -447,6 +478,7 @@ const tetherHighlightStyle = HighlightStyle.define([
 
 export const tetherCodeExtensions = [
   tetherCodeViewBridge,
+  tetherCodeHistoryFocus,
   tetherCodeTheme,
   syntaxHighlighting(tetherHighlightStyle)
 ];

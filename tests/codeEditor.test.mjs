@@ -16,6 +16,8 @@ import {
   documentDragIntoCodeRange,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
+  restoreCodeViewFocusAfterHistory,
+  shouldRestoreEditorHistoryFocus,
   tetherCodeLanguageLabel,
   tetherCodeLanguages,
 } from "../src/renderer/lib/codeEditor.js";
@@ -24,9 +26,60 @@ test("editor history shortcuts include undo and redo without matching unrelated 
   assert.equal(isEditorHistoryShortcut({ key: "z", metaKey: true }), true);
   assert.equal(isEditorHistoryShortcut({ key: "Z", metaKey: true, shiftKey: true }), true);
   assert.equal(isEditorHistoryShortcut({ key: "z", ctrlKey: true }), true);
+  assert.equal(isEditorHistoryShortcut({ key: "y", ctrlKey: true }), true);
+  assert.equal(isEditorHistoryShortcut({ key: "Y", metaKey: true }), true);
   assert.equal(isEditorHistoryShortcut({ key: "z", metaKey: true, altKey: true }), false);
-  assert.equal(isEditorHistoryShortcut({ key: "y", metaKey: true }), false);
+  assert.equal(isEditorHistoryShortcut({ key: "y", metaKey: true, shiftKey: true }), false);
   assert.equal(isEditorHistoryShortcut({ key: "z" }), false);
+});
+
+test("history focus restoration accepts the document shell and surviving editor descendants", () => {
+  const body = {};
+  const documentElement = {};
+  const descendant = {};
+  const external = {};
+  const editorHost = {
+    ownerDocument: { body, documentElement },
+    contains: (element) => element === descendant
+  };
+  assert.equal(shouldRestoreEditorHistoryFocus(null, editorHost), true);
+  assert.equal(shouldRestoreEditorHistoryFocus(body, editorHost), true);
+  assert.equal(shouldRestoreEditorHistoryFocus(documentElement, editorHost), true);
+  assert.equal(shouldRestoreEditorHistoryFocus(descendant, editorHost), true);
+  assert.equal(shouldRestoreEditorHistoryFocus(external, editorHost), false);
+});
+
+test("CodeMirror history refocuses a connected editor without stealing external focus", () => {
+  const body = {};
+  const documentElement = {};
+  const external = {};
+  const frames = [];
+  let focusCount = 0;
+  const ownerDocument = { activeElement: body, body, documentElement };
+  const dom = {
+    isConnected: true,
+    ownerDocument,
+    contains: () => false
+  };
+  const codeView = {
+    dom,
+    hasFocus: false,
+    focus: () => { focusCount += 1; }
+  };
+  const schedule = (callback) => frames.push(callback);
+
+  assert.equal(restoreCodeViewFocusAfterHistory(codeView, schedule), true);
+  assert.equal(focusCount, 0);
+  frames.shift()();
+  assert.equal(focusCount, 0);
+  frames.shift()();
+  assert.equal(focusCount, 1);
+
+  ownerDocument.activeElement = external;
+  assert.equal(restoreCodeViewFocusAfterHistory(codeView, schedule), true);
+  frames.shift()();
+  frames.shift()();
+  assert.equal(focusCount, 1);
 });
 
 test("editor Select All shortcuts escalate from CodeMirror to the Markdown document", () => {

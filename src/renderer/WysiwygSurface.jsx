@@ -25,6 +25,7 @@ import {
   documentDragIntoCodeRange,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
+  shouldRestoreEditorHistoryFocus,
   tetherCodeExtensions,
   tetherCodeLanguageLabel,
   tetherCodeLanguages,
@@ -606,32 +607,29 @@ export default function WysiwygSurface({
     let pendingTableDrag = null;
     let codeDragFinishFrame = 0;
     let historyFocusFrame = 0;
-    const restoreFocusAfterHistory = (event) => {
-      if (readOnlyRef.current || !isEditorHistoryShortcut(event)) return;
-      const target = event.target;
-      if (!(target instanceof Node) || !host.contains(target)) return;
-      const targetElement = target instanceof Element ? target : target.parentElement;
+    let lastFocusedCodeTarget = null;
+    const codeFocusTargetFromElement = (targetElement) => {
       const originalCodeView = tetherCodeViewForElement(targetElement);
       const originalView = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
       const block = targetElement?.closest(".milkdown-code-block");
-      let codeTarget = null;
-      if (originalCodeView && originalView && block) {
-        try {
-          const codeBlock = enclosingCodeBlock(
-            originalView.state.doc,
-            originalView.posAtDOM(block, 0, -1)
-          );
-          if (codeBlock) {
-            codeTarget = {
-              position: codeBlock.position,
-              head: originalCodeView.state.selection.main.head
-            };
-          }
-        } catch {
-          // The code node is already being replaced; the document fallback
-          // below will still restore a usable caret.
-        }
+      if (!originalCodeView || !originalView || !block) return null;
+      try {
+        const codeBlock = enclosingCodeBlock(
+          originalView.state.doc,
+          originalView.posAtDOM(block, 0, -1)
+        ) || enclosingCodeBlock(
+          originalView.state.doc,
+          originalView.state.selection.head
+        );
+        return codeBlock ? {
+          position: codeBlock.position,
+          head: originalCodeView.state.selection.main.head
+        } : null;
+      } catch {
+        return null;
       }
+    };
+    const scheduleCodeFocusRestore = (codeTarget) => {
       if (historyFocusFrame) window.cancelAnimationFrame(historyFocusFrame);
       const restore = (remaining) => {
         historyFocusFrame = window.requestAnimationFrame(() => {
@@ -647,27 +645,28 @@ export default function WysiwygSurface({
           const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
           if (!view) return;
           const active = host.ownerDocument.activeElement;
-          if (
-            active
-            && active !== host.ownerDocument.body
-            && active !== view.dom
-          ) return;
+          if (!shouldRestoreEditorHistoryFocus(active, host)) return;
+          const activeCodeView = tetherCodeViewForElement(
+            active instanceof Element ? active : null
+          );
+          if (activeCodeView?.hasFocus) return;
 
           if (codeTarget) {
-            const node = view.state.doc.nodeAt(codeTarget.position);
+            const selectedCode = enclosingCodeBlock(
+              view.state.doc,
+              view.state.selection.head
+            );
+            const targetPosition = selectedCode?.position ?? codeTarget.position;
+            const node = view.state.doc.nodeAt(targetPosition);
             const nodeDOM = node?.type.name === "code_block"
-              ? view.nodeDOM(codeTarget.position)
+              ? view.nodeDOM(targetPosition)
               : null;
             const rebuiltCodeView = nodeDOM instanceof Element
               ? tetherCodeViewForElement(nodeDOM.querySelector(".cm-content"))
               : null;
             if (rebuiltCodeView) {
-              const selectedCode = enclosingCodeBlock(
-                view.state.doc,
-                view.state.selection.from
-              );
-              const mappedHead = selectedCode?.position === codeTarget.position
-                ? view.state.selection.from - codeTarget.position - 1
+              const mappedHead = selectedCode?.position === targetPosition
+                ? view.state.selection.head - targetPosition - 1
                 : codeTarget.head;
               const head = Math.max(
                 0,
@@ -683,6 +682,18 @@ export default function WysiwygSurface({
         });
       };
       restore(8);
+    };
+    const rememberCodeFocus = (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      lastFocusedCodeTarget = codeFocusTargetFromElement(target);
+    };
+    const restoreFocusAfterHistory = (event) => {
+      if (readOnlyRef.current || !isEditorHistoryShortcut(event)) return;
+      const target = event.target;
+      if (!(target instanceof Node) || !host.contains(target)) return;
+      const targetElement = target instanceof Element ? target : target.parentElement;
+      const codeTarget = codeFocusTargetFromElement(targetElement) || lastFocusedCodeTarget;
+      if (codeTarget) scheduleCodeFocusRestore(codeTarget);
     };
     const beginCodeDragSelection = (event) => {
       if (readOnlyRef.current || event.button !== 0) return;
@@ -885,6 +896,7 @@ export default function WysiwygSurface({
     host.addEventListener("mousedown", ensureSyntheticTrailingAfterPointer, true);
     host.addEventListener("keydown", ensureSyntheticTrailing, true);
     host.addEventListener("keydown", restoreFocusAfterHistory, true);
+    host.addEventListener("focusin", rememberCodeFocus, true);
     host.addEventListener("beforeinput", ensureSyntheticTrailing, true);
     host.addEventListener("paste", ensureSyntheticTrailing, true);
     host.addEventListener("drop", ensureSyntheticTrailing, true);
@@ -1012,6 +1024,7 @@ export default function WysiwygSurface({
           baselineSourceRef.current
         );
         lastMarkdownRef.current = markdown;
+        if (lastFocusedCodeTarget) scheduleCodeFocusRestore(lastFocusedCodeTarget);
         if (applyingExternalRef.current) return;
         if (!hasUserChangeRef.current && markdown === baselineMarkdownRef.current) return;
         const isBaselineDocument = Boolean(currentDoc && baselineDocRef.current?.eq(currentDoc));
@@ -1072,6 +1085,7 @@ export default function WysiwygSurface({
       host.removeEventListener("mousedown", ensureSyntheticTrailingAfterPointer, true);
       host.removeEventListener("keydown", ensureSyntheticTrailing, true);
       host.removeEventListener("keydown", restoreFocusAfterHistory, true);
+      host.removeEventListener("focusin", rememberCodeFocus, true);
       host.removeEventListener("beforeinput", ensureSyntheticTrailing, true);
       host.removeEventListener("paste", ensureSyntheticTrailing, true);
       host.removeEventListener("drop", ensureSyntheticTrailing, true);

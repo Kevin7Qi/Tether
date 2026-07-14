@@ -155,6 +155,15 @@ test("CodeMirror word jumps enter hidden fence source with exact Shift selection
   assert.match(surface, /removeEventListener\("keydown", handleCodeWordJump, true\)/);
 });
 
+test("code history changes restore the same embedded editor focus", () => {
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
+  const codeEditor = fs.readFileSync(path.join(root, "src", "renderer", "lib", "codeEditor.js"), "utf8");
+  assert.match(codeEditor, /EditorView\.domEventHandlers\(\{[\s\S]*isEditorHistoryShortcut\(event\)[\s\S]*restoreCodeViewFocusAfterHistory\(codeView\)/);
+  assert.match(surface, /addEventListener\("focusin", rememberCodeFocus, true\)/);
+  assert.match(surface, /removeEventListener\("focusin", rememberCodeFocus, true\)/);
+  assert.match(surface, /listener\.markdownUpdated\([\s\S]*scheduleCodeFocusRestore\(lastFocusedCodeTarget\)/);
+});
+
 test("multi-click activation carries word and line selection into raw Markdown controls", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /pointerClickCount: Math\.max\(1, Number\(event\?\.detail\) \|\| 1\)/);
