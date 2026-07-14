@@ -144,11 +144,15 @@ test("long inline Markdown source stays inside the document column", () => {
 
 test("rendered lists use compact indentation and intentional marker colors", () => {
   const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
-  assert.match(styles, /\.ProseMirror ul,\s*\.tether-wysiwyg \.ProseMirror ol\s*\{[^}]*padding-inline-start:\s*12px/s);
-  assert.match(styles, /\.milkdown-list-item-block > \.list-item\s*\{[^}]*gap:\s*5px/s);
-  assert.match(styles, /\.label\.bullet,\s*\.tether-wysiwyg \.ProseMirror \.milkdown-list-item-block \.label\.ordered\s*\{[^}]*color:\s*var\(--ink2\)/s);
-  assert.match(styles, /\.milkdown-list-item-block \.label svg\s*\{[^}]*width:\s*18px[^}]*height:\s*18px/s);
-  assert.match(styles, /\.label\.ordered\s*\{[^}]*font-variant-numeric:\s*tabular-nums/s);
+  assert.match(styles, /\.ProseMirror ul,\s*\.tether-wysiwyg \.ProseMirror ol\s*\{[^}]*padding-inline-start:\s*0/s);
+  assert.match(styles, /\.milkdown-list-item-block > \.list-item\s*\{[^}]*--tether-list-marker-width:\s*20px[^}]*--tether-list-line-height:\s*1\.72em[^}]*gap:\s*2px[^}]*list-style:\s*none/s);
+  assert.match(styles, /\.label-wrapper,\s*\.tether-wysiwyg \.ProseMirror \.milkdown-list-item-block \.label\s*\{[^}]*width:\s*var\(--tether-list-marker-width\)/s);
+  assert.match(styles, /\.label-wrapper\s*\{[^}]*height:\s*var\(--tether-list-line-height\)[^}]*flex:\s*0 0 var\(--tether-list-marker-width\)[^}]*align-items:\s*center/s);
+  assert.match(styles, /\.milkdown-list-item-block li \.label-wrapper \.label\s*\{[^}]*height:\s*100%[^}]*align-items:\s*center[^}]*justify-content:\s*center[^}]*padding:\s*0[^}]*text-align:\s*center[^}]*line-height:\s*1[^}]*transform:\s*translateY\(2px\)/s);
+  assert.match(styles, /\.label\.bullet,\s*\.tether-wysiwyg \.ProseMirror \.milkdown-list-item-block \.label\.ordered\s*\{[^}]*color:\s*var\(--ink\)/s);
+  assert.match(styles, /\.milkdown-list-item-block \.label svg\s*\{[^}]*display:\s*block[^}]*width:\s*17px[^}]*height:\s*17px/s);
+  assert.match(styles, /\.label\.ordered\s*\{[^}]*justify-content:\s*center[^}]*font-variant-numeric:\s*tabular-nums/s);
+  assert.doesNotMatch(styles, /label-wrapper:has\(\.label\.ordered\)/);
 });
 
 test("CodeMirror document jumps are bridged through the source-faithful document mapping", () => {

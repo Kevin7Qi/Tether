@@ -148,6 +148,26 @@ function focusExactEditSelection(view) {
   requestAnimationFrame(() => pruneStaleCodeBlockDom(view));
 }
 
+export function documentGapSourceSelection(target, sourceOffset) {
+  if (target?.kind !== "gap" || !target.documentSource) return null;
+  const fullSource = target.documentSource.fullSource;
+  const head = Math.max(0, Math.min(fullSource.length, Number(sourceOffset) || 0));
+  const before = target.beforeSegment;
+  const after = target.afterSegment;
+  return {
+    anchor: head,
+    head,
+    fullSource,
+    boundary: target.position,
+    gapStart: target.gapFrom,
+    gapEnd: target.gapTo,
+    beforeFrom: before?.position ?? null,
+    beforeTo: before ? before.position + before.node.nodeSize : null,
+    afterFrom: after?.position ?? null,
+    afterTo: after ? after.position + after.node.nodeSize : null
+  };
+}
+
 function activateDocumentSourceOffset(
   view,
   sourceSelection,
@@ -157,6 +177,21 @@ function activateDocumentSourceOffset(
 ) {
   const target = documentSourceTarget(view.state, sourceOffset, serializer, affinity);
   if (!target) return false;
+  if (target.kind === "gap") {
+    const gapSelection = documentGapSourceSelection(target, sourceOffset);
+    if (!gapSelection) return false;
+    view.dispatch(
+      view.state.tr
+        .setSelection(markdownSourceSelectionAt(view.state.doc, target.position))
+        .setMeta(markdownSyntaxKey, {
+          action: "source-selection",
+          sourceSelection: gapSelection
+        })
+        .scrollIntoView()
+    );
+    focusProseMirrorRoot(view);
+    return true;
+  }
   if (target.kind === "block") {
     if (target.node.type.name === "code_block") {
       const blockSource = target.documentSource.fullSource.slice(
@@ -305,7 +340,7 @@ function blockSyntaxAtPosition(state, position, allowedNames) {
       name: node.type.name
     };
   }
-  return null;
+  return false;
 }
 
 export function markdownTableSyntaxAt(state, position) {
@@ -1834,6 +1869,21 @@ export function documentSourceUnitStartOffset(state, unit, serializer) {
   return Number.isFinite(visibleStart)
     ? Math.max(0, visibleStart - visibleStartOffset)
     : null;
+}
+
+export function documentSourceUnitBoundaryOffset(state, unit, direction, serializer) {
+  if (!unit || !["backward", "forward"].includes(direction)) return null;
+  const start = documentSourceUnitStartOffset(state, unit, serializer);
+  if (!Number.isFinite(start)) return null;
+  if (direction === "backward") return start;
+  return start + continuousMarkdownSource(state, unit, serializer).length;
+}
+
+export function documentSourceUnitBoundaryNavigationOffset(state, unit, direction, serializer) {
+  const boundary = documentSourceUnitBoundaryOffset(state, unit, direction, serializer);
+  const documentSource = documentSourceSegments(state, serializer);
+  if (!Number.isFinite(boundary) || !documentSource) return null;
+  return sourceOffsetAfterCharacter(documentSource.fullSource, boundary, direction);
 }
 
 export function sourceSelectionFromDocumentSelection(
@@ -4108,6 +4158,35 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               return;
             }
           }
+          const mappedUnit = {
+            ...unit,
+            from: Math.max(
+              0,
+              Math.min(mappedPosition(mapping, unit.from, -1), editorView.state.doc.content.size)
+            ),
+            to: Math.max(
+              0,
+              Math.min(mappedPosition(mapping, unit.to, 1), editorView.state.doc.content.size)
+            )
+          };
+          const sourceOffset = unit.kind === "block"
+            ? documentSourceUnitBoundaryNavigationOffset(
+                editorView.state,
+                mappedUnit,
+                direction,
+                serializer
+              )
+            : null;
+          if (
+            Number.isFinite(sourceOffset)
+            && activateDocumentSourceOffset(
+              editorView,
+              null,
+              sourceOffset,
+              direction === "backward" ? "backward" : "forward",
+              serializer
+            )
+          ) return;
           editorView.dispatch(
             editorView.state.tr
               .setSelection(Selection.near(editorView.state.doc.resolve(position), assoc))

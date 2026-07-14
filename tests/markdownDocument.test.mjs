@@ -32,8 +32,11 @@ import {
   tetherStringifyOptions
 } from "../src/renderer/lib/markdownStyle.js";
 import {
+  documentGapSourceSelection,
   documentSourceSegments,
   documentSourceTarget,
+  documentSourceUnitBoundaryOffset,
+  documentSourceUnitBoundaryNavigationOffset,
   extendSourceSelection,
   replaceSourceSelectionTransaction,
   replaceSourceNewlineSelectionTransaction,
@@ -229,7 +232,68 @@ test("typing replaces the selected physical newline in full Markdown source", as
     ]
   );
   assert.equal(documentSourceTarget(state, 14, serialize, "backward")?.node.type.name, "code_block");
-  assert.equal(documentSourceTarget(state, 15, serialize, "forward")?.kind, "gap");
+  const gapTarget = documentSourceTarget(state, 15, serialize, "forward");
+  assert.equal(gapTarget?.kind, "gap");
+  assert.deepEqual(documentGapSourceSelection(gapTarget, 15), {
+    anchor: 15,
+    head: 15,
+    fullSource: source,
+    boundary: doc.firstChild.nodeSize,
+    gapStart: 14,
+    gapEnd: 16,
+    beforeFrom: 0,
+    beforeTo: doc.firstChild.nodeSize,
+    afterFrom: doc.firstChild.nodeSize,
+    afterTo: doc.content.size
+  });
+  const codeUnit = {
+    from: 0,
+    to: doc.firstChild.nodeSize,
+    kind: "block",
+    name: "code_block"
+  };
+  assert.equal(documentSourceUnitBoundaryOffset(state, codeUnit, "backward", serialize), 0);
+  assert.equal(documentSourceUnitBoundaryOffset(state, codeUnit, "forward", serialize), 14);
+  assert.equal(
+    documentSourceUnitBoundaryNavigationOffset(state, codeUnit, "backward", serialize),
+    0
+  );
+  assert.equal(
+    documentSourceUnitBoundaryNavigationOffset(state, codeUnit, "forward", serialize),
+    15
+  );
+  assert.equal(
+    documentSourceTarget(
+      state,
+      documentSourceUnitBoundaryOffset(state, codeUnit, "forward", serialize),
+      serialize,
+      "forward"
+    )?.kind,
+    "gap"
+  );
+
+  const crlfSource = "```js\r\ncode\r\n```\r\n\r\nAfter\r\n";
+  const crlfDoc = parse(crlfSource);
+  const crlfState = EditorState.create({ doc: crlfDoc });
+  const crlfUnit = {
+    from: 0,
+    to: crlfDoc.firstChild.nodeSize,
+    kind: "block",
+    name: "code_block"
+  };
+  const crlfBoundary = documentSourceUnitBoundaryOffset(
+    crlfState,
+    crlfUnit,
+    "forward",
+    serialize
+  );
+  const crlfNext = documentSourceUnitBoundaryNavigationOffset(
+    crlfState,
+    crlfUnit,
+    "forward",
+    serialize
+  );
+  assert.equal(crlfSource.slice(crlfBoundary, crlfNext), "\r\n");
   assert.equal(documentSourceTarget(state, 16, serialize, "forward")?.node.type.name, "paragraph");
   assert.equal(documentSourceTarget(state, 17, serialize, "forward")?.sourceOffset, 1);
 

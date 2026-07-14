@@ -30,6 +30,7 @@ import {
 } from "../src/renderer/lib/markdownFence.js";
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
+  documentGapSourceSelection,
   documentSourceTarget,
   replaceSourceSelectionTransaction,
   sourceAwareClipboardText,
@@ -321,6 +322,18 @@ test("document jumps address leading and trailing root Markdown gaps exactly", a
   assert.equal(start.gapTo, 1);
   assert.equal(start.beforeSegment, null);
   assert.equal(start.afterSegment, start.documentSource.segments[0]);
+  assert.deepEqual(documentGapSourceSelection(start, 0), {
+    anchor: 0,
+    head: 0,
+    fullSource: source,
+    boundary: 0,
+    gapStart: 0,
+    gapEnd: 1,
+    beforeFrom: null,
+    beforeTo: null,
+    afterFrom: 0,
+    afterTo: doc.firstChild.nodeSize
+  });
 
   const end = documentSourceTarget(state, source.length, serialize, "backward");
   assert.equal(end.kind, "gap");
@@ -329,6 +342,18 @@ test("document jumps address leading and trailing root Markdown gaps exactly", a
   assert.equal(end.gapTo, source.length);
   assert.equal(end.beforeSegment, end.documentSource.segments.at(-1));
   assert.equal(end.afterSegment, null);
+  assert.deepEqual(documentGapSourceSelection(end, source.length), {
+    anchor: source.length,
+    head: source.length,
+    fullSource: source,
+    boundary: doc.content.size,
+    gapStart: source.length - 2,
+    gapEnd: source.length,
+    beforeFrom: doc.content.size - doc.lastChild.nodeSize,
+    beforeTo: doc.content.size,
+    afterFrom: null,
+    afterTo: null
+  });
 
   const current = source.indexOf("code") + 2;
   assert.deepEqual(sourceDocumentJumpSelection(state, "start", serialize, {

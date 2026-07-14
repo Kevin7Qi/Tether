@@ -2060,7 +2060,7 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror ol {
   margin-top: 0;
   margin-bottom: 18px;
-  padding-inline-start: 12px;
+  padding-inline-start: 0;
 }
 
 .tether-wysiwyg .ProseMirror ul ul,
@@ -2072,41 +2072,54 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block > .list-item {
-  min-height: 26px;
-  gap: 5px;
+  --tether-list-marker-width: 20px;
+  --tether-list-line-height: 1.72em;
+  min-height: var(--tether-list-line-height);
+  align-items: flex-start;
+  gap: 2px;
+  list-style: none;
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label-wrapper,
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label {
-  width: 18px;
-  height: 26px;
+  width: var(--tether-list-marker-width);
 }
 
-.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label {
-  padding: 1px 0;
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label-wrapper {
+  height: var(--tether-list-line-height);
+  flex: 0 0 var(--tether-list-marker-width);
+  align-items: center;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block li .label-wrapper .label {
+  box-sizing: border-box;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  text-align: center;
+  line-height: 1;
+  transform: translateY(2px);
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.bullet,
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered {
-  color: var(--ink2);
+  color: var(--ink);
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label svg {
-  width: 18px;
-  height: 18px;
+  display: block;
+  width: 17px;
+  height: 17px;
 }
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.bullet svg {
   fill: currentColor;
 }
 
-.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered,
-.tether-wysiwyg .ProseMirror .milkdown-list-item-block .label-wrapper:has(.label.ordered) {
-  width: 22px;
-}
-
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered {
-  justify-content: flex-end;
+  justify-content: center;
   font-family: var(--ui);
   font-size: 0.86em;
   font-variant-numeric: tabular-nums;
@@ -3015,11 +3028,11 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .milkdown-list-item-block .label.unchecked {
-  color: var(--ink2);
+  color: var(--ink);
 }
 
 .tether-wysiwyg .milkdown-list-item-block .label.unchecked svg {
-  fill: var(--ink2);
+  fill: var(--ink);
 }
 
 .tether-wysiwyg .milkdown-latex-inline-edit {
