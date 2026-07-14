@@ -15,10 +15,12 @@ import {
   continuousMarkdownSource,
   documentSelectionFromCodeBoundary,
   documentSourceUnitStartOffset,
+  documentSourceTarget,
   downgradeAtxHeadingAtCursor,
   enclosingCodeBlock,
   exactSourceSelectionAfterUndo,
   exactSourceSelectionAfterHistory,
+  extendSourceSelection,
   inlineSourceBoundaryDeleteDirection,
   inlineSourceBoundaryDirection,
   inlineSourceBoundarySelectionDirection,
@@ -43,6 +45,7 @@ import {
   sourceCaretBoundaries,
   sourceCharacterDeletionRange,
   sourceEditCaretOffset,
+  sourceLineEndingAt,
   sourceBoundarySelectionRange,
   sourceInitialSelectionRange,
   sourceDocumentJumpEdge,
@@ -54,6 +57,7 @@ import {
   sourceNewlineDeletionTransaction,
   sourceNewlineSelectionInfo,
   sourceSelectionFromDocumentSelection,
+  sourceSelectionAfterEdit,
   sourceSelectionHasAdjacentBlocks,
   sourceSelectionText,
   sourceVerticalOffset,
@@ -971,6 +975,61 @@ test("horizontal root-boundary arrows traverse every physical separator newline"
     true
   );
   assert.equal(sourceSelectionText(backwardExtended), "\r\n");
+});
+
+test("gap edits preserve CRLF and keep an exact caret while a source gap remains", () => {
+  const first = blockSchema.node("paragraph", null, [blockSchema.text("First")]);
+  const second = blockSchema.node("paragraph", null, [blockSchema.text("Second")]);
+  const gaps = ["", "\r\n\r\n", ""];
+  const doc = blockSchema.node("doc", { markdownBlockGaps: JSON.stringify(gaps) }, [first, second]);
+  const serializer = (value) => {
+    const blocks = [];
+    value.forEach((node) => blocks.push(node.textContent));
+    const exactGaps = JSON.parse(value.attrs.markdownBlockGaps);
+    return blocks.reduce(
+      (source, block, index) => `${source}${block}${exactGaps[index + 1]}`,
+      exactGaps[0]
+    );
+  };
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, first.nodeSize - 1)
+  });
+  const before = rootBoundarySourceSelection(state, "forward", serializer);
+  assert.equal(sourceLineEndingAt(before.fullSource, before.head), "\r\n");
+
+  const inserted = state.tr.setDocAttribute(
+    "markdownBlockGaps",
+    JSON.stringify(["", "\r\n\r\n\r\n", ""])
+  );
+  const afterInsert = sourceSelectionAfterEdit(inserted, before, serializer);
+  assert.equal(afterInsert.head, "First\r\n\r\n".length);
+  assert.equal(
+    documentSourceTarget(
+      { doc: inserted.doc, selection: inserted.selection },
+      afterInsert.head,
+      serializer,
+      "forward"
+    )?.kind,
+    "gap"
+  );
+
+  const deletion = extendSourceSelection(before, "backward");
+  const deleted = state.tr.setDocAttribute(
+    "markdownBlockGaps",
+    JSON.stringify(["", "\r\n", ""])
+  );
+  const afterDelete = sourceSelectionAfterEdit(deleted, deletion, serializer);
+  assert.equal(afterDelete.head, "First".length);
+  assert.equal(
+    documentSourceTarget(
+      { doc: deleted.doc, selection: deleted.selection },
+      afterDelete.head,
+      serializer,
+      "forward"
+    )?.kind,
+    "gap"
+  );
 });
 
 test("extended source selections do not invent adjacent block decoration ranges", () => {

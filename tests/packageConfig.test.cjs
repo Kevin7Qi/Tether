@@ -223,14 +223,19 @@ test("temporary Markdown source controls hand document jumps back to the full so
   assert.match(syntax, /baseOffset \+ localSelection\.anchor/);
 });
 
-test("exact source edits refocus the surviving rendered editing surface", () => {
+test("exact source edits preserve source-only carets or refocus the rendered surface", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /function focusExactEditSelection\(view\)/);
   assert.match(syntax, /focusCodeContentOffset\(/);
   assert.match(syntax, /function pruneStaleCodeBlockDom\(view\)/);
   assert.match(syntax, /view\.nodeDOM\(position\)/);
   assert.match(syntax, /requestAnimationFrame\(\(\) => pruneStaleCodeBlockDom\(view\)\)/);
-  assert.ok((syntax.match(/focusExactEditSelection\((?:view|_view)\);/g) || []).length >= 5);
+  assert.match(syntax, /const dispatchExactEdit = \(/);
+  assert.match(syntax, /const preserveSourcePosition = afterTarget\?\.kind === "gap"/);
+  assert.match(syntax, /afterTarget\.node\.type\.name === "code_block"/);
+  assert.match(syntax, /preserveSourcePosition[\s\S]*activateDocumentSourceOffset\(/);
+  assert.match(syntax, /focusExactEditSelection\(view\);/);
+  assert.ok((syntax.match(/dispatchExactEdit\(/g) || []).length >= 5);
 });
 
 test("active blockquotes expose their source marker and use structural Backspace semantics", () => {

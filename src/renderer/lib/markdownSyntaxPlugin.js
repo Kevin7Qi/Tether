@@ -1635,6 +1635,32 @@ export function sourceEditCaretOffset(sourceSelection, afterSource) {
   return Math.max(0, afterSource.length - suffixLength);
 }
 
+export function sourceLineEndingAt(source, offset) {
+  const value = String(source ?? "");
+  const bounded = Math.max(0, Math.min(value.length, Number(offset) || 0));
+  const previous = value.lastIndexOf("\n", Math.max(0, bounded - 1));
+  const next = value.indexOf("\n", bounded);
+  const lineBreak = previous < 0
+    ? next
+    : next < 0
+      ? previous
+      : bounded - previous - 1 <= next - bounded ? previous : next;
+  return lineBreak > 0 && value[lineBreak - 1] === "\r" ? "\r\n" : "\n";
+}
+
+export function sourceSelectionAfterEdit(transaction, editSelection, serializer) {
+  if (!transaction?.doc || !editSelection || typeof serializer !== "function") return null;
+  const fullSource = serializer(transaction.doc);
+  const caret = sourceEditCaretOffset(editSelection, fullSource);
+  if (!Number.isFinite(caret)) return null;
+  return {
+    anchor: caret,
+    head: caret,
+    fullSource,
+    boundary: Math.max(0, Math.min(transaction.selection.head, transaction.doc.content.size))
+  };
+}
+
 export function documentSourceSegments(state, serializer) {
   if (typeof serializer !== "function") return null;
   const gaps = documentGapsForState(state, serializer);
@@ -3404,7 +3430,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
   const exactEditHistory = [];
   let exactHistoryFrame = 0;
 
-  const rememberExactEdit = (sourceSelection, transaction) => {
+  const rememberExactEdit = (sourceSelection, transaction, afterSourceSelection = null) => {
     if (!sourceSelection || !transaction?.docChanged) return;
     const beforeSource = sourceSelection.fullSource;
     const serializer = ctx.get(serializerCtx);
@@ -3427,16 +3453,55 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       beforeSource,
       afterSource,
       sourceSelection: { ...sourceSelection },
-      afterSourceSelection: Number.isFinite(afterCaret)
+      afterSourceSelection: afterSourceSelection || (Number.isFinite(afterCaret)
         ? {
             anchor: afterCaret,
             head: afterCaret,
             fullSource: afterSource,
             boundary: transaction.selection.head
           }
-        : null
+        : null)
     });
     if (exactEditHistory.length > 20) exactEditHistory.shift();
+  };
+
+  const dispatchExactEdit = (
+    view,
+    transaction,
+    historySelection,
+    editSelection
+  ) => {
+    const serializer = ctx.get(serializerCtx);
+    const afterSelection = sourceSelectionAfterEdit(transaction, editSelection, serializer);
+    const afterState = { doc: transaction.doc, selection: transaction.selection };
+    const afterTarget = afterSelection
+      ? documentSourceTarget(afterState, afterSelection.head, serializer, "forward")
+      : null;
+    const preserveSourcePosition = afterTarget?.kind === "gap"
+      || (afterTarget?.kind === "block" && (
+        afterTarget.node.type.name === "code_block"
+        || structuralSourceBlockNames.has(afterTarget.node.type.name)
+        || sourceAtomNames.has(afterTarget.node.type.name)
+      ));
+    rememberExactEdit(
+      historySelection,
+      transaction,
+      preserveSourcePosition ? afterSelection : null
+    );
+    transaction.setMeta(markdownSyntaxKey, "close");
+    view.dispatch(transaction.scrollIntoView());
+    if (
+      preserveSourcePosition
+      && afterSelection
+      && activateDocumentSourceOffset(
+        view,
+        afterSelection,
+        afterSelection.head,
+        "forward",
+        serializer
+      )
+    ) return;
+    focusExactEditSelection(view);
   };
 
   const restoreExactSelectionAfterHistory = (view) => {
@@ -3482,10 +3547,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     );
     if (!transaction) return false;
     event.preventDefault();
-    rememberExactEdit(exactSelection, transaction);
-    transaction.setMeta(markdownSyntaxKey, "close");
-    view.dispatch(transaction.scrollIntoView());
-    focusExactEditSelection(view);
+    dispatchExactEdit(view, transaction, exactSelection, exactSelection);
     return true;
   };
 
@@ -3615,10 +3677,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               ctx.get(serializerCtx)
             );
         if (!transaction) return false;
-        rememberExactEdit(exactSelection, transaction);
-        transaction.setMeta(markdownSyntaxKey, "close");
-        view.dispatch(transaction.scrollIntoView());
-        focusExactEditSelection(view);
+        dispatchExactEdit(view, transaction, exactSelection, exactSelection);
         return true;
       },
       handlePaste(view, event) {
@@ -3634,10 +3693,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         );
         if (!edit) return false;
         event.preventDefault();
-        rememberExactEdit(edit.sourceSelection, edit.transaction);
-        edit.transaction.setMeta(markdownSyntaxKey, "close");
-        view.dispatch(edit.transaction.scrollIntoView());
-        focusExactEditSelection(view);
+        dispatchExactEdit(
+          view,
+          edit.transaction,
+          edit.sourceSelection,
+          edit.sourceSelection
+        );
         return true;
       },
       handleDOMEvents: {
@@ -3675,10 +3736,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (["\n", "\r\n"].includes(edit.selectedText)) {
             event.clipboardData.setData("text/html", "<br>");
           }
-          rememberExactEdit(edit.sourceSelection, edit.transaction);
-          edit.transaction.setMeta(markdownSyntaxKey, "close");
-          view.dispatch(edit.transaction.scrollIntoView());
-          focusExactEditSelection(view);
+          dispatchExactEdit(
+            view,
+            edit.transaction,
+            edit.sourceSelection,
+            edit.sourceSelection
+          );
           return true;
         },
         mousedown(view, event) {
@@ -3838,7 +3901,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             && !event.shiftKey
             && ["Backspace", "Delete", "Enter"].includes(event.key)
           ) {
-            const replacement = event.key === "Enter" ? "\n" : "";
+            const replacement = event.key === "Enter"
+              ? sourceLineEndingAt(
+                  exactSelection?.fullSource || serializer(_view.state.doc),
+                  exactSelection
+                    ? Math.min(exactSelection.anchor, exactSelection.head)
+                    : 0
+                )
+              : "";
             const deletionSelection = exactSelection
               && exactSelection.anchor === exactSelection.head
               && ["Backspace", "Delete"].includes(event.key)
@@ -3862,10 +3932,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 );
             if (transaction) {
               event.preventDefault();
-              rememberExactEdit(exactSelection, transaction);
-              transaction.setMeta(markdownSyntaxKey, "close");
-              _view.dispatch(transaction.scrollIntoView());
-              focusExactEditSelection(_view);
+              dispatchExactEdit(
+                _view,
+                transaction,
+                exactSelection,
+                deletionSelection || exactSelection
+              );
               return true;
             }
           }
