@@ -61,6 +61,7 @@ export function dispatchEditorHistoryCommand(
       && !activeElement.closest?.(".cm-editor")
   );
   if (isNativeTextControl) {
+    if (activeElement.tetherHandleHistoryCommand?.(command)) return true;
     return Boolean(documentRef.execCommand?.(command));
   }
 

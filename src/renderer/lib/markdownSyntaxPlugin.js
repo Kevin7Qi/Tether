@@ -2306,6 +2306,89 @@ export function sourceCharacterDeletionRange(source, caret, direction) {
   return { from: bounded, to: bounded };
 }
 
+export function sourceControlInitialDeletion(source, caret, direction) {
+  if (!["backward", "forward"].includes(direction)) return null;
+  const value = String(source ?? "");
+  const boundedCaret = Math.max(0, Math.min(value.length, Number(caret) || 0));
+  if (
+    (direction === "backward" && boundedCaret === 0)
+    || (direction === "forward" && boundedCaret === value.length)
+  ) return null;
+  const deletion = sourceCharacterDeletionRange(value, boundedCaret, direction);
+  if (deletion.from === deletion.to) return null;
+  return {
+    beforeValue: value,
+    afterValue: `${value.slice(0, deletion.from)}${value.slice(deletion.to)}`,
+    beforeCaret: boundedCaret,
+    afterCaret: deletion.from,
+    state: "applied",
+    nativeHistoryActive: false
+  };
+}
+
+export function sourceControlInitialHistoryChange(history, command, currentValue) {
+  if (!history || history.nativeHistoryActive || !["undo", "redo"].includes(command)) return null;
+  const nativeRedoSnapshots = history.nativeRedoSnapshots || [];
+  const nativeRedoIndex = Math.max(0, Math.min(
+    nativeRedoSnapshots.length,
+    history.nativeRedoIndex || 0
+  ));
+  const replayValue = nativeRedoIndex > 0
+    ? nativeRedoSnapshots[nativeRedoIndex - 1].value
+    : history.afterValue;
+  if (
+    command === "undo"
+    && history.state === "applied"
+    && nativeRedoIndex > 0
+    && currentValue === replayValue
+  ) {
+    const nextIndex = nativeRedoIndex - 1;
+    const target = nextIndex > 0
+      ? nativeRedoSnapshots[nextIndex - 1]
+      : { value: history.afterValue, start: history.afterCaret, end: history.afterCaret };
+    return {
+      value: target.value,
+      start: target.start,
+      end: target.end,
+      direction: target.direction || "none",
+      state: "applied",
+      nativeRedoIndex: nextIndex
+    };
+  }
+  if (
+    command === "undo"
+    && history.state === "applied"
+    && nativeRedoIndex === 0
+    && currentValue === history.afterValue
+  ) {
+    return { value: history.beforeValue, caret: history.beforeCaret, state: "undone" };
+  }
+  if (
+    command === "redo"
+    && history.state === "undone"
+    && currentValue === history.beforeValue
+  ) {
+    return { value: history.afterValue, caret: history.afterCaret, state: "applied" };
+  }
+  if (
+    command === "redo"
+    && history.state === "applied"
+    && nativeRedoIndex < nativeRedoSnapshots.length
+    && currentValue === replayValue
+  ) {
+    const target = nativeRedoSnapshots[nativeRedoIndex];
+    return {
+      value: target.value,
+      start: target.start,
+      end: target.end,
+      direction: target.direction || "none",
+      state: "applied",
+      nativeRedoIndex: nativeRedoIndex + 1
+    };
+  }
+  return null;
+}
+
 export function extendSourceSelection(sourceSelection, direction) {
   if (!sourceSelection || !["backward", "forward"].includes(direction)) return null;
   const nextHead = sourceOffsetAfterCharacter(
@@ -2659,13 +2742,14 @@ function continuousSourceEditor(
   editor.setAttribute("spellcheck", "false");
   let startingCaret = Math.max(0, Math.min(editor.value.length, initialCaret));
   let startingSelection = null;
-  if (initialDeleteDirection === "backward" && startingCaret > 0) {
-    const deletion = sourceCharacterDeletionRange(editor.value, startingCaret, "backward");
-    editor.value = `${editor.value.slice(0, deletion.from)}${editor.value.slice(deletion.to)}`;
-    startingCaret = deletion.from;
-  } else if (initialDeleteDirection === "forward" && startingCaret < editor.value.length) {
-    const deletion = sourceCharacterDeletionRange(editor.value, startingCaret, "forward");
-    editor.value = `${editor.value.slice(0, deletion.from)}${editor.value.slice(deletion.to)}`;
+  const initialDeletionHistory = sourceControlInitialDeletion(
+    editor.value,
+    startingCaret,
+    initialDeleteDirection
+  );
+  if (initialDeletionHistory) {
+    editor.value = initialDeletionHistory.afterValue;
+    startingCaret = initialDeletionHistory.afterCaret;
   } else if (initialSourceSelection) {
     startingSelection = {
       start: Math.max(0, Math.min(editor.value.length, initialSourceSelection.start)),
@@ -2756,6 +2840,7 @@ function continuousSourceEditor(
       pointerDragWindow.removeEventListener("mouseup", handlePointerDragEnd, true);
     }
     pointerDragWindow = null;
+    delete editor.tetherHandleHistoryCommand;
     const value = editor.value;
     const run = () => {
       setActiveControl(null);
@@ -2774,6 +2859,40 @@ function continuousSourceEditor(
     else requestAnimationFrame(run);
   };
   setActiveControl({ element: editor, finish });
+
+  const applyInitialHistoryCommand = (command) => {
+    const change = sourceControlInitialHistoryChange(
+      initialDeletionHistory,
+      command,
+      editor.value
+    );
+    if (!change) {
+      if (
+        initialDeletionHistory?.nativeHistoryActive
+        && command === "undo"
+      ) {
+        initialDeletionHistory.pendingNativeUndoSnapshot = {
+          value: editor.value,
+          start: editor.selectionStart ?? 0,
+          end: editor.selectionEnd ?? editor.selectionStart ?? 0,
+          direction: editor.selectionDirection || "none"
+        };
+      }
+      return false;
+    }
+    editor.value = change.value;
+    initialDeletionHistory.state = change.state;
+    initialDeletionHistory.nativeHistoryActive = false;
+    if (Number.isInteger(change.nativeRedoIndex)) {
+      initialDeletionHistory.nativeRedoIndex = change.nativeRedoIndex;
+    }
+    const start = change.start ?? change.caret;
+    const end = change.end ?? change.caret;
+    editor.setSelectionRange(start, end, change.direction || "none");
+    resize();
+    return true;
+  };
+  editor.tetherHandleHistoryCommand = applyInitialHistoryCommand;
 
   handlePointerDragEnd = (event) => {
     if (finished || pointerDragAnchor == null) return;
@@ -2802,7 +2921,35 @@ function continuousSourceEditor(
     finish(true, (mapping) => onPointerDrag(localAnchor, pointer, mapping));
   };
 
-  editor.addEventListener("input", resize);
+  editor.addEventListener("input", (event) => {
+    resize();
+    if (!initialDeletionHistory) return;
+    if (event.inputType === "historyUndo") {
+      const snapshot = initialDeletionHistory.pendingNativeUndoSnapshot;
+      if (snapshot && snapshot.value !== editor.value) {
+        initialDeletionHistory.nativeUndoSnapshots ||= [];
+        initialDeletionHistory.nativeUndoSnapshots.push(snapshot);
+      }
+    } else {
+      initialDeletionHistory.nativeUndoSnapshots = [];
+      initialDeletionHistory.nativeRedoSnapshots = [];
+      initialDeletionHistory.nativeRedoIndex = 0;
+    }
+    initialDeletionHistory.pendingNativeUndoSnapshot = null;
+    const returnedToInitialDeletion = (
+      event.inputType === "historyUndo"
+      && initialDeletionHistory.state === "applied"
+      && editor.value === initialDeletionHistory.afterValue
+    );
+    initialDeletionHistory.nativeHistoryActive = !returnedToInitialDeletion;
+    if (returnedToInitialDeletion) {
+      initialDeletionHistory.nativeRedoSnapshots = [
+        ...(initialDeletionHistory.nativeUndoSnapshots || [])
+      ].reverse();
+      initialDeletionHistory.nativeUndoSnapshots = [];
+      initialDeletionHistory.nativeRedoIndex = 0;
+    }
+  });
   editor.addEventListener("mousedown", (event) => {
     if (event.button !== 0) return;
     const caret = caretAtClientX(event.clientX);
@@ -2852,6 +2999,15 @@ function continuousSourceEditor(
   });
   editor.addEventListener("keydown", (event) => {
     if (isSourceInputComposing(event)) return;
+    if (isEditorHistoryShortcut(event)) {
+      const key = String(event.key || "").toLowerCase();
+      const command = key === "y" || (key === "z" && event.shiftKey) ? "redo" : "undo";
+      if (applyInitialHistoryCommand(command)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+    }
     const documentJumpEdge = sourceDocumentJumpEdge(event);
     if (documentJumpEdge) {
       const start = editor.selectionStart ?? 0;

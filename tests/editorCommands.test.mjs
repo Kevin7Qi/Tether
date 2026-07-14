@@ -81,6 +81,49 @@ test("plain text controls retain Chromium's native undo history", () => {
   assert.deepEqual(calls, ["undo"]);
 });
 
+test("temporary source controls can handle source-only history before Chromium", () => {
+  const calls = [];
+  const activeElement = {
+    matches: (selector) => selector === "input, textarea",
+    closest: () => null,
+    tetherHandleHistoryCommand: (command) => {
+      calls.push(`source:${command}`);
+      return true;
+    }
+  };
+  const documentRef = {
+    activeElement,
+    execCommand: (command) => {
+      calls.push(`native:${command}`);
+      return true;
+    }
+  };
+
+  assert.equal(dispatchEditorHistoryCommand("undo", documentRef, "MacIntel"), true);
+  assert.deepEqual(calls, ["source:undo"]);
+});
+
+test("temporary source controls fall back to Chromium when source-only history is unavailable", () => {
+  const calls = [];
+  const documentRef = {
+    activeElement: {
+      matches: (selector) => selector === "input, textarea",
+      closest: () => null,
+      tetherHandleHistoryCommand: (command) => {
+        calls.push(`source:${command}`);
+        return false;
+      }
+    },
+    execCommand: (command) => {
+      calls.push(`native:${command}`);
+      return true;
+    }
+  };
+
+  assert.equal(dispatchEditorHistoryCommand("undo", documentRef, "MacIntel"), true);
+  assert.deepEqual(calls, ["source:undo", "native:undo"]);
+});
+
 test("structured history refocuses the surviving code editor when focus falls to the document shell", () => {
   const focusCalls = [];
   const shell = {};

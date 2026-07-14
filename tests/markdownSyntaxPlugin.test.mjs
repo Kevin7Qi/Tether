@@ -47,6 +47,8 @@ import {
   sourceTabEdit,
   sourceCaretBoundaries,
   sourceCharacterDeletionRange,
+  sourceControlInitialDeletion,
+  sourceControlInitialHistoryChange,
   sourceEditCaretOffset,
   sourceLineEndingAt,
   sourceBoundarySelectionRange,
@@ -2265,6 +2267,73 @@ test("source editing uses native-like grapheme boundaries for deletion and point
     start: 0,
     end: "👨‍👩‍👧‍👦".length,
     direction: "forward"
+  });
+});
+
+test("temporary source controls undo and redo activation-time deletion", () => {
+  const source = "```text\n```";
+  const history = sourceControlInitialDeletion(source, "```text\n".length, "backward");
+
+  assert.deepEqual(history, {
+    beforeValue: source,
+    afterValue: "```text```",
+    beforeCaret: 8,
+    afterCaret: 7,
+    state: "applied",
+    nativeHistoryActive: false
+  });
+  assert.deepEqual(sourceControlInitialHistoryChange(history, "undo", "```text```"), {
+    value: source,
+    caret: 8,
+    state: "undone"
+  });
+
+  history.state = "undone";
+  assert.deepEqual(sourceControlInitialHistoryChange(history, "redo", source), {
+    value: "```text```",
+    caret: 7,
+    state: "applied"
+  });
+
+  history.nativeHistoryActive = true;
+  assert.equal(sourceControlInitialHistoryChange(history, "redo", source), null);
+});
+
+test("temporary source controls replay native redo after the activation deletion", () => {
+  const source = "```text\n```";
+  const history = sourceControlInitialDeletion(source, "```text\n".length, "backward");
+  history.nativeRedoSnapshots = [
+    { value: "```textx```", start: 8, end: 8, direction: "none" }
+  ];
+  history.nativeRedoIndex = 0;
+
+  const undoDeletion = sourceControlInitialHistoryChange(history, "undo", "```text```");
+  assert.equal(undoDeletion.value, source);
+  history.state = undoDeletion.state;
+
+  const redoDeletion = sourceControlInitialHistoryChange(history, "redo", source);
+  assert.equal(redoDeletion.value, "```text```");
+  history.state = redoDeletion.state;
+
+  const redoTyping = sourceControlInitialHistoryChange(history, "redo", "```text```");
+  assert.deepEqual(redoTyping, {
+    value: "```textx```",
+    start: 8,
+    end: 8,
+    direction: "none",
+    state: "applied",
+    nativeRedoIndex: 1
+  });
+  history.nativeRedoIndex = redoTyping.nativeRedoIndex;
+
+  const undoTyping = sourceControlInitialHistoryChange(history, "undo", "```textx```");
+  assert.deepEqual(undoTyping, {
+    value: "```text```",
+    start: 7,
+    end: 7,
+    direction: "none",
+    state: "applied",
+    nativeRedoIndex: 0
   });
 });
 
