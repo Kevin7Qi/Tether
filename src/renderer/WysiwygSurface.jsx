@@ -10,7 +10,12 @@ import { placeholder } from "@milkdown/crepe/feature/placeholder";
 import { table } from "@milkdown/crepe/feature/table";
 import { toolbar } from "@milkdown/crepe/feature/toolbar";
 import { editorViewCtx, remarkStringifyOptionsCtx, serializerCtx } from "@milkdown/kit/core";
-import { headingKeymap, listItemKeymap, remarkInlineLinkPlugin } from "@milkdown/kit/preset/commonmark";
+import {
+  createCodeBlockInputRule,
+  headingKeymap,
+  listItemKeymap,
+  remarkInlineLinkPlugin
+} from "@milkdown/kit/preset/commonmark";
 import { strikethroughInputRule } from "@milkdown/kit/preset/gfm";
 import { replaceAll } from "@milkdown/kit/utils";
 import { AllSelection, TextSelection } from "@milkdown/kit/prose/state";
@@ -38,6 +43,8 @@ import {
 import { normalizeSerializedMarkdown, tetherStringifyOptions } from "./lib/markdownStyle.js";
 import {
   codeSemanticSignature,
+  sourceFaithfulCodeBlockEnterShortcut,
+  sourceFaithfulCodeBlockInputRule,
   sourceFaithfulCodeBlockSchema,
   sourceFaithfulFenceRemark
 } from "./lib/markdownFence.js";
@@ -1098,9 +1105,12 @@ export default function WysiwygSurface({
     crepe.setReadonly(readOnlyRef.current);
     void crepe.editor.remove(remarkInlineLinkPlugin);
     void crepe.editor.remove(strikethroughInputRule);
+    void crepe.editor.remove(createCodeBlockInputRule);
     crepe.editor
       .use(sourceFaithfulFenceRemark)
       .use(sourceFaithfulCodeBlockSchema)
+      .use(sourceFaithfulCodeBlockInputRule)
+      .use(sourceFaithfulCodeBlockEnterShortcut)
       .use(sourceFaithfulMathRemark)
       .use(sourceFaithfulInlineMathSchema)
       .use(renderedInlineHtmlRemark)

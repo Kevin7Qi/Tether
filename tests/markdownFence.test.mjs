@@ -11,6 +11,7 @@ import {
   parserCtx,
   remarkStringifyOptionsCtx,
   schema,
+  schemaCtx,
   serializer,
   serializerCtx
 } from "@milkdown/kit/core";
@@ -25,9 +26,12 @@ import {
   annotateFrontmatterBlock,
   annotateFencedCodeMarkers,
   codeSemanticSignature,
+  sourceFaithfulCodeBlockInputRule,
   sourceFaithfulCodeBlockSchema,
   sourceFaithfulCodeHandler,
-  sourceFaithfulFenceRemark
+  sourceFaithfulFenceRemark,
+  typedCodeFenceAttributes,
+  typedCodeFenceTransaction
 } from "../src/renderer/lib/markdownFence.js";
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
@@ -75,7 +79,8 @@ async function milkdownTransformer() {
     sourceFaithfulDocumentSchema,
     paragraphSchema,
     textSchema,
-    sourceFaithfulCodeBlockSchema
+    sourceFaithfulCodeBlockSchema,
+    sourceFaithfulCodeBlockInputRule
   ].flat().map((plugin) => plugin(ctx));
 
   ctx.record(ConfigReady);
@@ -94,7 +99,12 @@ async function milkdownTransformer() {
       serializerPromise,
       ...userPromises
     ]);
-    return { parse: ctx.get(parserCtx), serialize: ctx.get(serializerCtx) };
+    return {
+      parse: ctx.get(parserCtx),
+      proseSchema: ctx.get(schemaCtx),
+      serialize: ctx.get(serializerCtx),
+      codeBlockInputRule: sourceFaithfulCodeBlockInputRule.inputRule
+    };
   } finally {
     globalThis.setTimeout = nativeSetTimeout;
   }
@@ -120,6 +130,76 @@ test("fenced code preserves mixed marker styles, lengths, and metadata", () => {
     ""
   ].join("\n");
   assert.equal(roundTrip(source), source);
+});
+
+test("edited fences retain exact language spacing, trailing spaces, and closing indentation", () => {
+  const source = "~~~~  js\t title=demo  \ncode\n ~~~~~\n";
+  assert.equal(roundTrip(source, (tree) => {
+    tree.children[0].value = "changed";
+  }), "~~~~  js\t title=demo  \nchanged\n ~~~~~\n");
+});
+
+test("typed fence attributes preserve marker family, width, and info layout", () => {
+  const attrs = typedCodeFenceAttributes("  ~~~~  c++\t title=demo  ");
+  assert.deepEqual({
+    language: attrs.language,
+    meta: attrs.meta,
+    marker: attrs.fenceMarker,
+    length: attrs.fenceLength,
+    openingIndent: attrs.fenceOpeningIndent,
+    closingIndent: attrs.fenceClosingIndent,
+    languagePrefix: attrs.fenceLanguagePrefix,
+    metaPrefix: attrs.fenceMetaPrefix,
+    trailing: attrs.fenceOpeningTrailing,
+    source: attrs.fenceSource
+  }, {
+    language: "c++",
+    meta: "title=demo",
+    marker: "~",
+    length: 4,
+    openingIndent: "  ",
+    closingIndent: "  ",
+    languagePrefix: "  ",
+    metaPrefix: "\t ",
+    trailing: "  ",
+    source: "  ~~~~  c++\t title=demo  \n  ~~~~"
+  });
+  assert.equal(typedCodeFenceAttributes("```bad`info"), null);
+  assert.equal(typedCodeFenceAttributes("~~js"), null);
+});
+
+test("typed fence space and Enter conversions serialize with their physical markers", async () => {
+  const { proseSchema, serialize, codeBlockInputRule } = await milkdownTransformer();
+  const triggered = "~~~~ c++ title=demo ";
+  const inputDoc = proseSchema.nodes.doc.create(null,
+    proseSchema.nodes.paragraph.create(null, proseSchema.text(triggered)));
+  const inputState = EditorState.create({ doc: inputDoc });
+  const inputTransaction = codeBlockInputRule.handler(
+    inputState,
+    [triggered],
+    1,
+    triggered.length + 1
+  );
+  assert.equal(inputTransaction.doc.firstChild.type.name, "code_block");
+  assert.equal(inputTransaction.doc.firstChild.attrs.fenceMarker, "~");
+  assert.equal(inputTransaction.doc.firstChild.attrs.fenceLength, 4);
+  assert.equal(inputTransaction.doc.firstChild.attrs.language, "c++");
+  assert.equal(serialize(inputTransaction.doc), "~~~~ c++ title=demo \n~~~~\n");
+
+  const entered = "`````rust key=value";
+  const enterDoc = proseSchema.nodes.doc.create(null,
+    proseSchema.nodes.paragraph.create(null, proseSchema.text(entered)));
+  const enterState = EditorState.create({
+    doc: enterDoc,
+    selection: TextSelection.create(enterDoc, entered.length + 1)
+  });
+  const enterTransaction = typedCodeFenceTransaction(enterState);
+  assert.ok(enterTransaction);
+  assert.equal(enterTransaction.doc.firstChild.attrs.fenceMarker, "`");
+  assert.equal(enterTransaction.doc.firstChild.attrs.fenceLength, 5);
+  assert.equal(enterTransaction.doc.firstChild.attrs.language, "rust");
+  assert.equal(enterTransaction.selection.from, 1);
+  assert.equal(serialize(enterTransaction.doc), "`````rust key=value\n`````\n");
 });
 
 test("YAML front matter becomes one exact rendered code unit", () => {
@@ -259,6 +339,11 @@ test("Milkdown keeps fence attributes through a ProseMirror content edit", async
       lang: "js",
       meta: "title=demo"
     }),
+    fenceOpeningIndent: "",
+    fenceClosingIndent: "",
+    fenceLanguagePrefix: "",
+    fenceMetaPrefix: " ",
+    fenceOpeningTrailing: "",
     mathBlock: false,
     mathOpeningLength: 2,
     mathClosingLength: 2,

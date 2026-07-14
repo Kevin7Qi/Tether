@@ -1,5 +1,7 @@
 import { codeBlockSchema } from "@milkdown/kit/preset/commonmark";
-import { $remark } from "@milkdown/kit/utils";
+import { textblockTypeInputRule } from "@milkdown/kit/prose/inputrules";
+import { TextSelection } from "@milkdown/kit/prose/state";
+import { $inputRule, $remark, $shortcut } from "@milkdown/kit/utils";
 
 function sourceText(file) {
   return typeof file?.value === "string" ? file.value : String(file?.value || "");
@@ -11,6 +13,105 @@ function fenceRun(line) {
 
 function closingFenceRun(line) {
   return line.match(/(`{3,}|~{3,})[\t ]*$/)?.[1] || null;
+}
+
+function openingFenceLayout(line, fence, language = "", meta = "") {
+  const remainder = line.slice(line.indexOf(fence) + fence.length);
+  if (!language) {
+    return {
+      fenceLanguagePrefix: "",
+      fenceMetaPrefix: " ",
+      fenceOpeningTrailing: remainder
+    };
+  }
+  const languageIndex = remainder.indexOf(language);
+  if (languageIndex < 0) {
+    return {
+      fenceLanguagePrefix: "",
+      fenceMetaPrefix: " ",
+      fenceOpeningTrailing: ""
+    };
+  }
+  const afterLanguage = languageIndex + language.length;
+  if (!meta) {
+    return {
+      fenceLanguagePrefix: remainder.slice(0, languageIndex),
+      fenceMetaPrefix: " ",
+      fenceOpeningTrailing: remainder.slice(afterLanguage)
+    };
+  }
+  const metaIndex = remainder.indexOf(meta, afterLanguage);
+  if (metaIndex < 0) {
+    return {
+      fenceLanguagePrefix: remainder.slice(0, languageIndex),
+      fenceMetaPrefix: " ",
+      fenceOpeningTrailing: ""
+    };
+  }
+  return {
+    fenceLanguagePrefix: remainder.slice(0, languageIndex),
+    fenceMetaPrefix: remainder.slice(afterLanguage, metaIndex),
+    fenceOpeningTrailing: remainder.slice(metaIndex + meta.length)
+  };
+}
+
+export function typedCodeFenceAttributes(openingLine, options = {}) {
+  const match = String(openingLine || "").match(/^( {0,3})(`{3,}|~{3,})([^\r\n]*)$/);
+  if (!match) return null;
+  const openingIndent = match[1];
+  const fence = match[2];
+  const rawInfo = match[3];
+  if (fence[0] === "`" && rawInfo.includes("`")) return null;
+
+  const leading = rawInfo.match(/^[\t ]*/)?.[0] || "";
+  const trailingMatch = rawInfo.match(/[\t ]*$/)?.[0] || "";
+  const infoEnd = Math.max(leading.length, rawInfo.length - trailingMatch.length);
+  const info = rawInfo.slice(leading.length, infoEnd);
+  const trailing = info ? rawInfo.slice(infoEnd) : rawInfo;
+  const infoPrefix = info ? leading : "";
+  const languageMatch = info.match(/^(\S+)([\t ]+(.+))?$/);
+  const language = languageMatch?.[1] || "";
+  const meta = languageMatch?.[3] || null;
+  const metaPrefix = meta ? languageMatch[2].slice(0, -meta.length) : " ";
+  const lineEnding = options.lineEnding === "\r\n" ? "\r\n" : "\n";
+  const closed = options.closed !== false;
+  const closingIndent = options.closingIndent ?? openingIndent;
+  const closingLength = Math.max(fence.length, Number(options.closingFenceLength) || fence.length);
+  const opening = `${openingIndent}${fence}${infoPrefix}${language}${meta ? `${metaPrefix}${meta}` : ""}${trailing}`;
+  const closing = `${closingIndent}${fence[0].repeat(closingLength)}`;
+  const fenceSource = `${opening}${lineEnding}${closed ? closing : ""}`;
+
+  return {
+    language,
+    meta,
+    fenceMarker: fence[0],
+    fenceLength: fence.length,
+    closingFenceLength: closingLength,
+    fenceClosed: closed,
+    fenceLineEnding: lineEnding,
+    fenceTrailingLineEnding: "",
+    fenceSource,
+    fenceSourceSignature: codeSemanticSignature({ value: "", lang: language, meta }),
+    fenceOpeningIndent: openingIndent,
+    fenceClosingIndent: closingIndent,
+    fenceLanguagePrefix: infoPrefix,
+    fenceMetaPrefix: metaPrefix,
+    fenceOpeningTrailing: trailing
+  };
+}
+
+export function typedCodeFenceTransaction(state) {
+  const { selection } = state;
+  if (!selection.empty || selection.$from.depth !== 1) return null;
+  const paragraph = selection.$from.parent;
+  if (paragraph.type.name !== "paragraph" || selection.$from.parentOffset !== paragraph.content.size) return null;
+  const attrs = typedCodeFenceAttributes(paragraph.textContent);
+  const codeType = state.schema.nodes.code_block;
+  if (!attrs || !codeType) return null;
+  const from = selection.$from.before();
+  const to = selection.$from.after();
+  const transaction = state.tr.replaceWith(from, to, codeType.create(attrs));
+  return transaction.setSelection(TextSelection.create(transaction.doc, from + 1));
 }
 
 function frontmatterBlock(source) {
@@ -90,6 +191,7 @@ export function annotateFencedCodeMarkers(tree, file) {
         const start = node.position?.start?.offset;
         const end = node.position?.end?.offset;
         if (opening) {
+          const layout = openingFenceLayout(openingLine, opening, node.lang || "", node.meta || "");
           const openingLineEnd = Number.isFinite(start) ? source.indexOf("\n", start) : -1;
           const lineEnding = openingLineEnd < 0
             ? ""
@@ -104,6 +206,13 @@ export function annotateFencedCodeMarkers(tree, file) {
           node.closingFenceLength = validClosing ? closing.length : opening.length;
           node.fenceClosed = validClosing;
           node.fenceLineEnding = lineEnding;
+          node.fenceLanguagePrefix = layout.fenceLanguagePrefix;
+          node.fenceMetaPrefix = layout.fenceMetaPrefix;
+          node.fenceOpeningTrailing = layout.fenceOpeningTrailing;
+          if (parent?.type === "root" && closing) {
+            const closingPrefix = closingLine.slice(0, closingLine.lastIndexOf(closing));
+            if (/^[\t ]{0,3}$/.test(closingPrefix)) node.fenceClosingIndent = closingPrefix;
+          }
         }
         if (parent?.type === "root" && Number.isFinite(start) && Number.isFinite(end)) {
           // Root indented code needs the same source snapshot as a fence. Without
@@ -143,6 +252,11 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
       fenceTrailingLineEnding: { default: "", validate: "string" },
       fenceSource: { default: null, validate: "string|null" },
       fenceSourceSignature: { default: null, validate: "string|null" },
+      fenceOpeningIndent: { default: "", validate: "string" },
+      fenceClosingIndent: { default: "", validate: "string" },
+      fenceLanguagePrefix: { default: "", validate: "string" },
+      fenceMetaPrefix: { default: " ", validate: "string" },
+      fenceOpeningTrailing: { default: "", validate: "string" },
       mathBlock: { default: false, validate: "boolean" },
       mathOpeningLength: { default: 2, validate: "number" },
       mathClosingLength: { default: 2, validate: "number" },
@@ -171,6 +285,11 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
             : node.fenceTrailingLineEnding === "\n" ? "\n" : "",
           fenceSource: node.fenceSource ?? null,
           fenceSourceSignature: node.fenceSourceSignature ?? null,
+          fenceOpeningIndent: node.fenceOpeningIndent || "",
+          fenceClosingIndent: node.fenceClosingIndent || "",
+          fenceLanguagePrefix: node.fenceLanguagePrefix || "",
+          fenceMetaPrefix: node.fenceMetaPrefix ?? " ",
+          fenceOpeningTrailing: node.fenceOpeningTrailing || "",
           mathBlock: Boolean(node.mathBlock),
           mathOpeningLength: node.mathOpeningLength || 2,
           mathClosingLength: node.mathClosingLength || node.mathOpeningLength || 2,
@@ -210,6 +329,11 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
           fenceTrailingLineEnding: node.attrs.fenceTrailingLineEnding,
           fenceSource: node.attrs.fenceSource,
           fenceSourceSignature: node.attrs.fenceSourceSignature,
+          fenceOpeningIndent: node.attrs.fenceOpeningIndent,
+          fenceClosingIndent: node.attrs.fenceClosingIndent,
+          fenceLanguagePrefix: node.attrs.fenceLanguagePrefix,
+          fenceMetaPrefix: node.attrs.fenceMetaPrefix,
+          fenceOpeningTrailing: node.attrs.fenceOpeningTrailing,
           frontmatterBlock: node.attrs.frontmatterBlock,
           frontmatterOpening: node.attrs.frontmatterOpening,
           frontmatterClosing: node.attrs.frontmatterClosing
@@ -218,6 +342,25 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
     }
   };
 });
+
+export const sourceFaithfulCodeBlockInputRule = $inputRule((ctx) => textblockTypeInputRule(
+  /^(?: {0,3})(?:`{3,}[^`\r\n]*|~{3,}[^\r\n]*)[\t ]$/,
+  codeBlockSchema.type(ctx),
+  (match) => typedCodeFenceAttributes(match[0])
+));
+
+export const sourceFaithfulCodeBlockEnterShortcut = $shortcut(() => ({
+  Enter: {
+    key: "Enter",
+    priority: 120,
+    onRun: (state, dispatch) => {
+      const transaction = typedCodeFenceTransaction(state);
+      if (!transaction) return false;
+      dispatch?.(transaction.scrollIntoView());
+      return true;
+    }
+  }
+}));
 
 function longestClosingRun(value, marker) {
   let longest = 0;
@@ -276,9 +419,15 @@ export function sourceFaithfulCodeHandler(node, _parent, state, info) {
   const suffix = marker === "`" ? "GraveAccent" : "Tilde";
   const tracker = state.createTracker(info);
   const exit = state.enter("codeFenced");
-  let value = tracker.move(opening);
+  const openingIndent = node.fenceOpeningIndent || "";
+  const closingIndent = node.fenceClosingIndent || "";
+  const languagePrefix = node.fenceLanguagePrefix || "";
+  const metaPrefix = node.fenceMetaPrefix ?? " ";
+  const openingTrailing = node.fenceOpeningTrailing || "";
+  let value = tracker.move(`${openingIndent}${opening}`);
 
   if (node.lang) {
+    value += tracker.move(languagePrefix);
     const languageExit = state.enter(`codeFencedLang${suffix}`);
     value += tracker.move(state.safe(node.lang, {
       before: value,
@@ -290,7 +439,7 @@ export function sourceFaithfulCodeHandler(node, _parent, state, info) {
   }
   if (node.lang && node.meta) {
     const metaExit = state.enter(`codeFencedMeta${suffix}`);
-    value += tracker.move(" ");
+    value += tracker.move(metaPrefix);
     value += tracker.move(state.safe(node.meta, {
       before: value,
       after: "\n",
@@ -300,12 +449,14 @@ export function sourceFaithfulCodeHandler(node, _parent, state, info) {
     metaExit();
   }
 
+  value += tracker.move(openingTrailing);
+
   value += tracker.move(lineEnding);
   if (raw) {
     value += tracker.move(raw.replace(/\r?\n/g, lineEnding || "\n"));
     if (closed) value += tracker.move(lineEnding || "\n");
   }
-  if (closed) value += tracker.move(closing);
+  if (closed) value += tracker.move(`${closingIndent}${closing}`);
   else if (node.fenceTrailingLineEnding && !raw.endsWith("\n")) {
     value += tracker.move(node.fenceTrailingLineEnding);
   }
