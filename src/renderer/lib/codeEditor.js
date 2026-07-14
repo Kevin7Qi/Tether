@@ -179,7 +179,14 @@ export function codeBoundaryNavigationSourceOffset(source, content, key, content
   const column = boundedHead - contentLineStart;
   const closingStart = closingFenceLineStart(source) ?? source.length;
 
-  if (key === "ArrowLeft") return Math.max(0, contentStart - 1);
+  if (key === "ArrowLeft") {
+    // Treat CRLF as the single source-file newline it represents. Returning
+    // openingEnd here would place the raw-source caret between `\r` and `\n`,
+    // a position normal editor navigation never exposes.
+    return source.slice(Math.max(0, contentStart - 2), contentStart) === "\r\n"
+      ? contentStart - 2
+      : Math.max(0, contentStart - 1);
+  }
   if (key === "ArrowRight") {
     // A semantic empty value can represent either `~~~\n~~~` or
     // `~~~\n\n~~~`. In the former the caret is directly before the closing

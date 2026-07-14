@@ -1595,6 +1595,26 @@ test("source line selections include hidden prefixes and suffixes with CRLF", ()
   });
 });
 
+test("source boundary selections keep CRLF and Unicode code points indivisible", () => {
+  const crlf = "~~~\r\n~~~";
+  const contentStart = crlf.indexOf("\n") + 1;
+  assert.deepEqual(sourceInitialSelectionRange(crlf, contentStart, "backward"), {
+    start: contentStart - 2,
+    end: contentStart,
+    direction: "backward"
+  });
+  assert.deepEqual(sourceInitialSelectionRange("a😀b", 1, "forward"), {
+    start: 1,
+    end: 3,
+    direction: "forward"
+  });
+  assert.deepEqual(sourceInitialSelectionRange("a😀b", 3, "backward"), {
+    start: 1,
+    end: 3,
+    direction: "backward"
+  });
+});
+
 test("source selections move vertically by physical source lines and preserve columns", () => {
   const source = "ab\r\n12345\r\nz";
   const secondLineColumn = source.indexOf("12345") + 3;

@@ -193,9 +193,24 @@ test("empty fenced blocks distinguish a physical blank content line from the clo
 
 test("vertical fence navigation preserves columns with CRLF source", () => {
   const source = "```js\r\ncode\r\n```";
+  const contentStart = source.indexOf("\n") + 1;
   const closingStart = source.lastIndexOf("\n") + 1;
+  assert.equal(
+    codeBoundaryNavigationSourceOffset(source, "code", "ArrowLeft", 0),
+    contentStart - 2
+  );
   assert.equal(codeBoundaryNavigationSourceOffset(source, "code", "ArrowUp", 6), 4);
   assert.equal(codeBoundaryNavigationSourceOffset(source, "code", "ArrowDown", 3), closingStart + 3);
+});
+
+test("empty CRLF fences never expose a caret between carriage return and line feed", () => {
+  const source = "~~~text\r\n~~~";
+  const contentStart = source.indexOf("\n") + 1;
+  assert.equal(
+    codeBoundaryNavigationSourceOffset(source, "", "ArrowLeft", 0),
+    contentStart - 2
+  );
+  assert.equal(codeBoundaryNavigationSourceOffset(source, "", "ArrowRight", 0), contentStart + 1);
 });
 
 test("CodeMirror boundary navigation ignores shifted and command-modified arrows", () => {

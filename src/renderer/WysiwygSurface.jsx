@@ -96,6 +96,7 @@ import {
   flushActiveMarkdownSource,
   markdownSourceTargetFromPointer,
   markdownSyntaxPlugin,
+  isSourceInputComposing,
   sourceCaretOffset,
   sourceDocumentJumpEdge,
   sourceFaithfulHeadingKeymapConfig,
@@ -254,7 +255,11 @@ export default function WysiwygSurface({
     let copyFeedbackTimer = 0;
     let settleFrame = 0;
     let secondSettleFrame = 0;
-    const ensureSyntheticTrailing = () => {
+    const ensureSyntheticTrailing = (event = null) => {
+      // Composition owns the editor until it commits. Even a history-free
+      // structural transaction can make the browser restart or drop an IME
+      // candidate, so postpone this housekeeping to the resulting update.
+      if (isSourceInputComposing(event)) return;
       const crepe = crepeRef.current;
       if (!crepe) return;
       const before = crepe.editor.action((ctx) => ctx.get(editorViewCtx).state.doc);
@@ -420,7 +425,7 @@ export default function WysiwygSurface({
       activateMarkdownBlockSourceAt(view, position);
     };
     const handleCodeWordJump = (event) => {
-      if (readOnlyRef.current || event.isComposing || event.keyCode === 229) return;
+      if (readOnlyRef.current || isSourceInputComposing(event)) return;
       if (
         !event.altKey
         || event.ctrlKey
@@ -475,7 +480,7 @@ export default function WysiwygSurface({
       });
     };
     const handleCodeDocumentJump = (event) => {
-      if (readOnlyRef.current || event.isComposing || event.keyCode === 229) return;
+      if (readOnlyRef.current || isSourceInputComposing(event)) return;
       if (!sourceDocumentJumpEdge(event)) return;
       const target = event.target instanceof Element ? event.target : null;
       const codeView = tetherCodeViewForElement(target);
@@ -507,7 +512,7 @@ export default function WysiwygSurface({
     };
     const handleCodeBoundaryKey = (event) => {
       if (readOnlyRef.current) return;
-      if (event.isComposing || event.keyCode === 229) return;
+      if (isSourceInputComposing(event)) return;
       const target = event.target instanceof Element ? event.target : null;
       const codeView = tetherCodeViewForElement(target);
       if (codeView && isEditorSelectAllShortcut(event)) {

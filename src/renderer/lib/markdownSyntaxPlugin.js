@@ -1041,13 +1041,21 @@ export function inlineSourceBoundarySelectionDirection(
   return null;
 }
 
-export function sourceBoundarySelectionRange(sourceLength, caret, direction) {
+export function sourceBoundarySelectionRange(sourceOrLength, caret, direction) {
+  const source = typeof sourceOrLength === "string" ? sourceOrLength : null;
+  const sourceLength = source?.length ?? sourceOrLength;
   const boundedCaret = Math.max(0, Math.min(sourceLength, caret));
   if (direction === "backward" && boundedCaret > 0) {
-    return { start: boundedCaret - 1, end: boundedCaret, direction: "backward" };
+    const start = source
+      ? sourceOffsetAfterCharacter(source, boundedCaret, "backward")
+      : boundedCaret - 1;
+    return { start, end: boundedCaret, direction: "backward" };
   }
   if (direction === "forward" && boundedCaret < sourceLength) {
-    return { start: boundedCaret, end: boundedCaret + 1, direction: "forward" };
+    const end = source
+      ? sourceOffsetAfterCharacter(source, boundedCaret, "forward")
+      : boundedCaret + 1;
+    return { start: boundedCaret, end, direction: "forward" };
   }
   return { start: boundedCaret, end: boundedCaret, direction: "none" };
 }
@@ -1055,7 +1063,7 @@ export function sourceBoundarySelectionRange(sourceLength, caret, direction) {
 export function sourceInitialSelectionRange(source, caret, direction) {
   const boundedCaret = Math.max(0, Math.min(source.length, caret));
   if (["backward", "forward"].includes(direction)) {
-    return sourceBoundarySelectionRange(source.length, boundedCaret, direction);
+    return sourceBoundarySelectionRange(source, boundedCaret, direction);
   }
   const line = sourceLineBounds(source, boundedCaret);
   const head = direction === "line-start"
