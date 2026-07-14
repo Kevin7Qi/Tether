@@ -29,6 +29,7 @@ import {
   codeBoundarySourcePosition,
   codeContentSourcePosition,
   codeDragDocumentRange,
+  codeLineEndSourceOffset,
   codeLineStartSourceOffset,
   codeTabEdit,
   documentDragIntoCodeRange,
@@ -547,7 +548,8 @@ export default function WysiwygSurface({
     };
     const handleCodeLineJump = (event) => {
       if (readOnlyRef.current || isSourceInputComposing(event)) return;
-      if (sourceLineJumpEdge(event) !== "start") return;
+      const lineEdge = sourceLineJumpEdge(event);
+      if (!lineEdge) return;
       const target = event.target instanceof Element ? event.target : null;
       const codeView = tetherCodeViewForElement(target);
       const block = target?.closest(".milkdown-code-block");
@@ -570,11 +572,13 @@ export default function WysiwygSurface({
         name: "code_block"
       };
       const source = continuousMarkdownSource(view.state, unit, serializer);
-      const targetOffset = codeLineStartSourceOffset(
-        source,
-        codeBlock.node.textContent,
-        codeSelection.head
-      );
+      const targetOffset = lineEdge === "start"
+        ? codeLineStartSourceOffset(
+            source,
+            codeBlock.node.textContent,
+            codeSelection.head
+          )
+        : codeLineEndSourceOffset(source, codeBlock.node.textContent);
       if (!Number.isFinite(targetOffset)) return;
       const anchorOffset = sourceCaretOffset(
         view.state,

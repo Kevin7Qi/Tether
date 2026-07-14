@@ -15,6 +15,7 @@ import {
   codeBoundarySourcePosition,
   codeContentSourcePosition,
   codeDragDocumentRange,
+  codeLineEndSourceOffset,
   codeLineStartSourceOffset,
   codeTabEdit,
   documentDragIntoCodeRange,
@@ -303,6 +304,17 @@ test("indented code line-start jumps reach physical source column zero", () => {
   );
   assert.equal(codeLineStartSourceOffset("```js\nalpha\n```", "alpha", 3), null);
   assert.equal(codeLineStartSourceOffset("---\ntitle: Demo\n---", "title: Demo", 4), null);
+});
+
+test("empty closed code line-end jumps reach the physical closing marker", () => {
+  assert.equal(codeLineEndSourceOffset("```text\n```", ""), "```text\n```".length);
+  assert.equal(codeLineEndSourceOffset("~~~\r\n~~~~  ", ""), "~~~\r\n~~~~  ".length);
+  assert.equal(codeLineEndSourceOffset("---\ntitle: Demo\n---", "title: Demo"), null);
+  assert.equal(codeLineEndSourceOffset("---\n---", ""), "---\n---".length);
+  assert.equal(codeLineEndSourceOffset("```text\n\n```", ""), null);
+  assert.equal(codeLineEndSourceOffset("```text\ncode\n```", "code"), null);
+  assert.equal(codeLineEndSourceOffset("```text\n", ""), null);
+  assert.equal(codeLineEndSourceOffset("    ", ""), null);
 });
 
 test("empty code blocks still traverse their opening newline and closing fence", () => {

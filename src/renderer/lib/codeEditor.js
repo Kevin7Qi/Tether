@@ -244,6 +244,15 @@ export function codeLineStartSourceOffset(source, content, contentHead = 0) {
   return line.sourceLineStart;
 }
 
+export function codeLineEndSourceOffset(source, content) {
+  const value = String(source ?? "");
+  if (String(content ?? "") !== "") return null;
+  const openingEnd = value.indexOf("\n");
+  if (openingEnd < 0) return null;
+  const contentStart = openingEnd + 1;
+  return closingFenceLineStart(value) === contentStart ? value.length : null;
+}
+
 export function emptyCodeEnterSource(source) {
   const value = String(source ?? "");
   const openingEnd = value.indexOf("\n");
