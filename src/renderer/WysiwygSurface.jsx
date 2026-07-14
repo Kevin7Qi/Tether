@@ -124,6 +124,7 @@ import {
   sourceFaithfulHeadingBackspaceKeymap,
   sourceFaithfulListItemKeymapConfig,
   sourceFaithfulOrderedListSplitKeymap,
+  sourceSelectionRangeAfterMotion,
   sourceWordOffset,
   sourceWordSelectionRange,
   structuralMarkerBackspaceKeymap
@@ -461,7 +462,7 @@ export default function WysiwygSurface({
       const atBoundary = direction === "backward"
         ? selection?.head === 0
         : selection?.head === codeView?.state.doc.length;
-      if (!codeView || !selection || selection.anchor !== selection.head || !atBoundary) return;
+      if (!codeView || !selection || !atBoundary || (!selection.empty && !event.shiftKey)) return;
 
       const block = target?.closest(".milkdown-code-block");
       const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
@@ -491,13 +492,23 @@ export default function WysiwygSurface({
       );
       const targetOffset = sourceWordOffset(source, currentOffset, direction);
       if (targetOffset === currentOffset) return;
+      const anchorOffset = event.shiftKey
+        ? sourceCaretOffset(
+            view.state,
+            unit,
+            source,
+            codeContentSourcePosition(codeBlock.position, selection.anchor),
+            null,
+            serializer
+          )
+        : currentOffset;
       event.preventDefault();
       event.stopImmediatePropagation();
       activateMarkdownSourceAt(view, codeBlock.position, {
         explicitUnitPosition: codeBlock.position,
         sourceOffset: targetOffset,
         initialSourceSelection: event.shiftKey
-          ? sourceWordSelectionRange(currentOffset, targetOffset)
+          ? sourceWordSelectionRange(anchorOffset, targetOffset)
           : null
       });
     };
@@ -683,7 +694,8 @@ export default function WysiwygSurface({
       if (!codeBlock) return;
       const { position: blockPosition, node } = codeBlock;
       if (selectionDirection) {
-        const codeHead = codeView.state.selection.main.head;
+        const codeSelection = codeView.state.selection.main;
+        const codeHead = codeSelection.head;
         const selectionMotion = event.key === "ArrowUp"
           ? "up"
           : event.key === "ArrowDown"
@@ -691,6 +703,48 @@ export default function WysiwygSurface({
             : selectionDirection;
         event.preventDefault();
         event.stopImmediatePropagation();
+        if (!codeSelection.empty) {
+          const unit = {
+            from: blockPosition,
+            to: blockPosition + node.nodeSize,
+            kind: "block",
+            name: "code_block"
+          };
+          const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+          if (!serializer) return;
+          const source = continuousMarkdownSource(view.state, unit, serializer);
+          const anchorOffset = sourceCaretOffset(
+            view.state,
+            unit,
+            source,
+            codeContentSourcePosition(blockPosition, codeSelection.anchor),
+            null,
+            serializer
+          );
+          const headOffset = sourceCaretOffset(
+            view.state,
+            unit,
+            source,
+            codeContentSourcePosition(blockPosition, codeHead),
+            null,
+            serializer
+          );
+          const initialSourceSelection = sourceSelectionRangeAfterMotion(
+            source,
+            anchorOffset,
+            headOffset,
+            selectionMotion
+          );
+          const sourceOffset = initialSourceSelection.direction === "backward"
+            ? initialSourceSelection.start
+            : initialSourceSelection.end;
+          activateMarkdownSourceAt(view, codeBlock.position, {
+            explicitUnitPosition: blockPosition,
+            sourceOffset,
+            initialSourceSelection
+          });
+          return;
+        }
         activateMarkdownSourceAt(
           view,
           codeContentSourcePosition(blockPosition, codeHead),

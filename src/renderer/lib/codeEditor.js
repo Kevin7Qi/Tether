@@ -68,7 +68,7 @@ export function codeTabEdit(state, outdent = false) {
 
 export function codeBoundarySelectionDirection(state, key) {
   const ranges = state?.selection?.ranges || [];
-  if (ranges.length !== 1 || !ranges[0].empty) return null;
+  if (ranges.length !== 1) return null;
   const head = ranges[0].head;
   const line = state.doc.lineAt(head);
   if (key === "Shift-ArrowLeft" && head === 0) return "backward";

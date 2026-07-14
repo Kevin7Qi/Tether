@@ -192,9 +192,17 @@ test("CodeMirror word jumps enter hidden fence source with exact Shift selection
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
   assert.match(surface, /const handleCodeWordJump = \(event\) =>/);
   assert.match(surface, /sourceWordOffset\(source, currentOffset, direction\)/);
-  assert.match(surface, /sourceWordSelectionRange\(currentOffset, targetOffset\)/);
+  assert.match(surface, /sourceWordSelectionRange\(anchorOffset, targetOffset\)/);
   assert.match(surface, /addEventListener\("keydown", handleCodeWordJump, true\)/);
   assert.match(surface, /removeEventListener\("keydown", handleCodeWordJump, true\)/);
+});
+
+test("extended CodeMirror selections continue through physical fence source", () => {
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
+  assert.match(surface, /!selection\.empty && !event\.shiftKey/);
+  assert.match(surface, /codeContentSourcePosition\(codeBlock\.position, selection\.anchor\)/);
+  assert.match(surface, /if \(!codeSelection\.empty\)[\s\S]*sourceSelectionRangeAfterMotion\(/);
+  assert.match(surface, /initialSourceSelection[\s\S]*activateMarkdownSourceAt/);
 });
 
 test("code history changes restore the same embedded editor focus", () => {

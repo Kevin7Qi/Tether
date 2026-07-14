@@ -172,7 +172,7 @@ function codeState(head, length = 10, empty = true) {
   };
 }
 
-test("CodeMirror shift-arrows hand off only at a collapsed horizontal or vertical boundary", () => {
+test("CodeMirror shift-arrows hand off at collapsed and extended selection heads", () => {
   const middleLine = EditorState.create({ doc: "first\nmiddle\nlast", selection: { anchor: 8 } });
   assert.equal(codeBoundarySelectionDirection(codeState(0), "Shift-ArrowLeft"), "backward");
   assert.equal(codeBoundarySelectionDirection(codeState(0), "Shift-ArrowUp"), "backward");
@@ -184,7 +184,8 @@ test("CodeMirror shift-arrows hand off only at a collapsed horizontal or vertica
   assert.equal(codeBoundarySelectionDirection(codeState(9), "Shift-ArrowDown"), "forward");
   assert.equal(codeBoundarySelectionDirection(middleLine, "Shift-ArrowUp"), null);
   assert.equal(codeBoundarySelectionDirection(middleLine, "Shift-ArrowDown"), null);
-  assert.equal(codeBoundarySelectionDirection(codeState(0, 10, false), "Shift-ArrowLeft"), null);
+  assert.equal(codeBoundarySelectionDirection(codeState(0, 10, false), "Shift-ArrowLeft"), "backward");
+  assert.equal(codeBoundarySelectionDirection(codeState(10, 10, false), "Shift-ArrowRight"), "forward");
   assert.equal(codeBoundarySelectionDirection({ doc: { length: 10 }, selection: { ranges: [] } }, "Shift-ArrowLeft"), null);
 });
 

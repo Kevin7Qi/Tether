@@ -60,6 +60,7 @@ import {
   sourceSelectionAfterEdit,
   sourceSelectionHasAdjacentBlocks,
   sourceSelectionLineJump,
+  sourceSelectionRangeAfterMotion,
   sourceSelectionTabEdit,
   sourceSelectionText,
   sourceSelectionWordJump,
@@ -1829,6 +1830,35 @@ test("word-wise source movement traverses Markdown punctuation and whitespace gr
   assert.deepEqual(sourceWordSelectionRange(8, 6), {
     start: 6,
     end: 8,
+    direction: "backward"
+  });
+});
+
+test("an existing code selection keeps its source anchor while crossing fence lines", () => {
+  const source = "```js\r\nfirst\r\n```";
+  const anchor = source.indexOf("first") + 2;
+  const head = source.indexOf("\r\n", anchor);
+  assert.deepEqual(sourceSelectionRangeAfterMotion(source, anchor, head, "forward"), {
+    start: anchor,
+    end: head + 2,
+    direction: "forward"
+  });
+  assert.deepEqual(sourceSelectionRangeAfterMotion(source, anchor, head, "down"), {
+    start: anchor,
+    end: source.length,
+    direction: "forward"
+  });
+
+  const reverseAnchor = source.indexOf("first") + 3;
+  const reverseHead = source.indexOf("first");
+  assert.deepEqual(sourceSelectionRangeAfterMotion(
+    source,
+    reverseAnchor,
+    reverseHead,
+    "up"
+  ), {
+    start: 0,
+    end: reverseAnchor,
     direction: "backward"
   });
 });

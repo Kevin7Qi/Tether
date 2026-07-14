@@ -574,6 +574,15 @@ export function sourceWordSelectionRange(anchor, head) {
   };
 }
 
+export function sourceSelectionRangeAfterMotion(source, anchor, head, motion) {
+  if (!source || !["backward", "forward", "up", "down"].includes(motion)) return null;
+  const step = sourceInitialSelectionRange(source, head, motion);
+  const nextHead = step.direction === "backward"
+    ? step.start
+    : step.direction === "forward" ? step.end : head;
+  return sourceWordSelectionRange(anchor, nextHead);
+}
+
 export function sourcePointerSelectionRange(source, caret, clickCount = 1) {
   const bounded = Math.max(0, Math.min(source.length, caret));
   if (clickCount < 2) return null;
