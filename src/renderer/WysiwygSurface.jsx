@@ -29,6 +29,7 @@ import {
   codeBoundarySourcePosition,
   codeContentSourcePosition,
   codeDragDocumentRange,
+  codeLineStartSourceOffset,
   codeTabEdit,
   documentDragIntoCodeRange,
   emptyCodeEnterSource,
@@ -124,6 +125,7 @@ import {
   sourceFaithfulHeadingBackspaceKeymap,
   sourceFaithfulListItemKeymapConfig,
   sourceFaithfulOrderedListSplitKeymap,
+  sourceLineJumpEdge,
   sourceSelectionRangeAfterMotion,
   sourceWordOffset,
   sourceWordSelectionRange,
@@ -542,6 +544,57 @@ export default function WysiwygSurface({
       if (!applyDocumentSourceJump(view, event, serializer, sourceHead, sourceAnchor)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+    };
+    const handleCodeLineJump = (event) => {
+      if (readOnlyRef.current || isSourceInputComposing(event)) return;
+      if (sourceLineJumpEdge(event) !== "start") return;
+      const target = event.target instanceof Element ? event.target : null;
+      const codeView = tetherCodeViewForElement(target);
+      const block = target?.closest(".milkdown-code-block");
+      const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+      const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+      if (!codeView || !block || !view || !serializer) return;
+
+      let codeBlock;
+      try {
+        codeBlock = enclosingCodeBlock(view.state.doc, view.posAtDOM(block, 0, -1));
+      } catch {
+        return;
+      }
+      if (!codeBlock) return;
+      const codeSelection = codeView.state.selection.main;
+      const unit = {
+        from: codeBlock.position,
+        to: codeBlock.position + codeBlock.node.nodeSize,
+        kind: "block",
+        name: "code_block"
+      };
+      const source = continuousMarkdownSource(view.state, unit, serializer);
+      const targetOffset = codeLineStartSourceOffset(
+        source,
+        codeBlock.node.textContent,
+        codeSelection.head
+      );
+      if (!Number.isFinite(targetOffset)) return;
+      const anchorOffset = sourceCaretOffset(
+        view.state,
+        unit,
+        source,
+        codeContentSourcePosition(codeBlock.position, codeSelection.anchor),
+        null,
+        serializer
+      );
+      if (!event.shiftKey && targetOffset === anchorOffset && codeSelection.empty) return;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      activateMarkdownSourceAt(view, codeBlock.position, {
+        explicitUnitPosition: codeBlock.position,
+        sourceOffset: targetOffset,
+        initialSourceSelection: event.shiftKey
+          ? sourceWordSelectionRange(anchorOffset, targetOffset)
+          : null
+      });
     };
     const handleCodeBoundaryKey = (event) => {
       if (readOnlyRef.current) return;
@@ -1115,6 +1168,7 @@ export default function WysiwygSurface({
     host.addEventListener("drop", ensureSyntheticTrailing, true);
     host.addEventListener("keydown", handleCodeWordJump, true);
     host.addEventListener("keydown", handleCodeDocumentJump, true);
+    host.addEventListener("keydown", handleCodeLineJump, true);
     host.addEventListener("keydown", handleCodeBoundaryKey, true);
     host.addEventListener("mousedown", beginCodeDragSelection, true);
     host.addEventListener("mousedown", focusTableTextFromPointer, true);
@@ -1310,6 +1364,7 @@ export default function WysiwygSurface({
       host.removeEventListener("drop", ensureSyntheticTrailing, true);
       host.removeEventListener("keydown", handleCodeWordJump, true);
       host.removeEventListener("keydown", handleCodeDocumentJump, true);
+      host.removeEventListener("keydown", handleCodeLineJump, true);
       host.removeEventListener("keydown", handleCodeBoundaryKey, true);
       host.removeEventListener("mousedown", beginCodeDragSelection, true);
       host.removeEventListener("mousedown", focusTableTextFromPointer, true);

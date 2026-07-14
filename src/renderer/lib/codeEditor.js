@@ -224,12 +224,24 @@ function indentedCodeLayout(source, content) {
     lines.push({
       contentStart,
       contentEnd: contentStart + contentLine.length,
+      sourceLineStart: sourceLine.start,
       sourceStart,
       sourceEnd: sourceStart + contentLine.length
     });
     contentStart += contentLine.length + (index + 1 < contentLines.length ? 1 : 0);
   }
   return { lines };
+}
+
+export function codeLineStartSourceOffset(source, content, contentHead = 0) {
+  const layout = indentedCodeLayout(String(source ?? ""), String(content ?? ""));
+  if (!layout) return null;
+  const boundedHead = Math.max(0, Math.min(String(content ?? "").length, Number(contentHead) || 0));
+  const line = layout.lines.find(({ contentStart, contentEnd }) =>
+    boundedHead >= contentStart && boundedHead <= contentEnd
+  ) || layout.lines.at(-1);
+  if (!line || line.sourceLineStart >= line.sourceStart) return null;
+  return line.sourceLineStart;
 }
 
 export function emptyCodeEnterSource(source) {

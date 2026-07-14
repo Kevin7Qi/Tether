@@ -198,6 +198,16 @@ test("CodeMirror word jumps enter hidden fence source with exact Shift selection
   assert.match(surface, /removeEventListener\("keydown", handleCodeWordJump, true\)/);
 });
 
+test("CodeMirror line-start jumps enter hidden indented-code source", () => {
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
+  assert.match(surface, /const handleCodeLineJump = \(event\) =>/);
+  assert.match(surface, /sourceLineJumpEdge\(event\) !== "start"/);
+  assert.match(surface, /codeLineStartSourceOffset\(/);
+  assert.match(surface, /sourceWordSelectionRange\(anchorOffset, targetOffset\)/);
+  assert.match(surface, /addEventListener\("keydown", handleCodeLineJump, true\)/);
+  assert.match(surface, /removeEventListener\("keydown", handleCodeLineJump, true\)/);
+});
+
 test("extended CodeMirror selections continue through physical fence source", () => {
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
   assert.match(surface, /!selection\.empty && !event\.shiftKey/);

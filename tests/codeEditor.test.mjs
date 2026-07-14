@@ -15,6 +15,7 @@ import {
   codeBoundarySourcePosition,
   codeContentSourcePosition,
   codeDragDocumentRange,
+  codeLineStartSourceOffset,
   codeTabEdit,
   documentDragIntoCodeRange,
   emptyCodeEnterSource,
@@ -285,6 +286,23 @@ test("indented code maps hidden line prefixes without inventing fences", () => {
   );
 
   assert.equal(codeBoundaryNavigationSourceOffset("\talpha", "alpha", "ArrowLeft", 0), 0);
+});
+
+test("indented code line-start jumps reach physical source column zero", () => {
+  const source = "    alpha beta\r\n\tsecond line\n    third";
+  const content = "alpha beta\nsecond line\nthird";
+
+  assert.equal(codeLineStartSourceOffset(source, content, 5), 0);
+  assert.equal(
+    codeLineStartSourceOffset(source, content, content.indexOf("second") + 4),
+    source.indexOf("\tsecond")
+  );
+  assert.equal(
+    codeLineStartSourceOffset(source, content, content.indexOf("third") + 2),
+    source.indexOf("    third")
+  );
+  assert.equal(codeLineStartSourceOffset("```js\nalpha\n```", "alpha", 3), null);
+  assert.equal(codeLineStartSourceOffset("---\ntitle: Demo\n---", "title: Demo", 4), null);
 });
 
 test("empty code blocks still traverse their opening newline and closing fence", () => {
