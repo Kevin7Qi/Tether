@@ -36,6 +36,7 @@ import {
   mappedPosition,
   moveSourceSelectionHead,
   sourceCaretOffset,
+  sourceTabEdit,
   sourceCaretBoundaries,
   sourceCharacterDeletionRange,
   sourceEditCaretOffset,
@@ -1715,6 +1716,43 @@ test("source selections move vertically by physical source lines and preserve co
   const movedBackward = moveSourceSelectionHead(selection, "backward");
   assert.equal(movedBackward.head, secondLineColumn - 1);
   assert.equal(movedBackward.verticalColumn, null);
+});
+
+test("block source Tab inserts at a collapsed caret and indents selected physical lines", () => {
+  assert.deepEqual(sourceTabEdit("alpha", 2, 2), {
+    value: "al\tpha",
+    selectionStart: 3,
+    selectionEnd: 3
+  });
+
+  assert.deepEqual(sourceTabEdit("one\ntwo\nthree", 1, 8), {
+    value: "\tone\n\ttwo\nthree",
+    selectionStart: 2,
+    selectionEnd: 10
+  });
+  assert.deepEqual(sourceTabEdit("one\ntwo\nthree", 0, 8), {
+    value: "\tone\n\ttwo\nthree",
+    selectionStart: 1,
+    selectionEnd: 10
+  });
+});
+
+test("block source Shift-Tab outdents tabs or one four-space indentation unit", () => {
+  assert.deepEqual(sourceTabEdit("\talpha", 4, 4, true), {
+    value: "alpha",
+    selectionStart: 3,
+    selectionEnd: 3
+  });
+  assert.deepEqual(sourceTabEdit("    one\n  two\nthree", 4, 15, true), {
+    value: "one\ntwo\nthree",
+    selectionStart: 0,
+    selectionEnd: 9
+  });
+  assert.deepEqual(sourceTabEdit("alpha", 2, 2, true), {
+    value: "alpha",
+    selectionStart: 2,
+    selectionEnd: 2
+  });
 });
 
 test("continuous source controls are reserved for inline, atomic, and explicit source units", () => {
