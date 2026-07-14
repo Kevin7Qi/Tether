@@ -14,6 +14,7 @@ import { headingKeymap, listItemKeymap, remarkInlineLinkPlugin } from "@milkdown
 import { strikethroughInputRule } from "@milkdown/kit/preset/gfm";
 import { replaceAll } from "@milkdown/kit/utils";
 import { AllSelection, TextSelection } from "@milkdown/kit/prose/state";
+import { redo as redoProseMirror, undo as undoProseMirror } from "@milkdown/kit/prose/history";
 import {
   codeBoundaryDeletionKeyDirection,
   codeBoundaryNavigationSourceOffset,
@@ -24,6 +25,8 @@ import {
   codeDragDocumentRange,
   codeTabEdit,
   documentDragIntoCodeRange,
+  emptyCodeEnterSource,
+  emptyCodeSourceHistoryDirection,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
   shouldRestoreEditorHistoryFocus,
@@ -33,7 +36,11 @@ import {
   tetherCodeViewForElement
 } from "./lib/codeEditor.js";
 import { normalizeSerializedMarkdown, tetherStringifyOptions } from "./lib/markdownStyle.js";
-import { sourceFaithfulCodeBlockSchema, sourceFaithfulFenceRemark } from "./lib/markdownFence.js";
+import {
+  codeSemanticSignature,
+  sourceFaithfulCodeBlockSchema,
+  sourceFaithfulFenceRemark
+} from "./lib/markdownFence.js";
 import {
   sourceFaithfulBlockquoteRemark,
   sourceFaithfulBlockquoteSchema
@@ -256,6 +263,7 @@ export default function WysiwygSurface({
     let copyFeedbackTimer = 0;
     let settleFrame = 0;
     let secondSettleFrame = 0;
+    let emptyFenceSourceHistory = null;
     const ensureSyntheticTrailing = (event = null) => {
       // Composition owns the editor until it commits. Even a history-free
       // structural transaction can make the browser restart or drop an IME
@@ -516,6 +524,93 @@ export default function WysiwygSurface({
       if (isSourceInputComposing(event)) return;
       const target = event.target instanceof Element ? event.target : null;
       const codeView = tetherCodeViewForElement(target);
+      if (codeView && emptyFenceSourceHistory && isEditorHistoryShortcut(event)) {
+        const block = target?.closest(".milkdown-code-block");
+        const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+        const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+        if (block && view && serializer) {
+          let codeBlock;
+          try {
+            codeBlock = enclosingCodeBlock(view.state.doc, view.posAtDOM(block, 0, -1));
+          } catch {
+            codeBlock = null;
+          }
+          if (codeBlock) {
+            const source = continuousMarkdownSource(view.state, {
+              from: codeBlock.position,
+              to: codeBlock.position + codeBlock.node.nodeSize,
+              kind: "block",
+              name: "code_block"
+            }, serializer);
+            const direction = emptyCodeSourceHistoryDirection(
+              event,
+              source,
+              emptyFenceSourceHistory,
+              codeView.state.doc.length
+            );
+            const command = direction === "undo"
+              ? undoProseMirror
+              : direction === "redo" ? redoProseMirror : null;
+            if (command?.(view.state, view.dispatch)) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              emptyFenceSourceHistory.state = direction === "undo" ? "undone" : "applied";
+              return;
+            }
+          }
+        }
+      }
+      if (
+        codeView
+        && event.key === "Enter"
+        && !event.altKey
+        && !event.ctrlKey
+        && !event.metaKey
+        && codeView.state.doc.length === 0
+        && codeView.state.selection.main.empty
+      ) {
+        const block = target?.closest(".milkdown-code-block");
+        const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+        const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+        if (block && view && serializer) {
+          let codeBlock;
+          try {
+            codeBlock = enclosingCodeBlock(view.state.doc, view.posAtDOM(block, 0, -1));
+          } catch {
+            codeBlock = null;
+          }
+          if (codeBlock) {
+            const unit = {
+              from: codeBlock.position,
+              to: codeBlock.position + codeBlock.node.nodeSize,
+              kind: "block",
+              name: "code_block"
+            };
+            const source = continuousMarkdownSource(view.state, unit, serializer);
+            const nextSource = emptyCodeEnterSource(source);
+            if (nextSource) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              const { node, position } = codeBlock;
+              emptyFenceSourceHistory = {
+                beforeSource: source,
+                afterSource: nextSource,
+                state: "applied"
+              };
+              view.dispatch(view.state.tr.setNodeMarkup(position, undefined, {
+                ...node.attrs,
+                fenceSource: nextSource,
+                fenceSourceSignature: codeSemanticSignature({
+                  value: node.textContent,
+                  lang: node.attrs.language,
+                  meta: node.attrs.meta
+                })
+              }).scrollIntoView());
+              return;
+            }
+          }
+        }
+      }
       if (
         codeView
         && event.key === "Tab"

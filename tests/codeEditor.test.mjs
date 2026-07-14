@@ -16,6 +16,8 @@ import {
   codeDragDocumentRange,
   codeTabEdit,
   documentDragIntoCodeRange,
+  emptyCodeEnterSource,
+  emptyCodeSourceHistoryDirection,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
   restoreCodeViewFocusAfterHistory,
@@ -244,6 +246,64 @@ test("empty code blocks still traverse their opening newline and closing fence",
   assert.equal(codeBoundaryNavigationSourceOffset(source, "", "ArrowRight", 0), contentStart + 1);
   assert.equal(codeBoundaryNavigationSourceOffset(source, "", "ArrowUp", 0), 0);
   assert.equal(codeBoundaryNavigationSourceOffset(source, "", "ArrowDown", 0), contentStart);
+});
+
+test("one Enter in a physically empty closed fence inserts exactly one source newline", () => {
+  assert.equal(emptyCodeEnterSource("```js\n```"), "```js\n\n```");
+  assert.equal(emptyCodeEnterSource("~~~\r\n~~~"), "~~~\r\n\r\n~~~");
+  assert.equal(emptyCodeEnterSource("```js\n\n```"), null);
+  assert.equal(emptyCodeEnterSource("```js\ncode\n```"), null);
+  assert.equal(emptyCodeEnterSource("```js\n"), null);
+});
+
+test("source-only empty-fence Enter joins CodeMirror's undo and redo sequence", () => {
+  const history = {
+    beforeSource: "```js\n```",
+    afterSource: "```js\n\n```",
+    state: "applied"
+  };
+  assert.equal(
+    emptyCodeSourceHistoryDirection(
+      { key: "z", metaKey: true },
+      history.afterSource,
+      history
+    ),
+    "undo"
+  );
+  assert.equal(
+    emptyCodeSourceHistoryDirection(
+      { key: "z", metaKey: true },
+      history.afterSource,
+      history,
+      1
+    ),
+    null
+  );
+  history.state = "undone";
+  assert.equal(
+    emptyCodeSourceHistoryDirection(
+      { key: "z", metaKey: true, shiftKey: true },
+      history.beforeSource,
+      history
+    ),
+    "redo"
+  );
+  assert.equal(
+    emptyCodeSourceHistoryDirection(
+      { key: "y", ctrlKey: true },
+      history.beforeSource,
+      history
+    ),
+    "redo"
+  );
+  assert.equal(
+    emptyCodeSourceHistoryDirection(
+      { key: "z", metaKey: true },
+      history.beforeSource,
+      history
+    ),
+    null
+  );
 });
 
 test("empty fenced blocks distinguish a physical blank content line from the closing fence", () => {
