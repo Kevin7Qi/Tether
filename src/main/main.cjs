@@ -29,8 +29,9 @@ if (process.platform === "win32") app.setAppUserModelId("app.tether.markdown");
 
 function installApplicationMenu() {
   // Windows/Linux keep a menu-less window by design. macOS requires an
-  // application menu for the standard Cmd+C/V/X/A/Z/Q and window shortcuts;
-  // the built-in editMenu roles wire up cut/copy/paste/undo/redo/select-all.
+  // application menu for the standard editing and window shortcuts. Undo and
+  // redo are routed to the renderer because native roles bypass ProseMirror
+  // and CodeMirror's transaction histories.
   if (process.platform !== "darwin") {
     Menu.setApplicationMenu(null);
     return;
@@ -39,11 +40,45 @@ function installApplicationMenu() {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       { role: "appMenu" },
-      { role: "editMenu" },
+      {
+        label: "Edit",
+        submenu: [
+          {
+            label: "Undo",
+            accelerator: "CmdOrCtrl+Z",
+            click: (_item, browserWindow) => sendEditorCommand("undo", browserWindow)
+          },
+          {
+            label: "Redo",
+            accelerator: "Shift+CmdOrCtrl+Z",
+            click: (_item, browserWindow) => sendEditorCommand("redo", browserWindow)
+          },
+          { type: "separator" },
+          { role: "cut" },
+          { role: "copy" },
+          { role: "paste" },
+          { role: "pasteAndMatchStyle" },
+          { role: "delete" },
+          { role: "selectAll" },
+          { type: "separator" },
+          {
+            label: "Speech",
+            submenu: [{ role: "startSpeaking" }, { role: "stopSpeaking" }]
+          }
+        ]
+      },
       { label: "View", submenu: [{ role: "togglefullscreen" }] },
       { role: "windowMenu" }
     ])
   );
+}
+
+function sendEditorCommand(command, browserWindow = mainWindow) {
+  const targetWindow = browserWindow && !browserWindow.isDestroyed()
+    ? browserWindow
+    : mainWindow;
+  if (!targetWindow || targetWindow.isDestroyed()) return;
+  targetWindow.webContents.send("editor:command", command);
 }
 
 function isLocalMarkdownPath(filePath) {

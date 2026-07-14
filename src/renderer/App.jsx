@@ -77,6 +77,7 @@ import { PAGE_WIDTH_DEFAULT, clampPageWidth, hotkey } from "./lib/constants.js";
 import { EDITOR_MODE_READING, EDITOR_MODE_SOURCE, EDITOR_MODE_WYSIWYG, normalizeEditorMode } from "./lib/editorModes.js";
 import { parseOutline } from "./lib/outline.js";
 import { isConnectionLostError, connectionLostMessage } from "./lib/connection.js";
+import { dispatchEditorHistoryCommand } from "./lib/editorCommands.js";
 import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, rekeyTabsForSource, selectNeighborTab } from "./lib/tabs.js";
 import { DocumentSurfaceFallback, FilesPanel, OutlinePanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
 import { ConnectionPalette, NewFileDialog, SettingsPanel, StatusBar } from "./components/dialogs.jsx";
@@ -290,6 +291,7 @@ const fallbackRemoteApi = {
   },
   copyText: async (text) => ({ ok: await copyTextToBrowserClipboard(text) }),
   saveTextAs: async ({ content, defaultPath }) => saveTextAsBrowserDownload(content, defaultPath),
+  onEditorCommand: () => () => {},
   onStatus: () => () => {},
   onUpdate: () => () => {},
   onError: () => () => {}
@@ -509,6 +511,25 @@ export default function App() {
 
     media.addListener(updateSystemTheme);
     return () => media.removeListener(updateSystemTheme);
+  }, []);
+
+  useEffect(() => {
+    const pendingCommands = new Set();
+    const removeEditorCommand = remoteApi.onEditorCommand((command) => {
+      // A native menu click returns focus to the web contents after its click
+      // callback and its next paint. Let that handoff settle before refocusing
+      // the structured editor and dispatching history, otherwise macOS can
+      // overwrite the restored CodeMirror caret with the webview root.
+      const timer = window.setTimeout(() => {
+        pendingCommands.delete(timer);
+        dispatchEditorHistoryCommand(command);
+      }, 50);
+      pendingCommands.add(timer);
+    });
+    return () => {
+      removeEditorCommand();
+      for (const timer of pendingCommands) window.clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {

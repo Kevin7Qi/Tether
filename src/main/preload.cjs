@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld("remoteMarkdown", {
   saveLocalFile: (payload) => ipcRenderer.invoke("local:saveFile", payload),
   createLocalFile: (payload) => ipcRenderer.invoke("local:createFile", payload),
   saveLocalSample: (content) => ipcRenderer.invoke("local:saveSample", content),
+  onEditorCommand: (callback) => subscribe("editor:command", callback),
   onStatus: (callback) => subscribe("remote:status", callback),
   onUpdate: (callback) => subscribe("remote:update", callback),
   onError: (callback) => subscribe("remote:error", callback)

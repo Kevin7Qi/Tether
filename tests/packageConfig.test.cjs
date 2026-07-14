@@ -22,6 +22,21 @@ test("packaged macOS builds keep the bundle icon instead of overriding it with a
   assert.match(source, /app\.dock && !app\.isPackaged/);
 });
 
+test("macOS menu history commands route into the focused renderer editor", () => {
+  const main = fs.readFileSync(path.join(root, "src", "main", "main.cjs"), "utf8");
+  const preload = fs.readFileSync(path.join(root, "src", "main", "preload.cjs"), "utf8");
+  const app = fs.readFileSync(path.join(root, "src", "renderer", "App.jsx"), "utf8");
+  assert.doesNotMatch(main, /role:\s*"editMenu"/);
+  assert.match(main, /accelerator:\s*"CmdOrCtrl\+Z"/);
+  assert.match(main, /accelerator:\s*"Shift\+CmdOrCtrl\+Z"/);
+  assert.match(main, /sendEditorCommand\("undo", browserWindow\)/);
+  assert.match(main, /webContents\.send\("editor:command", command\)/);
+  assert.match(preload, /onEditorCommand: \(callback\) => subscribe\("editor:command", callback\)/);
+  assert.match(app, /remoteApi\.onEditorCommand\(\(command\) =>/);
+  assert.match(app, /window\.setTimeout\(\(\) =>[\s\S]*dispatchEditorHistoryCommand\(command\);[\s\S]*\}, 50\)/);
+  assert.match(app, /dispatchEditorHistoryCommand\(command\)/);
+});
+
 test("renderer bundles real italic faces while font synthesis is disabled", () => {
   const source = fs.readFileSync(path.join(root, "src", "renderer", "App.jsx"), "utf8");
   assert.match(source, /instrument-sans\/latin-400-italic\.css/);
