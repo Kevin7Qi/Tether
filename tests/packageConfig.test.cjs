@@ -236,11 +236,22 @@ test("temporary Markdown source controls hand document jumps back to the full so
 test("temporary Markdown source controls keep extended selections exact across their boundaries", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /inlineSourceBoundarySelectionDirection\([\s\S]*editor\.selectionDirection/);
-  assert.match(syntax, /onBoundarySelect\([\s\S]*sourceInputSelection\(/);
+  assert.match(syntax, /const localSelection = wordJumpDirection \|\| boundarySelectionDirection[\s\S]*sourceInputSelection\(/);
+  assert.match(syntax, /onBoundarySelect\([\s\S]*localSelection/);
   assert.match(syntax, /const selectFromBoundary = \(direction, localSelection, mapping = null\) =>/);
   assert.match(syntax, /sourceSelectionAcrossUnitBoundary\([\s\S]*action: "source-selection"/);
   assert.match(syntax, /blockSourceBoundarySelectionDirection\([\s\S]*editor\.selectionDirection/);
   assert.match(syntax, /verticalColumn/);
+});
+
+test("temporary Markdown source controls continue Option-word navigation across their boundaries", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /const wordJumpDirection = sourceInputWordJumpDirection\(/);
+  assert.match(syntax, /onWordJump\([\s\S]*localSelection/);
+  assert.match(syntax, /const wordJumpFromSource = \(/);
+  assert.match(syntax, /sourceWordSelectionAcrossUnitBoundary\(/);
+  assert.match(syntax, /documentPositionAtSourceOffset\(/);
+  assert.match(syntax, /focusExactEditSelection\(editorView\)/);
 });
 
 test("exact source-only selections own line and word jump commands", () => {

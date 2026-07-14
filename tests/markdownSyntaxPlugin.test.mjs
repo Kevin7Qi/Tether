@@ -16,6 +16,7 @@ import {
   continuousMarkdownSource,
   documentSelectionFromCodeBoundary,
   documentSourceUnitStartOffset,
+  documentPositionAtSourceOffset,
   documentSourceTarget,
   downgradeAtxHeadingAtCursor,
   enclosingCodeBlock,
@@ -49,6 +50,7 @@ import {
   sourceLineEndingAt,
   sourceBoundarySelectionRange,
   sourceInputSelection,
+  sourceInputWordJumpDirection,
   sourceSelectionAcrossUnitBoundary,
   sourceInitialSelectionRange,
   sourceDocumentJumpEdge,
@@ -71,6 +73,7 @@ import {
   sourceWordJumpTarget,
   sourceWordOffset,
   sourceWordSelectionRange,
+  sourceWordSelectionAcrossUnitBoundary,
   serializedDocumentGaps,
   structuralBoundarySourceTarget,
   structuralSourceHandoffTarget,
@@ -1761,6 +1764,89 @@ test("source controls preserve the selection anchor while crossing their outer b
       verticalColumn: 1
     }
   );
+});
+
+test("source controls hand Option-word jumps across an outer boundary", () => {
+  assert.equal(
+    sourceInputWordJumpDirection("ArrowLeft", 0, 0, 8, false, true),
+    "backward"
+  );
+  assert.equal(
+    sourceInputWordJumpDirection("ArrowRight", 8, 8, 8, false, true),
+    "forward"
+  );
+  assert.equal(
+    sourceInputWordJumpDirection("ArrowLeft", 0, 4, 8, true, true, false, "backward"),
+    "backward"
+  );
+  assert.equal(
+    sourceInputWordJumpDirection("ArrowRight", 4, 8, 8, true, true, false, "forward"),
+    "forward"
+  );
+  assert.equal(
+    sourceInputWordJumpDirection("ArrowLeft", 0, 4, 8, false, true, false, "backward"),
+    null
+  );
+  assert.equal(sourceInputWordJumpDirection("ArrowLeft", 1, 1, 8, false, true), null);
+  assert.equal(sourceInputWordJumpDirection("ArrowLeft", 0, 0, 8, false, false), null);
+  assert.equal(sourceInputWordJumpDirection("ArrowLeft", 0, 0, 8, false, true, true), null);
+
+  const fullSource = "before **bold** after";
+  const unitStart = fullSource.indexOf("**bold**");
+  assert.deepEqual(
+    sourceWordSelectionAcrossUnitBoundary(
+      fullSource,
+      unitStart,
+      { anchor: 4, head: 0 },
+      "backward",
+      true
+    ),
+    {
+      anchor: unitStart + 4,
+      head: 0,
+      fullSource,
+      verticalColumn: null
+    }
+  );
+  assert.deepEqual(
+    sourceWordSelectionAcrossUnitBoundary(
+      fullSource,
+      unitStart,
+      { anchor: 8, head: 8 },
+      "forward"
+    ),
+    {
+      anchor: fullSource.length,
+      head: fullSource.length,
+      fullSource,
+      verticalColumn: null
+    }
+  );
+});
+
+test("physical source offsets map back to rendered text but not hidden delimiters", () => {
+  const strong = blockSchema.marks.strong.create();
+  const doc = blockSchema.node("doc", null, [
+    blockSchema.node("paragraph", null, [
+      blockSchema.text("Bold", [strong]),
+      blockSchema.text(" after")
+    ])
+  ]);
+  const serialize = (partialDoc) => {
+    let source = "";
+    partialDoc.firstChild?.forEach((node) => {
+      source += node.marks.some((mark) => mark.type.name === "strong")
+        ? `**${node.text}**`
+        : node.text;
+    });
+    return source;
+  };
+  const state = EditorState.create({ doc, selection: TextSelection.create(doc, 1) });
+  const source = serialize(doc);
+  assert.equal(documentPositionAtSourceOffset(state, source.length, serialize), 1 + "Bold after".length);
+  assert.equal(documentPositionAtSourceOffset(state, source.indexOf("after"), serialize), 1 + "Bold ".length);
+  assert.equal(documentPositionAtSourceOffset(state, 0, serialize), null);
+  assert.equal(documentPositionAtSourceOffset(state, 1, serialize), null);
 });
 
 test("fenced source selection crosses hidden newlines and fence lines in source coordinates", () => {

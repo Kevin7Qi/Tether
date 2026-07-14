@@ -1172,6 +1172,57 @@ export function sourceInputSelection(
   };
 }
 
+export function sourceInputWordJumpDirection(
+  key,
+  selectionStart,
+  selectionEnd,
+  sourceLength,
+  shiftKey = false,
+  altKey = false,
+  hasOtherModifier = false,
+  selectionDirection = "none"
+) {
+  if (!altKey || hasOtherModifier || !["ArrowLeft", "ArrowRight"].includes(key)) return null;
+  const localSelection = sourceInputSelection(
+    selectionStart,
+    selectionEnd,
+    selectionDirection
+  );
+  if (!shiftKey && localSelection.anchor !== localSelection.head) return null;
+  if (key === "ArrowLeft" && localSelection.head === 0) return "backward";
+  if (key === "ArrowRight" && localSelection.head === sourceLength) return "forward";
+  return null;
+}
+
+export function sourceWordSelectionAcrossUnitBoundary(
+  fullSource,
+  unitStart,
+  localSelection,
+  direction,
+  extend = false
+) {
+  if (
+    typeof fullSource !== "string"
+    || !Number.isFinite(unitStart)
+    || !localSelection
+    || !["backward", "forward"].includes(direction)
+  ) return null;
+  const start = Math.max(0, Math.min(fullSource.length, unitStart));
+  const anchor = Math.max(
+    0,
+    Math.min(fullSource.length, start + (Number(localSelection.anchor) || 0))
+  );
+  const head = Math.max(
+    0,
+    Math.min(fullSource.length, start + (Number(localSelection.head) || 0))
+  );
+  return sourceSelectionWordJump(
+    { anchor, head, fullSource, verticalColumn: null },
+    direction,
+    extend
+  );
+}
+
 export function sourceSelectionAcrossUnitBoundary(
   fullSource,
   unitStart,
@@ -2038,6 +2089,41 @@ export function documentSourceUnitStartOffset(state, unit, serializer) {
     : null;
 }
 
+export function documentPositionAtSourceOffset(state, sourceOffset, serializer) {
+  if (!state?.doc || !Number.isFinite(sourceOffset) || typeof serializer !== "function") {
+    return null;
+  }
+  const target = documentSourceTarget(state, sourceOffset, serializer, "forward")
+    || documentSourceTarget(state, sourceOffset, serializer, "backward");
+  if (!target || target.kind !== "block") return null;
+  const unit = {
+    from: target.position,
+    to: target.position + target.node.nodeSize,
+    kind: "block",
+    name: target.node.type.name
+  };
+  const source = target.documentSource.fullSource.slice(target.segment.from, target.segment.to);
+  for (let position = unit.from; position <= unit.to; position += 1) {
+    let resolved;
+    try {
+      resolved = state.doc.resolve(position);
+    } catch {
+      continue;
+    }
+    if (!resolved.parent.isTextblock) continue;
+    const localOffset = sourceCaretOffset(
+      state,
+      unit,
+      source,
+      position,
+      null,
+      serializer
+    );
+    if (target.segment.from + localOffset === sourceOffset) return position;
+  }
+  return null;
+}
+
 export function documentSourceUnitBoundaryOffset(state, unit, direction, serializer) {
   if (!unit || !["backward", "forward"].includes(direction)) return null;
   const start = documentSourceUnitStartOffset(state, unit, serializer);
@@ -2504,6 +2590,7 @@ function continuousSourceEditor(
   onBoundaryDelete,
   onVerticalNavigate,
   onBoundarySelect,
+  onWordJump,
   onDocumentJump,
   onInlineEnter,
   shouldFocus,
@@ -2686,6 +2773,16 @@ function continuousSourceEditor(
       finish(true, (mapping) => onDocumentJump(shortcut, sourceSelection, mapping));
       return;
     }
+    const wordJumpDirection = sourceInputWordJumpDirection(
+      event.key,
+      editor.selectionStart,
+      editor.selectionEnd,
+      editor.value.length,
+      event.shiftKey,
+      event.altKey,
+      event.ctrlKey || event.metaKey,
+      editor.selectionDirection
+    );
     const boundaryDirection = inlineSourceBoundaryDirection(
       event.key,
       editor.selectionStart,
@@ -2736,22 +2833,38 @@ function continuousSourceEditor(
           event.altKey || event.ctrlKey || event.metaKey,
           editor.selectionDirection
         );
-    if (boundaryDirection || boundaryDeleteDirection || verticalDirection || boundarySelectionDirection) {
+    const localSelection = wordJumpDirection || boundarySelectionDirection
+      ? sourceInputSelection(
+          editor.selectionStart ?? 0,
+          editor.selectionEnd ?? editor.selectionStart ?? 0,
+          editor.selectionDirection
+        )
+      : null;
+    if (
+      wordJumpDirection
+      || boundaryDirection
+      || boundaryDeleteDirection
+      || verticalDirection
+      || boundarySelectionDirection
+    ) {
       event.preventDefault();
       event.stopPropagation();
       const targetPoint = verticalDirection ? caretTargetPoint(verticalDirection) : null;
       finish(true, (mapping) => {
-        if (boundaryDirection) onBoundaryNavigate(boundaryDirection, mapping);
+        if (wordJumpDirection) {
+          onWordJump(
+            wordJumpDirection,
+            localSelection,
+            event.shiftKey,
+            mapping
+          );
+        } else if (boundaryDirection) onBoundaryNavigate(boundaryDirection, mapping);
         else if (boundaryDeleteDirection) onBoundaryDelete(boundaryDeleteDirection, mapping);
         else if (verticalDirection) onVerticalNavigate(verticalDirection, targetPoint, mapping);
         else {
           onBoundarySelect(
             boundarySelectionDirection,
-            sourceInputSelection(
-              editor.selectionStart ?? 0,
-              editor.selectionEnd ?? editor.selectionStart ?? 0,
-              editor.selectionDirection
-            ),
+            localSelection,
             mapping
           );
         }
@@ -4752,6 +4865,80 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             baseOffset + localSelection.anchor
           );
         };
+        const wordJumpFromSource = (
+          direction,
+          localSelection,
+          extend,
+          mapping = null
+        ) => {
+          if (!editorView?.dom.isConnected) return;
+          const mappedUnit = {
+            ...unit,
+            from: Math.max(
+              0,
+              Math.min(mappedPosition(mapping, unit.from, -1), editorView.state.doc.content.size)
+            ),
+            to: Math.max(
+              0,
+              Math.min(mappedPosition(mapping, unit.to, 1), editorView.state.doc.content.size)
+            )
+          };
+          const documentSource = documentSourceSegments(editorView.state, serializer);
+          const unitStart = documentSourceUnitStartOffset(
+            editorView.state,
+            mappedUnit,
+            serializer
+          );
+          const next = documentSource && sourceWordSelectionAcrossUnitBoundary(
+            documentSource.fullSource,
+            unitStart,
+            localSelection,
+            direction,
+            extend
+          );
+          if (!next) return;
+
+          if (!extend || next.anchor === next.head) {
+            const renderedPosition = documentPositionAtSourceOffset(
+              editorView.state,
+              next.head,
+              serializer
+            );
+            if (renderedPosition != null) {
+              editorView.dispatch(
+                editorView.state.tr
+                  .setSelection(TextSelection.create(editorView.state.doc, renderedPosition))
+                  .setMeta(markdownSyntaxKey, "close")
+                  .scrollIntoView()
+              );
+              focusExactEditSelection(editorView);
+              return;
+            }
+            activateDocumentSourceOffset(
+              editorView,
+              next,
+              next.head,
+              direction,
+              serializer
+            );
+            return;
+          }
+
+          const boundary = direction === "backward" ? mappedUnit.from : mappedUnit.to;
+          editorView.dispatch(
+            editorView.state.tr
+              .setSelection(textSelectionAcrossBoundary(editorView.state, boundary, direction))
+              .setMeta(markdownSyntaxKey, {
+                action: "source-selection",
+                sourceSelection: {
+                  ...next,
+                  boundary
+                }
+              })
+              .scrollIntoView()
+          );
+          focusProseMirrorRoot(editorView);
+        };
         const splitFromInlineSource = (value, sourceOffset, mapping = null) => {
           if (!editorView?.dom.isConnected) return;
           const parser = ctx.get(parserCtx);
@@ -4787,6 +4974,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           deleteFromBoundary,
           navigateVertically,
           selectFromBoundary,
+          wordJumpFromSource,
           jumpFromSource,
           splitFromInlineSource,
           () => true,
