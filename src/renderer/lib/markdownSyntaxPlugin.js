@@ -1130,6 +1130,36 @@ export function inlineSourceBoundarySelectionDirection(
   return null;
 }
 
+export function blockSourceBoundarySelectionDirection(
+  key,
+  selectionStart,
+  selectionEnd,
+  source,
+  shiftKey = false,
+  hasOtherModifier = false,
+  selectionDirection = "none"
+) {
+  const horizontal = inlineSourceBoundarySelectionDirection(
+    key,
+    selectionStart,
+    selectionEnd,
+    source.length,
+    shiftKey,
+    hasOtherModifier,
+    selectionDirection
+  );
+  if (horizontal) return horizontal;
+  if (!shiftKey || hasOtherModifier || !["ArrowUp", "ArrowDown"].includes(key)) return null;
+  const collapsed = selectionStart === selectionEnd;
+  if (!collapsed && !["backward", "forward"].includes(selectionDirection)) return null;
+  const head = collapsed || selectionDirection !== "backward"
+    ? selectionEnd
+    : selectionStart;
+  if (key === "ArrowUp" && !source.slice(0, head).includes("\n")) return "up";
+  if (key === "ArrowDown" && !source.slice(head).includes("\n")) return "down";
+  return null;
+}
+
 export function sourceInputSelection(
   selectionStart,
   selectionEnd,
@@ -1152,7 +1182,7 @@ export function sourceSelectionAcrossUnitBoundary(
     typeof fullSource !== "string"
     || !Number.isFinite(unitStart)
     || !localSelection
-    || !["backward", "forward"].includes(direction)
+    || !["backward", "forward", "up", "down"].includes(direction)
   ) return null;
   const start = Math.max(0, Math.min(fullSource.length, unitStart));
   const anchor = Math.max(
@@ -1163,10 +1193,18 @@ export function sourceSelectionAcrossUnitBoundary(
     0,
     Math.min(fullSource.length, start + (Number(localSelection.head) || 0))
   );
+  const currentLine = sourceLineBounds(fullSource, head);
+  const verticalColumn = ["up", "down"].includes(direction)
+    ? Math.max(0, Math.min(currentLine.end, currentLine.bounded) - currentLine.start)
+    : null;
+  const nextHead = ["up", "down"].includes(direction)
+    ? sourceVerticalOffset(fullSource, head, direction, verticalColumn)
+    : sourceOffsetAfterCharacter(fullSource, head, direction);
   return {
     anchor,
-    head: sourceOffsetAfterCharacter(fullSource, head, direction),
-    fullSource
+    head: nextHead,
+    fullSource,
+    verticalColumn
   };
 }
 
@@ -2679,15 +2717,25 @@ function continuousSourceEditor(
           editor.selectionEnd,
           event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
         );
-    const boundarySelectionDirection = inlineSourceBoundarySelectionDirection(
-      event.key,
-      editor.selectionStart,
-      editor.selectionEnd,
-      editor.value.length,
-      event.shiftKey,
-      event.altKey || event.ctrlKey || event.metaKey,
-      editor.selectionDirection
-    );
+    const boundarySelectionDirection = isBlock
+      ? blockSourceBoundarySelectionDirection(
+          event.key,
+          editor.selectionStart,
+          editor.selectionEnd,
+          editor.value,
+          event.shiftKey,
+          event.altKey || event.ctrlKey || event.metaKey,
+          editor.selectionDirection
+        )
+      : inlineSourceBoundarySelectionDirection(
+          event.key,
+          editor.selectionStart,
+          editor.selectionEnd,
+          editor.value.length,
+          event.shiftKey,
+          event.altKey || event.ctrlKey || event.metaKey,
+          editor.selectionDirection
+        );
     if (boundaryDirection || boundaryDeleteDirection || verticalDirection || boundarySelectionDirection) {
       event.preventDefault();
       event.stopPropagation();
@@ -4581,8 +4629,11 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         };
         const selectFromBoundary = (direction, localSelection, mapping = null) => {
           if (!editorView?.dom.isConnected) return;
-          const assoc = direction === "backward" ? -1 : 1;
-          const originalPosition = direction === "backward" ? unit.from : unit.to;
+          const sourceDirection = ["backward", "up"].includes(direction)
+            ? "backward"
+            : "forward";
+          const assoc = sourceDirection === "backward" ? -1 : 1;
+          const originalPosition = sourceDirection === "backward" ? unit.from : unit.to;
           const anchor = Math.max(
             0,
             Math.min(mappedPosition(mapping, originalPosition, assoc), editorView.state.doc.content.size)
@@ -4605,7 +4656,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               return;
             }
           }
-          if (!localSelectionIsCollapsed) {
+          if (!localSelectionIsCollapsed || ["up", "down"].includes(direction)) {
             const mappedUnit = {
               ...unit,
               from: Math.max(
@@ -4630,7 +4681,11 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               direction
             );
             if (exactSelection) {
-              const selection = textSelectionAcrossBoundary(editorView.state, anchor, direction);
+              const selection = textSelectionAcrossBoundary(
+                editorView.state,
+                anchor,
+                sourceDirection
+              );
               editorView.dispatch(
                 editorView.state.tr
                   .setSelection(selection)
@@ -4647,12 +4702,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               return;
             }
           }
-          const selection = textSelectionAcrossBoundary(editorView.state, anchor, direction);
+          const selection = textSelectionAcrossBoundary(editorView.state, anchor, sourceDirection);
           const range = sourceNewlineSourceRange(
             { doc: editorView.state.doc, selection },
             serializer
           );
-          const sourceSelection = sourceSelectionFromNewlineRange(range, direction);
+          const sourceSelection = sourceSelectionFromNewlineRange(range, sourceDirection);
           editorView.dispatch(
             editorView.state.tr
               .setSelection(selection)

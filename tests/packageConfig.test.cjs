@@ -239,6 +239,8 @@ test("temporary Markdown source controls keep extended selections exact across t
   assert.match(syntax, /onBoundarySelect\([\s\S]*sourceInputSelection\(/);
   assert.match(syntax, /const selectFromBoundary = \(direction, localSelection, mapping = null\) =>/);
   assert.match(syntax, /sourceSelectionAcrossUnitBoundary\([\s\S]*action: "source-selection"/);
+  assert.match(syntax, /blockSourceBoundarySelectionDirection\([\s\S]*editor\.selectionDirection/);
+  assert.match(syntax, /verticalColumn/);
 });
 
 test("exact source-only selections own line and word jump commands", () => {

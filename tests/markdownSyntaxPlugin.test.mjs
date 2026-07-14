@@ -11,6 +11,7 @@ import {
   adjacentCodeSourceTarget,
   activateMarkdownBlockSourceAt,
   blockSourceVerticalDirection,
+  blockSourceBoundarySelectionDirection,
   completedInlineMarkdownSource,
   continuousMarkdownSource,
   documentSelectionFromCodeBoundary,
@@ -1648,6 +1649,45 @@ test("inline and block source shift-arrows extend selection across an outer boun
   assert.equal(inlineSourceBoundarySelectionDirection("ArrowRight", 8, 8, 8, true, true), null);
 });
 
+test("multiline source shift-arrows hand off from the moving head on an outer line", () => {
+  const source = "| A |\n| - |\n| B |";
+  assert.equal(blockSourceBoundarySelectionDirection("ArrowUp", 2, 2, source, true), "up");
+  assert.equal(
+    blockSourceBoundarySelectionDirection("ArrowUp", 1, 7, source, true, false, "backward"),
+    "up"
+  );
+  assert.equal(
+    blockSourceBoundarySelectionDirection("ArrowUp", 1, 7, source, true, false, "forward"),
+    null
+  );
+  assert.equal(
+    blockSourceBoundarySelectionDirection(
+      "ArrowDown",
+      7,
+      source.length,
+      source,
+      true,
+      false,
+      "forward"
+    ),
+    "down"
+  );
+  assert.equal(
+    blockSourceBoundarySelectionDirection(
+      "ArrowDown",
+      7,
+      source.length,
+      source,
+      true,
+      false,
+      "backward"
+    ),
+    null
+  );
+  assert.equal(blockSourceBoundarySelectionDirection("ArrowUp", 2, 2, source, false), null);
+  assert.equal(blockSourceBoundarySelectionDirection("ArrowDown", 2, 2, source, true, true), null);
+});
+
 test("source controls preserve the selection anchor while crossing their outer boundary", () => {
   assert.deepEqual(sourceInputSelection(0, 4, "backward"), { anchor: 4, head: 0 });
   assert.deepEqual(sourceInputSelection(2, 8, "forward"), { anchor: 2, head: 8 });
@@ -1665,7 +1705,8 @@ test("source controls preserve the selection anchor while crossing their outer b
     {
       anchor: unitStart + 4,
       head: unitStart - 1,
-      fullSource: source
+      fullSource: source,
+      verticalColumn: null
     }
   );
   assert.deepEqual(
@@ -1678,7 +1719,8 @@ test("source controls preserve the selection anchor while crossing their outer b
     {
       anchor: unitStart + 2,
       head: unitStart + "**bold**".length + 2,
-      fullSource: source
+      fullSource: source,
+      verticalColumn: null
     }
   );
 
@@ -1686,6 +1728,38 @@ test("source controls preserve the selection anchor while crossing their outer b
   assert.equal(
     sourceSelectionAcrossUnitBoundary(emoji, 0, { anchor: 0, head: 1 }, "forward").head,
     3
+  );
+
+  const multiline = "above\r\n$$\r\nformula\r\n$$\r\nbelow";
+  const blockStart = multiline.indexOf("$$");
+  const blockSource = "$$\r\nformula\r\n$$";
+  assert.deepEqual(
+    sourceSelectionAcrossUnitBoundary(
+      multiline,
+      blockStart,
+      { anchor: blockSource.length, head: 1 },
+      "up"
+    ),
+    {
+      anchor: blockStart + blockSource.length,
+      head: 1,
+      fullSource: multiline,
+      verticalColumn: 1
+    }
+  );
+  assert.deepEqual(
+    sourceSelectionAcrossUnitBoundary(
+      multiline,
+      blockStart,
+      { anchor: 0, head: blockSource.length - 1 },
+      "down"
+    ),
+    {
+      anchor: blockStart,
+      head: multiline.length - "below".length + 1,
+      fullSource: multiline,
+      verticalColumn: 1
+    }
   );
 });
 
