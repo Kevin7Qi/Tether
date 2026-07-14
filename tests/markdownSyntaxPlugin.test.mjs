@@ -37,6 +37,7 @@ import {
   markdownTableSyntaxAt,
   mappedPosition,
   moveSourceSelectionHead,
+  rootBoundarySourceSelection,
   sourceCaretOffset,
   sourceTabEdit,
   sourceCaretBoundaries,
@@ -921,6 +922,55 @@ test("selection across a block boundary represents the source newline without co
   );
   assert.equal(fromInlineEnd.from, forward.from);
   assert.equal(fromInlineEnd.to, forward.to);
+});
+
+test("horizontal root-boundary arrows traverse every physical separator newline", () => {
+  const first = blockSchema.node("paragraph", null, [blockSchema.text("First")]);
+  const second = blockSchema.node("paragraph", null, [blockSchema.text("Second")]);
+  const doc = blockSchema.node("doc", {
+    markdownBlockGaps: JSON.stringify(["", "\r\n\r\n", ""])
+  }, [first, second]);
+  const serializer = (value) => {
+    const blocks = [];
+    value.forEach((node) => blocks.push(node.textContent));
+    const gaps = JSON.parse(value.attrs.markdownBlockGaps);
+    return blocks.reduce(
+      (source, block, index) => `${source}${block}${gaps[index + 1]}`,
+      gaps[0]
+    );
+  };
+  const forwardState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, first.nodeSize - 1)
+  });
+  const forward = rootBoundarySourceSelection(forwardState, "forward", serializer);
+  assert.equal(forward.anchor, "First\r\n".length);
+  assert.equal(forward.head, "First\r\n".length);
+  assert.equal(sourceSelectionText(forward), "");
+
+  const forwardExtended = rootBoundarySourceSelection(
+    forwardState,
+    "forward",
+    serializer,
+    true
+  );
+  assert.equal(sourceSelectionText(forwardExtended), "\r\n");
+
+  const secondStart = first.nodeSize + 1;
+  const backwardState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, secondStart)
+  });
+  const backward = rootBoundarySourceSelection(backwardState, "backward", serializer);
+  assert.equal(backward.anchor, "First\r\n".length);
+  assert.equal(backward.head, "First\r\n".length);
+  const backwardExtended = rootBoundarySourceSelection(
+    backwardState,
+    "backward",
+    serializer,
+    true
+  );
+  assert.equal(sourceSelectionText(backwardExtended), "\r\n");
 });
 
 test("extended source selections do not invent adjacent block decoration ranges", () => {

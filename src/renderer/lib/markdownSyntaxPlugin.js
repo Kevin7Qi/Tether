@@ -1670,6 +1670,49 @@ export function documentSourceSegments(state, serializer) {
   return { fullSource: serializer(state.doc), gaps, segments };
 }
 
+export function rootBoundarySourceSelection(state, direction, serializer, extend = false) {
+  if (
+    !state?.selection?.empty
+    || !["backward", "forward"].includes(direction)
+    || typeof serializer !== "function"
+  ) return null;
+  const { $head } = state.selection;
+  if ($head.depth !== 1 || !$head.parent.isTextblock) return null;
+  const atEdge = direction === "backward"
+    ? $head.parentOffset === 0
+    : $head.parentOffset === $head.parent.content.size;
+  if (!atEdge) return null;
+
+  const documentSource = documentSourceSegments(state, serializer);
+  const rootIndex = $head.index(0);
+  const segment = documentSource?.segments[rootIndex];
+  const adjacent = documentSource?.segments[rootIndex + (direction === "backward" ? -1 : 1)];
+  if (!documentSource || !segment || !adjacent) return null;
+
+  const currentOffset = direction === "backward" ? segment.from : segment.to;
+  const gapFrom = direction === "backward" ? adjacent.to : segment.to;
+  const gapTo = direction === "backward" ? segment.from : adjacent.from;
+  if (gapFrom >= gapTo) return null;
+  const nextOffset = sourceOffsetAfterCharacter(
+    documentSource.fullSource,
+    currentOffset,
+    direction
+  );
+  if (nextOffset < gapFrom || nextOffset > gapTo || nextOffset === currentOffset) return null;
+
+  const boundary = direction === "backward" ? segment.position : adjacent.position;
+  return {
+    anchor: extend ? currentOffset : nextOffset,
+    head: nextOffset,
+    fullSource: documentSource.fullSource,
+    boundary,
+    beforeFrom: boundary - (direction === "backward" ? adjacent.node.nodeSize : segment.node.nodeSize),
+    beforeTo: boundary,
+    afterFrom: boundary,
+    afterTo: boundary + (direction === "backward" ? segment.node.nodeSize : adjacent.node.nodeSize)
+  };
+}
+
 export function documentSourceTarget(state, sourceOffset, serializer, affinity = "forward") {
   const documentSource = documentSourceSegments(state, serializer);
   if (!documentSource) return null;
@@ -3882,6 +3925,32 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 sourceOffset: target.edge === "end" ? source.length : 0,
                 initialSelectionDirection: direction
               });
+              return true;
+            }
+          }
+          if (
+            !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && ["ArrowLeft", "ArrowRight"].includes(event.key)
+            && !activeSourceControl?.element?.isConnected
+          ) {
+            const direction = event.key === "ArrowLeft" ? "backward" : "forward";
+            const sourceSelection = rootBoundarySourceSelection(
+              _view.state,
+              direction,
+              ctx.get(serializerCtx),
+              event.shiftKey
+            );
+            if (sourceSelection) {
+              event.preventDefault();
+              _view.dispatch(
+                _view.state.tr.setMeta(markdownSyntaxKey, {
+                  action: "source-selection",
+                  sourceSelection
+                })
+              );
+              _view.focus();
               return true;
             }
           }
