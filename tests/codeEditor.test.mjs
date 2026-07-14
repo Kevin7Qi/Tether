@@ -237,13 +237,25 @@ test("CodeMirror deletion exposes hidden fenced source only at content boundarie
   assert.equal(codeBoundaryDeletionDirection(codeState(0), "Delete"), null);
 });
 
-test("CodeMirror fence deletion ignores modifiers and targets the adjacent source newline", () => {
+test("CodeMirror fence deletion preserves native word and line modifiers at the source newline", () => {
   assert.equal(
     codeBoundaryDeletionKeyDirection(codeState(0), { key: "Backspace", shiftKey: false }),
     "backward"
   );
   assert.equal(
     codeBoundaryDeletionKeyDirection(codeState(0), { key: "Backspace", altKey: true }),
+    "backward"
+  );
+  assert.equal(
+    codeBoundaryDeletionKeyDirection(codeState(0), { key: "Backspace", metaKey: true }),
+    "backward"
+  );
+  assert.equal(
+    codeBoundaryDeletionKeyDirection(codeState(10), { key: "Delete", ctrlKey: true }),
+    "forward"
+  );
+  assert.equal(
+    codeBoundaryDeletionKeyDirection(codeState(0), { key: "Backspace", shiftKey: true }),
     null
   );
   assert.equal(codeBoundarySourcePosition(20, 12, "backward"), 21);

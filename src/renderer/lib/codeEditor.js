@@ -87,7 +87,11 @@ export function codeBoundaryDeletionDirection(state, key) {
 }
 
 export function codeBoundaryDeletionKeyDirection(state, event) {
-  if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return null;
+  // Word/line deletion modifiers still consume the immediately adjacent
+  // physical newline before they can reach the word or line on the fence.
+  // Hand those keys into the source control just like native Source mode.
+  // Keep Shift-Delete native because it is the platform cut shortcut.
+  if (event.shiftKey) return null;
   return codeBoundaryDeletionDirection(state, event.key);
 }
 
