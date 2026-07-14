@@ -187,6 +187,15 @@ function sourceLinesWithOffsets(source) {
   return lines;
 }
 
+export function adjacentCodeSourceOffset(source, direction, column = 0) {
+  const lines = sourceLinesWithOffsets(String(source ?? ""));
+  const line = direction === "up" ? lines.at(-1) : lines[0];
+  if (!line) return 0;
+  const visualText = line.text.replace(/\r$/, "");
+  const boundedColumn = Math.max(0, Math.min(visualText.length, Number(column) || 0));
+  return line.start + boundedColumn;
+}
+
 function indentationColumns(prefix) {
   let columns = 0;
   for (const character of prefix) {

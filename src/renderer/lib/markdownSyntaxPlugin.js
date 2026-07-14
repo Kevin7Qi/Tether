@@ -8,6 +8,7 @@ import { $prose, $shortcut } from "@milkdown/kit/utils";
 import { documentGaps } from "./markdownDocument.js";
 import { tableCellSourceOffsetAtPosition } from "./markdownTable.js";
 import {
+  adjacentCodeSourceOffset,
   codeContentOffsetAtSourceOffset,
   isEditorHistoryShortcut,
   tetherCodeViewForElement
@@ -2850,100 +2851,81 @@ function atVerticalTextblockEdge(view, direction) {
     : caret.bottom >= rect.bottom - lineHeight * 0.5;
 }
 
-function adjacentCodeDestination(view, target, direction, documentX = null) {
-  const nodeDOM = view.nodeDOM(target.position);
-  const codeElement = nodeDOM instanceof Element
-    ? nodeDOM.querySelector(".cm-content")
-    : null;
-  const codeView = tetherCodeViewForElement(codeElement);
-  if (!codeView) return null;
-
-  const edgeOffset = direction === "up" ? codeView.state.doc.length : 0;
-  const codeCoords = codeView.coordsAtPos(edgeOffset);
-  const caretX = Number.isFinite(documentX)
-    ? documentX
-    : view.coordsAtPos(view.state.selection.head).left;
-  const codeOffset = codeCoords
-    ? codeView.posAtCoords({
-        x: caretX,
-        y: (codeCoords.top + codeCoords.bottom) / 2
-      })
-    : null;
-  const boundedOffset = Math.max(
-    0,
-    Math.min(codeView.state.doc.length, codeOffset ?? edgeOffset)
-  );
-  return { codeView, offset: boundedOffset };
+function documentSourceColumn(state, position, serializer) {
+  const documentSource = documentSourceSegments(state, serializer);
+  const offset = documentSourceOffsetAtPosition(state, position, serializer, "forward");
+  if (!documentSource || !Number.isFinite(offset)) return 0;
+  return offset - (documentSource.fullSource.lastIndexOf("\n", Math.max(0, offset - 1)) + 1);
 }
 
-function afterAdjacentCodeMount(view, target, direction, documentX, callback, attempts = 6) {
-  const retry = (remaining) => {
-    requestAnimationFrame(() => {
-      if (!view.dom.isConnected) return;
-      const destination = adjacentCodeDestination(view, target, direction, documentX);
-      if (destination) {
-        callback(destination);
-        return;
-      }
-      if (remaining > 1) retry(remaining - 1);
-    });
+export function adjacentCodeSourceTarget(state, target, direction, serializer) {
+  const unit = {
+    from: target.position,
+    to: target.position + target.node.nodeSize,
+    kind: "block",
+    name: "code_block"
   };
-  retry(attempts);
+  const source = continuousMarkdownSource(state, unit, serializer);
+  const column = documentSourceColumn(state, state.selection.head, serializer);
+  return {
+    unit,
+    sourceOffset: adjacentCodeSourceOffset(source, direction, column)
+  };
 }
 
-function focusAdjacentCodeBlock(view, target, direction) {
-  const documentX = view.coordsAtPos(view.state.selection.head).left;
-  const apply = ({ codeView, offset }) => {
-    view.dispatch(
-      view.state.tr
-        .setSelection(TextSelection.create(
-          view.state.doc,
-          target.position + 1 + offset
-        ))
-        .setMeta(markdownSyntaxKey, "close")
-    );
-    codeView.dispatch({ selection: { anchor: offset }, scrollIntoView: true });
-    codeView.focus();
-  };
-  const destination = adjacentCodeDestination(view, target, direction, documentX);
-  if (destination) {
-    apply(destination);
-    return true;
-  }
-
-  const edgeOffset = direction === "up" ? target.node.content.size : 0;
-  view.dispatch(
-    view.state.tr
-      .setSelection(TextSelection.create(
-        view.state.doc,
-        target.position + 1 + edgeOffset
-      ))
-      .setMeta(markdownSyntaxKey, "close")
-      .scrollIntoView()
+export function adjacentCodeSourceSelection(state, target, direction, serializer) {
+  const documentSource = documentSourceSegments(state, serializer);
+  const anchor = documentSourceOffsetAtPosition(
+    state,
+    state.selection.anchor,
+    serializer,
+    "forward"
   );
-  afterAdjacentCodeMount(view, target, direction, documentX, apply);
+  const { unit, sourceOffset } = adjacentCodeSourceTarget(
+    state,
+    target,
+    direction,
+    serializer
+  );
+  const unitStart = documentSourceUnitStartOffset(state, unit, serializer);
+  if (!documentSource || !Number.isFinite(anchor) || !Number.isFinite(unitStart)) return null;
+
+  const codeHead = target.position + 1 + (direction === "up" ? target.node.content.size : 0);
+  return {
+    selection: TextSelection.create(state.doc, state.selection.anchor, codeHead),
+    sourceSelection: {
+      anchor,
+      head: unitStart + sourceOffset,
+      fullSource: documentSource.fullSource,
+      boundary: target.position
+    }
+  };
+}
+
+function focusAdjacentCodeBlock(view, target, direction, serializer) {
+  const { sourceOffset } = adjacentCodeSourceTarget(view.state, target, direction, serializer);
+  activateMarkdownSourceAt(view, target.position, {
+    explicitUnitPosition: target.position,
+    sourceOffset
+  });
   return true;
 }
 
 function selectIntoAdjacentCodeBlock(view, target, direction, serializer) {
-  const anchor = view.state.selection.anchor;
-  const documentX = view.coordsAtPos(view.state.selection.head).left;
-  const apply = ({ offset }) => activateDocumentSourceSelection(
-    view,
-    TextSelection.create(
-      view.state.doc,
-      anchor,
-      target.position + 1 + offset
-    ),
-    serializer
+  const state = view.state;
+  const exact = adjacentCodeSourceSelection(state, target, direction, serializer);
+  if (!exact) return false;
+  view.dispatch(
+    state.tr
+      .setSelection(exact.selection)
+      .setMeta(markdownSyntaxKey, {
+        action: "source-selection",
+        sourceSelection: exact.sourceSelection
+      })
+      .scrollIntoView()
   );
-  const destination = adjacentCodeDestination(view, target, direction, documentX);
-  if (destination) return apply(destination);
-
-  const edgeOffset = direction === "up" ? target.node.content.size : 0;
-  const activated = apply({ offset: edgeOffset });
-  afterAdjacentCodeMount(view, target, direction, documentX, apply);
-  return activated;
+  view.focus();
+  return true;
 }
 
 function capturedCodeBlockTarget(view, block, event) {
@@ -4001,7 +3983,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             const target = atVerticalTextblockEdge(_view, direction)
               ? adjacentCodeBlockFromSelection(_view.state, direction)
               : null;
-            if (target && focusAdjacentCodeBlock(_view, target, direction)) {
+            if (target && focusAdjacentCodeBlock(
+              _view,
+              target,
+              direction,
+              ctx.get(serializerCtx)
+            )) {
               event.preventDefault();
               return true;
             }

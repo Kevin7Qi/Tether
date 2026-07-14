@@ -3,6 +3,7 @@ import test from "node:test";
 import { indentUnit } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
 import {
+  adjacentCodeSourceOffset,
   codeBoundaryDeletionKeyDirection,
   codeBoundaryDeletionDirection,
   codeContentOffsetAtSourceOffset,
@@ -26,6 +27,15 @@ import {
   tetherCodeLanguageLabel,
   tetherCodeLanguages,
 } from "../src/renderer/lib/codeEditor.js";
+
+test("vertical entry into code lands on its physical edge source line", () => {
+  assert.equal(adjacentCodeSourceOffset("```javascript\ncode\n```", "down", 4), 4);
+  assert.equal(adjacentCodeSourceOffset("```javascript\ncode\n```", "down", 99), 13);
+  assert.equal(adjacentCodeSourceOffset("```javascript\ncode\n```", "up", 2), 21);
+  assert.equal(adjacentCodeSourceOffset("---\r\ntitle: Demo\r\n---", "up", 2), 20);
+  assert.equal(adjacentCodeSourceOffset("    first\n\tsecond", "down", 3), 3);
+  assert.equal(adjacentCodeSourceOffset("    first\n\tsecond", "up", 2), 12);
+});
 
 test("editor history shortcuts include undo and redo without matching unrelated modifiers", () => {
   assert.equal(isEditorHistoryShortcut({ key: "z", metaKey: true }), true);

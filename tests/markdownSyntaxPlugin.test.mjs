@@ -7,6 +7,8 @@ import {
   activeMarkdownBlockSyntax,
   activeMarkdownSyntax,
   adjacentCodeBlockFromSelection,
+  adjacentCodeSourceSelection,
+  adjacentCodeSourceTarget,
   activateMarkdownBlockSourceAt,
   blockSourceVerticalDirection,
   completedInlineMarkdownSource,
@@ -1044,6 +1046,59 @@ test("vertical navigation recognizes only an immediately adjacent fenced block",
     selection: TextSelection.create(separated, before.nodeSize - 1)
   });
   assert.equal(adjacentCodeBlockFromSelection(separatedState, "down"), null);
+});
+
+test("vertical code entry targets physical fence lines and exact Shift selections", () => {
+  const before = blockSchema.node("paragraph", null, [blockSchema.text("Before")]);
+  const code = blockSchema.node("code_block", { language: "js" }, [blockSchema.text("one\ntwo")]);
+  const after = blockSchema.node("paragraph", null, [blockSchema.text("After")]);
+  const doc = blockSchema.node("doc", { markdownBlockGaps: null }, [before, code, after]);
+  const serializer = (value) => {
+    const blocks = [];
+    value.forEach((node) => blocks.push(
+      node.type.name === "code_block"
+        ? `\`\`\`js\n${node.textContent}\n\`\`\``
+        : node.textContent
+    ));
+    let exactGaps = null;
+    try {
+      exactGaps = JSON.parse(value.attrs.markdownBlockGaps);
+    } catch {
+      // A null annotation uses the serializer's ordinary root spacing.
+    }
+    if (Array.isArray(exactGaps) && exactGaps.length === blocks.length + 1) {
+      return blocks.reduce(
+        (source, block, index) => `${source}${block}${exactGaps[index + 1]}`,
+        exactGaps[0]
+      );
+    }
+    return `${blocks.join("\n\n")}\n`;
+  };
+  const codePosition = before.nodeSize;
+  const target = { position: codePosition, node: code };
+  const beforeState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, before.nodeSize - 1)
+  });
+  const downwardTarget = adjacentCodeSourceTarget(beforeState, target, "down", serializer);
+  assert.equal(downwardTarget.sourceOffset, 5);
+  const downwardSelection = adjacentCodeSourceSelection(
+    beforeState,
+    target,
+    "down",
+    serializer
+  );
+  assert.equal(sourceSelectionText(downwardSelection.sourceSelection), "\n\n\`\`\`js");
+
+  const afterStart = codePosition + code.nodeSize + 1;
+  const afterState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, afterStart)
+  });
+  const upwardTarget = adjacentCodeSourceTarget(afterState, target, "up", serializer);
+  assert.equal(upwardTarget.sourceOffset, "```js\none\ntwo\n".length);
+  const upwardSelection = adjacentCodeSourceSelection(afterState, target, "up", serializer);
+  assert.equal(sourceSelectionText(upwardSelection.sourceSelection), "```\n\n");
 });
 
 test("serialized block gaps keep cross-block source selections exact without load metadata", () => {
