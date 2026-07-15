@@ -39,6 +39,7 @@ import {
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   continuousMarkdownSource,
+  documentGapFocusDirection,
   documentGapSourceSelection,
   documentPositionAtSourceOffset,
   documentSourceSegments,
@@ -660,6 +661,24 @@ test("typing after traversing a closing fence preserves the fenced block", async
     serialize(transaction.doc),
     `${source.slice(0, selection.anchor)}X${source.slice(selection.anchor)}`
   );
+});
+
+test("source gaps keep their carrier caret in prose beside CodeMirror", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "Before\n\n```js\ncode\n```\n\nAfter\n";
+  const state = EditorState.create({ doc: parse(source) });
+  const documentSource = documentSourceSegments(state, serialize);
+  const code = documentSource.segments.find(({ node }) => node.type.name === "code_block");
+  const beforeGap = {
+    beforeSegment: documentSource.segments[0],
+    afterSegment: code
+  };
+  const afterGap = {
+    beforeSegment: code,
+    afterSegment: documentSource.segments.at(-1)
+  };
+  assert.equal(documentGapFocusDirection(beforeGap, "forward"), "backward");
+  assert.equal(documentGapFocusDirection(afterGap, "backward"), "forward");
 });
 
 test("Select All replacement includes leading and trailing root Markdown gaps", async () => {

@@ -1073,6 +1073,26 @@ async function verifyCodeToProseBackspace() {
   await stopSession();
 }
 
+async function verifyProseToCodeDelete() {
+  const beforeEnd = codeFixture.indexOf("\n");
+  const onceDeleted = `${codeFixture.slice(0, beforeEnd)}${codeFixture.slice(beforeEnd + 1)}`;
+  const twiceDeleted = `${codeFixture.slice(0, beforeEnd)}${codeFixture.slice(beforeEnd + 2)}`;
+  await startSession(codeFixture, "Before.");
+  await placeCaretInText("Before.", "Before.".length - 2);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await delay(150);
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(onceDeleted);
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(twiceDeleted);
+  await stopSession();
+}
+
 async function verifyLayeredCodeSourceHistory() {
   const contentStart = codeBlockSource.indexOf("\n") + 1;
   const deletedSource = `${codeBlockSource.slice(0, contentStart - 1)}${
@@ -1258,6 +1278,11 @@ async function run() {
     console.log("Verified repeated Backspace after fenced code removes one physical newline at a time.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "prose-to-code-delete") {
+    await verifyProseToCodeDelete();
+    console.log("Verified repeated Delete before fenced code removes one physical newline at a time.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "fence-variant-editing") {
     await verifyFenceVariantEditing();
     console.log("Verified CRLF tilde fences retain exact metadata and marker source after editing.");
@@ -1316,6 +1341,7 @@ async function run() {
   await verifyProseToCodeReplacement();
   await verifyCodeBoundaryDeletion();
   await verifyCodeToProseBackspace();
+  await verifyProseToCodeDelete();
   await verifyLayeredCodeSourceHistory();
   await verifyEmptyCodeEditing();
   await verifyCodeEditing();

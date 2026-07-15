@@ -282,6 +282,14 @@ export function documentGapSourceSelection(target, sourceOffset) {
   };
 }
 
+export function documentGapFocusDirection(target, fallback = "forward") {
+  const beforeIsCode = target?.beforeSegment?.node?.type?.name === "code_block";
+  const afterIsCode = target?.afterSegment?.node?.type?.name === "code_block";
+  if (afterIsCode && !beforeIsCode) return "backward";
+  if (beforeIsCode && !afterIsCode) return "forward";
+  return fallback === "backward" ? "backward" : "forward";
+}
+
 function activateDocumentSourceOffset(
   view,
   sourceSelection,
@@ -297,7 +305,11 @@ function activateDocumentSourceOffset(
     dispatchFocusedSourceSelection(
       view,
       view.state.tr
-        .setSelection(markdownGapSelectionAt(view.state.doc, target.position, affinity))
+        .setSelection(markdownGapSelectionAt(
+          view.state.doc,
+          target.position,
+          documentGapFocusDirection(target, affinity)
+        ))
         .setMeta(markdownSyntaxKey, {
           action: "source-selection",
           sourceSelection: gapSelection
