@@ -305,7 +305,8 @@ test("code history changes restore the same embedded editor focus", () => {
   assert.match(surface, /tetherRunBoundaryHistory\?\.\(direction\)[\s\S]*settleCodeHistoryFocus\(view, false\)/);
   assert.match(surface, /if \(lastFocusedCodeTarget && !historyCommandPending\)/);
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
-  assert.match(syntax, /\{ isolatedHistory: \["Backspace", "Delete"\]\.includes\(event\.key\) \}/);
+  assert.match(syntax, /const deleteExactSource = \(view, direction\) =>[\s\S]*\{ isolatedHistory: true \}/);
+  assert.match(syntax, /addEventListener\("keydown", captureExactDeletion, true\)/);
   assert.match(syntax, /view\.dom\.tetherRunBoundaryHistory = runBoundaryHistory/);
   assert.match(syntax, /delete view\.dom\.tetherRunBoundaryHistory/);
 });

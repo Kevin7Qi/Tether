@@ -18,6 +18,7 @@ import {
 import { Clock, Container, Ctx } from "@milkdown/kit/ctx";
 import { AllSelection, EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import { history, redo, undo } from "@milkdown/kit/prose/history";
+import { GapCursor } from "@milkdown/kit/prose/gapcursor";
 import { paragraphSchema, textSchema } from "@milkdown/kit/preset/commonmark";
 import { emptyCodeClosingFenceSourceOffset } from "../src/renderer/lib/codeEditor.js";
 import {
@@ -479,6 +480,19 @@ test("Backspace after a fence deletes physical separator newlines before fence m
   assert.equal(serialize(second.transaction.doc), "```js\ncode\n```After\n");
   assert.equal(second.transaction.doc.firstChild.attrs.fenceClosed, false);
   assert.equal(second.transaction.doc.firstChild.textContent, "code\n```After");
+
+  const reparsed = parse(source);
+  const boundary = reparsed.firstChild.nodeSize;
+  const gapState = EditorState.create({
+    doc: reparsed,
+    selection: new GapCursor(reparsed.resolve(boundary))
+  });
+  const gapEdit = rootBoundarySourceDeletionEdit(gapState, "backward", parse, serialize);
+  assert.ok(gapEdit);
+  assert.equal(serialize(gapEdit.transaction.doc), "```js\ncode\n```\nAfter\n");
+  const forwardGapEdit = rootBoundarySourceDeletionEdit(gapState, "forward", parse, serialize);
+  assert.ok(forwardGapEdit);
+  assert.equal(serialize(forwardGapEdit.transaction.doc), "```js\ncode\n```\nAfter\n");
 });
 
 test("a partial code-to-prose selection includes the physical closing fence", async () => {

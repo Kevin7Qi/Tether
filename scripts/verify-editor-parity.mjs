@@ -15,6 +15,9 @@ const codeFixture = "Before.\n\n```js\nconst value = 1;\n```\n\nAfter.\n";
 const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n";
 const codeBlockSource = "```js\nconst value = 1;\n```";
 const codeContent = "const value = 1;";
+const variantCodeBlockSource = "~~~~js title=demo\r\nconst answer = 42;\r\n~~~~~";
+const variantCodeFixture = `Before.\r\n\r\n${variantCodeBlockSource}\r\n\r\nAfter.\r\n`;
+const editedVariantCodeFixture = variantCodeFixture.replace("const answer = 42;", "const answer = 43;");
 const emptyCodeBlockSource = "```js\n```";
 const emptyCodeFixture = `Before.\n\n${emptyCodeBlockSource}\n\nAfter.\n`;
 const inlineBoundaryFixtures = [
@@ -989,6 +992,31 @@ async function verifyCodeToProseReplacement() {
   await stopSession();
 }
 
+async function verifyProseToCodeReplacement() {
+  const anchor = "Bef".length;
+  const codeStart = codeFixture.indexOf(codeBlockSource);
+  const openingFenceColumn = anchor;
+  const expected = `${codeFixture.slice(0, anchor)}X${
+    codeFixture.slice(codeStart + openingFenceColumn)
+  }`;
+  await startSession(codeFixture, "Before.");
+  await placeCaretInText("Before.", anchor);
+  await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 8 });
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(true);
+  await waitFor(
+    () => evaluate(`document.querySelector(".cm-content")?.textContent === ${JSON.stringify(codeContent)}`),
+    "undo did not restore a prose-to-code source replacement"
+  );
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(expected);
+  await stopSession();
+}
+
 async function verifyCodeBoundaryDeletion() {
   const contentStart = codeBlockSource.indexOf("\n") + 1;
   const openingNewlineDeleted = `${codeBlockSource.slice(0, contentStart - 1)}${
@@ -1022,6 +1050,26 @@ async function verifyCodeBoundaryDeletion() {
   await waitForSaveState(false);
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(codeFixture.replace(codeBlockSource, closingNewlineDeleted));
+  await stopSession();
+}
+
+async function verifyCodeToProseBackspace() {
+  const afterStart = codeFixture.indexOf("After.");
+  const onceDeleted = `${codeFixture.slice(0, afterStart - 1)}${codeFixture.slice(afterStart)}`;
+  const twiceDeleted = `${codeFixture.slice(0, afterStart - 2)}${codeFixture.slice(afterStart)}`;
+  await startSession(codeFixture, "After.");
+  await placeCaretInText("After.", 2);
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await delay(150);
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(onceDeleted);
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(twiceDeleted);
   await stopSession();
 }
 
@@ -1183,7 +1231,38 @@ async function verifyCodeEditing() {
   await waitForCompletedSave(codeFixture);
 }
 
+async function verifyFenceVariantEditing() {
+  await startSession(variantCodeFixture, "const answer = 42;");
+  await focusCodeBoundary("end");
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+  await cdp.send("Input.insertText", { text: "3" });
+  await waitFor(
+    () => evaluate(`document.querySelector(".cm-content")?.textContent.includes("const answer = 43;")`),
+    "custom fenced code edit did not render"
+  );
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedVariantCodeFixture);
+  await stopSession();
+}
+
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "prose-to-code-replacement") {
+    await verifyProseToCodeReplacement();
+    console.log("Verified real Electron prose-to-code source replacement history.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "code-to-prose-backspace") {
+    await verifyCodeToProseBackspace();
+    console.log("Verified repeated Backspace after fenced code removes one physical newline at a time.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "fence-variant-editing") {
+    await verifyFenceVariantEditing();
+    console.log("Verified CRLF tilde fences retain exact metadata and marker source after editing.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-to-prose") {
     await verifyCodeToProseSelection();
     console.log("Verified real Electron code-to-prose source selection and history.");
@@ -1234,10 +1313,14 @@ async function run() {
   await verifyClosingFenceReplacement();
   await verifyCodeToProseSelection();
   await verifyCodeToProseReplacement();
+  await verifyProseToCodeReplacement();
   await verifyCodeBoundaryDeletion();
+  await verifyCodeToProseBackspace();
   await verifyLayeredCodeSourceHistory();
   await verifyEmptyCodeEditing();
   await verifyCodeEditing();
+  await stopSession();
+  await verifyFenceVariantEditing();
   console.log("Verified real Electron typing, saving, and history preserve inline and fenced-code Markdown source.");
 }
 

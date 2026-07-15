@@ -2215,17 +2215,28 @@ export function rootBoundarySourceSelection(state, direction, serializer, extend
     || typeof serializer !== "function"
   ) return null;
   const { $head } = state.selection;
-  if ($head.depth !== 1 || !$head.parent.isTextblock) return null;
-  const atEdge = direction === "backward"
-    ? $head.parentOffset === 0
-    : $head.parentOffset === $head.parent.content.size;
-  if (!atEdge) return null;
-
   const documentSource = documentSourceSegments(state, serializer);
-  const rootIndex = $head.index(0);
-  const segment = documentSource?.segments[rootIndex];
-  const adjacent = documentSource?.segments[rootIndex + (direction === "backward" ? -1 : 1)];
-  if (!documentSource || !segment || !adjacent) return null;
+  if (!documentSource) return null;
+  let rootIndex;
+  if ($head.depth === 1 && $head.parent.isTextblock) {
+    const atEdge = direction === "backward"
+      ? $head.parentOffset === 0
+      : $head.parentOffset === $head.parent.content.size;
+    if (!atEdge) return null;
+    rootIndex = $head.index(0);
+  } else if ($head.depth === 0) {
+    // ProseMirror's virtual-cursor plugin represents a caret beside a
+    // non-editable CodeMirror node as a root GapCursor. Visually this is the
+    // beginning/end of the adjacent textblock, and physically it is the same
+    // Markdown gap between those two root source segments.
+    const nextIndex = $head.index(0);
+    rootIndex = direction === "backward" ? nextIndex : nextIndex - 1;
+  } else {
+    return null;
+  }
+  const segment = documentSource.segments[rootIndex];
+  const adjacent = documentSource.segments[rootIndex + (direction === "backward" ? -1 : 1)];
+  if (!segment || !adjacent) return null;
 
   const currentOffset = direction === "backward" ? segment.from : segment.to;
   const gapFrom = direction === "backward" ? adjacent.to : segment.to;
@@ -4993,6 +5004,69 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     focusExactEditSelection(view);
   };
 
+  const deleteExactSource = (view, direction) => {
+    if (
+      !view?.editable
+      || !["backward", "forward"].includes(direction)
+      || activeSourceControl?.element?.isConnected
+    ) return false;
+    const serializer = ctx.get(serializerCtx);
+    const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+    const documentSelection = sourceSelection || view.state.selection.empty
+      ? null
+      : sourceSelectionFromDocumentSelection(view.state, serializer);
+    const plainSelection = sourceSelection || documentSelection
+      ? null
+      : plainTextMarkdownSourceSelection(view.state, serializer);
+    const exactSelection = sourceSelection || documentSelection || plainSelection;
+    if (exactSelection || sourceNewlineSelectionInfo(view.state)) {
+      const deletionSelection = exactSelection
+        && exactSelection.anchor === exactSelection.head
+        ? extendSourceSelection(exactSelection, direction)
+        : exactSelection;
+      const transaction = deletionSelection
+        ? replaceSourceSelectionTransaction(
+            view.state,
+            deletionSelection,
+            "",
+            ctx.get(parserCtx)
+          )
+        : replaceSourceNewlineSelectionTransaction(
+            view.state,
+            "",
+            ctx.get(parserCtx),
+            serializer
+          );
+      if (!transaction) return false;
+      dispatchExactEdit(
+        view,
+        transaction,
+        exactSelection,
+        deletionSelection || exactSelection,
+        null,
+        { isolatedHistory: true }
+      );
+      return true;
+    }
+
+    const edit = rootBoundarySourceDeletionEdit(
+      view.state,
+      direction,
+      ctx.get(parserCtx),
+      serializer
+    );
+    if (!edit) return false;
+    dispatchExactEdit(
+      view,
+      edit.transaction,
+      edit.beforeSelection,
+      edit.deletionSelection,
+      null,
+      { isolatedHistory: true }
+    );
+    return true;
+  };
+
   const runBoundaryHistory = (command) => {
     const view = editorView;
     if (!view) return false;
@@ -5217,6 +5291,23 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       };
       view.dom.tetherProtectCurrentSource = protectCurrentSource;
       view.dom.tetherRunBoundaryHistory = runBoundaryHistory;
+      const captureExactDeletion = (event) => {
+        if (
+          event.altKey
+          || event.ctrlKey
+          || event.metaKey
+          || event.shiftKey
+          || !["Backspace", "Delete"].includes(event.key)
+        ) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest("button, input, select, textarea, .cm-content, .tether-continuous-source")) {
+          return;
+        }
+        const direction = event.key === "Backspace" ? "backward" : "forward";
+        if (!deleteExactSource(view, direction)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      };
       const captureSourceHandoff = (event) => {
         if (!view.editable) return;
         protectedExactSource = null;
@@ -5234,12 +5325,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (editorView) activateCapturedTarget(editorView, target, mapping);
         });
       };
+      view.dom.addEventListener("keydown", captureExactDeletion, true);
       view.dom.addEventListener("mousedown", captureSourceHandoff, true);
       return {
         update(nextView) {
           editorView = nextView;
         },
         destroy() {
+          view.dom.removeEventListener("keydown", captureExactDeletion, true);
           view.dom.removeEventListener("mousedown", captureSourceHandoff, true);
           if (view.dom.tetherProtectCurrentSource === protectCurrentSource) {
             delete view.dom.tetherProtectCurrentSource;
@@ -5612,28 +5705,18 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             && !event.ctrlKey
             && !event.metaKey
             && !event.shiftKey
-            && ["Backspace", "Delete", "Enter"].includes(event.key)
+            && event.key === "Enter"
           ) {
-            const replacement = event.key === "Enter"
-              ? sourceLineEndingAt(
-                  exactSelection?.fullSource || serializer(_view.state.doc),
-                  exactSelection
-                    ? Math.min(exactSelection.anchor, exactSelection.head)
-                    : 0
-                )
-              : "";
-            const deletionSelection = exactSelection
-              && exactSelection.anchor === exactSelection.head
-              && ["Backspace", "Delete"].includes(event.key)
-              ? extendSourceSelection(
-                  exactSelection,
-                  event.key === "Backspace" ? "backward" : "forward"
-                )
-              : exactSelection;
-            const transaction = deletionSelection
+            const replacement = sourceLineEndingAt(
+              exactSelection?.fullSource || serializer(_view.state.doc),
+              exactSelection
+                ? Math.min(exactSelection.anchor, exactSelection.head)
+                : 0
+            );
+            const transaction = exactSelection
               ? replaceSourceSelectionTransaction(
                   _view.state,
-                  deletionSelection,
+                  exactSelection,
                   replacement,
                   ctx.get(parserCtx)
                 )
@@ -5649,9 +5732,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 _view,
                 transaction,
                 exactSelection,
-                deletionSelection || exactSelection,
-                null,
-                { isolatedHistory: ["Backspace", "Delete"].includes(event.key) }
+                exactSelection
               );
               return true;
             }
@@ -5783,34 +5864,6 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 })
               );
               _view.focus();
-              return true;
-            }
-          }
-          if (
-            !event.altKey
-            && !event.ctrlKey
-            && !event.metaKey
-            && !event.shiftKey
-            && ["Backspace", "Delete"].includes(event.key)
-            && !activeSourceControl?.element?.isConnected
-          ) {
-            const direction = event.key === "Backspace" ? "backward" : "forward";
-            const edit = rootBoundarySourceDeletionEdit(
-              _view.state,
-              direction,
-              ctx.get(parserCtx),
-              ctx.get(serializerCtx)
-            );
-            if (edit) {
-              event.preventDefault();
-              dispatchExactEdit(
-                _view,
-                edit.transaction,
-                edit.beforeSelection,
-                edit.deletionSelection,
-                null,
-                { isolatedHistory: true }
-              );
               return true;
             }
           }
