@@ -447,6 +447,64 @@ async function verifyInlineBoundaryNavigation() {
   await waitForCompletedSave(deletedInlineMarkerFixture);
 }
 
+async function verifyInlineBoundaryExitNavigation() {
+  const forwardExpected = "Before **bold** Xafter.\n";
+  await startSession(inlineFixture, "Before bold after.");
+  await placeCaretInText("Before ", "Before ".length);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "**bold**" &&
+      state.selectionStart === 1 && state.selectionEnd === 1,
+    "ArrowRight did not enter the first inline delimiter"
+  );
+  for (let index = 1; index < "**bold**".length; index += 1) {
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  }
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === "**bold**".length &&
+      state.selectionEnd === "**bold**".length,
+    "inline source traversal did not reach the physical token end"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await assertSourceControlClosed("ArrowRight did not leave the inline source token");
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitFor(
+    () => evaluate(`document.querySelector(".ProseMirror")?.textContent.includes("bold Xafter.")`),
+    "leaving inline source did not consume the following physical space"
+  );
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(forwardExpected);
+  await stopSession();
+
+  const backwardExpected = "BeforeX **bold** after.\n";
+  await startSession(inlineFixture, "Before bold after.");
+  await placeCaretInText(" after.", 0);
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "**bold**" &&
+      state.selectionStart === "**bold**".length - 1 &&
+      state.selectionEnd === "**bold**".length - 1,
+    "ArrowLeft did not enter the last inline delimiter"
+  );
+  for (let index = "**bold**".length - 1; index > 0; index -= 1) {
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  }
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === 0 && state.selectionEnd === 0,
+    "backward inline source traversal did not reach the physical token start"
+  );
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await assertSourceControlClosed("ArrowLeft did not leave the inline source token");
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitFor(
+    () => evaluate(`document.querySelector(".ProseMirror")?.textContent.includes("BeforeX bold after.")`),
+    "leaving inline source backward did not consume the preceding physical space"
+  );
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(backwardExpected);
+  await stopSession();
+}
+
 async function verifyInlineConstructBoundaries() {
   for (const fixture of inlineBoundaryFixtures) {
     const markdown = `Before ${fixture.source} after.\n`;
@@ -1014,9 +1072,15 @@ async function run() {
     console.log("Verified layered fenced-source input and boundary history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "inline-boundary-exit") {
+    await verifyInlineBoundaryExitNavigation();
+    console.log("Verified inline source exits consume the next physical character.");
+    return;
+  }
   await verifyInlineEditing();
   await stopSession();
   await verifyInlineBoundaryNavigation();
+  await verifyInlineBoundaryExitNavigation();
   await stopSession();
   await verifyInlineConstructBoundaries();
   await verifyInlineConstructDeletion();

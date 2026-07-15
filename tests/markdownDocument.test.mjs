@@ -16,7 +16,7 @@ import {
 } from "@milkdown/kit/core";
 import { Clock, Container, Ctx } from "@milkdown/kit/ctx";
 import { EditorState } from "@milkdown/kit/prose/state";
-import { textSchema } from "@milkdown/kit/preset/commonmark";
+import { strongAttr, strongSchema, textSchema } from "@milkdown/kit/preset/commonmark";
 import {
   annotateDocumentGaps,
   documentGaps,
@@ -82,6 +82,8 @@ async function milkdownTransformer() {
     sourceFaithfulDocumentRemark,
     sourceFaithfulDocumentSchema,
     sourceFaithfulParagraphSchema,
+    strongAttr,
+    strongSchema,
     textSchema,
     sourceFaithfulFenceRemark,
     sourceFaithfulCodeBlockSchema
@@ -344,6 +346,28 @@ test("typing replaces the selected physical newline in full Markdown source", as
   assert.equal(sourceSelectionText(extendSourceSelection(collapsed, "backward")), "\n");
   const inserted = replaceSourceSelectionTransaction(state, collapsed, "X", parse);
   assert.equal(serialize(inserted.doc), "```js\ncode\n```\nX\nAfter\n");
+});
+
+test("inline source boundary navigation consumes the adjacent paragraph character", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "Before **bold** after.\n";
+  const doc = parse(source);
+  const tokenFrom = 1 + "Before ".length;
+  const unit = {
+    from: tokenFrom,
+    to: tokenFrom + "bold".length,
+    kind: "inline",
+    name: "strong"
+  };
+  const state = EditorState.create({ doc });
+  assert.equal(
+    documentSourceUnitBoundaryNavigationOffset(state, unit, "backward", serialize),
+    "Before".length
+  );
+  assert.equal(
+    documentSourceUnitBoundaryNavigationOffset(state, unit, "forward", serialize),
+    "Before **bold** ".length
+  );
 });
 
 test("CRLF separators are one logical source-newline selection", async () => {

@@ -2544,12 +2544,12 @@ export function documentSourceUnitSegment(state, unit, serializer) {
 
 export function documentSourceUnitBoundaryNavigationOffset(state, unit, direction, serializer) {
   const resolved = documentSourceUnitSegment(state, unit, serializer);
-  const documentSource = resolved?.documentSource;
+  const documentSource = resolved?.documentSource || documentSourceSegments(state, serializer);
   if (!documentSource) return null;
   // Complete block controls already correspond to one exact serialized
   // segment. Prefer that identity over reverse-mapping a rendered caret at the
   // block edge, where NodeViews can resolve to the following prose block.
-  const segment = resolved.segment;
+  const segment = resolved?.segment;
   const boundary = segment
     ? direction === "backward" ? segment.from : segment.to
     : documentSourceUnitBoundaryOffset(state, unit, direction, serializer);
@@ -5727,14 +5727,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             );
             return;
           }
-          const sourceOffset = unit.kind === "block"
-            ? documentSourceUnitBoundaryNavigationOffset(
-                editorView.state,
-                mappedUnit,
-                direction,
-                serializer
-              )
-            : null;
+          const sourceOffset = documentSourceUnitBoundaryNavigationOffset(
+            editorView.state,
+            mappedUnit,
+            direction,
+            serializer
+          );
           if (
             Number.isFinite(sourceOffset)
             && activateDocumentSourceOffset(
