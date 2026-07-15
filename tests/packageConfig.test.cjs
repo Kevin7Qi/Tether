@@ -44,6 +44,8 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /window\.remoteMarkdown\.resetEditorParity/);
   assert.match(verifier, /window\.localStorage\.clear\(\)/);
   assert.match(verifier, /TETHER_PARITY_CASE === "prose-select-all-editing"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "structural-marker-navigation"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "code-crlf-clipboard"/);
   assert.match(verifier, /tetherGetLoadedSource/);
   assert.match(
     fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8"),
@@ -326,6 +328,19 @@ test("CodeMirror text insertion at an immediate closing fence edits literal Mark
   assert.match(surface, /removeEventListener\("beforeinput", handleCodeSourceOnlyBeforeInput, true\)/);
   assert.match(surface, /removeEventListener\("paste", handleCodeSourceOnlyTransfer, true\)/);
   assert.match(surface, /removeEventListener\("drop", handleCodeSourceOnlyTransfer, true\)/);
+});
+
+test("CodeMirror clipboard operations use physical Markdown source ranges", () => {
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
+  assert.match(surface, /const handleCodeSourceClipboard = \(event\) =>/);
+  assert.match(surface, /documentSourceOffsetAtPosition\([\s\S]*selection\.anchor/);
+  assert.match(surface, /documentSourceOffsetAtPosition\([\s\S]*selection\.head/);
+  assert.match(surface, /event\.clipboardData\.setData\("text\/plain", selectedText\)/);
+  assert.match(surface, /tetherReplaceExactSourceSelection\?\.\(sourceSelection, ""\)/);
+  assert.match(surface, /addEventListener\("copy", handleCodeSourceClipboard, true\)/);
+  assert.match(surface, /addEventListener\("cut", handleCodeSourceClipboard, true\)/);
+  assert.match(surface, /removeEventListener\("copy", handleCodeSourceClipboard, true\)/);
+  assert.match(surface, /removeEventListener\("cut", handleCodeSourceClipboard, true\)/);
 });
 
 test("CodeMirror plain-text paste uses canonical Markdown source history", () => {

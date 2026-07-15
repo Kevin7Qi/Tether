@@ -950,6 +950,67 @@ export default function WysiwygSurface({
       if (replaceCodeSourceOnlyInsertion(event, text)) return;
       if (event.type === "paste") replaceCodeSourceTransfer(event, text);
     };
+    const handleCodeSourceClipboard = (event) => {
+      if (!event.clipboardData || !["copy", "cut"].includes(event.type)) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const codeView = tetherCodeViewForElement(target);
+      const selection = codeView?.state.selection.main;
+      const block = target?.closest(".milkdown-code-block");
+      const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+      const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+      if (!codeView || !selection || selection.empty || !block || !view || !serializer) return;
+
+      let codeBlock;
+      try {
+        codeBlock = enclosingCodeBlock(view.state.doc, view.posAtDOM(block, 0, -1));
+      } catch {
+        return;
+      }
+      if (!codeBlock) return;
+
+      const documentSource = documentSourceSegments(view.state, serializer);
+      const sourceAnchor = documentSourceOffsetAtPosition(
+        view.state,
+        codeContentSourcePosition(codeBlock.position, selection.anchor),
+        serializer,
+        "forward"
+      );
+      const sourceHead = documentSourceOffsetAtPosition(
+        view.state,
+        codeContentSourcePosition(codeBlock.position, selection.head),
+        serializer,
+        "forward"
+      );
+      if (
+        !documentSource
+        || !Number.isFinite(sourceAnchor)
+        || !Number.isFinite(sourceHead)
+      ) return;
+
+      const sourceSelection = {
+        anchor: sourceAnchor,
+        head: sourceHead,
+        fullSource: documentSource.fullSource,
+        boundary: codeContentSourcePosition(codeBlock.position, selection.head)
+      };
+      const selectedText = documentSource.fullSource.slice(
+        Math.min(sourceAnchor, sourceHead),
+        Math.max(sourceAnchor, sourceHead)
+      );
+      if (!selectedText) return;
+
+      // CodeMirror stores every document with LF internally. Clipboard text must
+      // instead come from the physical Markdown range so CRLF, indentation, and
+      // any other source-only bytes behave exactly like an ordinary source file.
+      event.clipboardData.setData("text/plain", selectedText);
+      if (event.type === "cut") {
+        if (readOnlyRef.current) return;
+        codeSourceOnlyHistory = null;
+        if (!view.dom.tetherReplaceExactSourceSelection?.(sourceSelection, "")) return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
     const handleCodeBoundaryKey = (event) => {
       if (readOnlyRef.current) return;
       if (isSourceInputComposing(event)) return;
@@ -1687,6 +1748,8 @@ export default function WysiwygSurface({
     host.addEventListener("keydown", restoreFocusAfterHistory, true);
     host.addEventListener("focusin", rememberCodeFocus, true);
     host.addEventListener("beforeinput", handleCodeSourceOnlyBeforeInput, true);
+    host.addEventListener("copy", handleCodeSourceClipboard, true);
+    host.addEventListener("cut", handleCodeSourceClipboard, true);
     host.addEventListener("paste", handleCodeSourceOnlyTransfer, true);
     host.addEventListener("drop", handleCodeSourceOnlyTransfer, true);
     host.addEventListener("beforeinput", ensureSyntheticTrailing, true);
@@ -1896,6 +1959,8 @@ export default function WysiwygSurface({
       host.removeEventListener("keydown", restoreFocusAfterHistory, true);
       host.removeEventListener("focusin", rememberCodeFocus, true);
       host.removeEventListener("beforeinput", handleCodeSourceOnlyBeforeInput, true);
+      host.removeEventListener("copy", handleCodeSourceClipboard, true);
+      host.removeEventListener("cut", handleCodeSourceClipboard, true);
       draftEventTarget?.removeEventListener(markdownSourceDraftEvent, handleMarkdownSourceDraft);
       host.removeEventListener("paste", handleCodeSourceOnlyTransfer, true);
       host.removeEventListener("drop", handleCodeSourceOnlyTransfer, true);

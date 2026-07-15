@@ -247,14 +247,22 @@ async function editorState() {
   })()`);
 }
 
-async function placeCaretInText(text, offset, rootSelector = ".ProseMirror") {
+async function placeCaretInText(
+  text,
+  offset,
+  rootSelector = ".ProseMirror",
+  textRootSelector = null
+) {
   const expected = JSON.stringify(text);
   const selector = JSON.stringify(rootSelector);
+  const textSelector = JSON.stringify(textRootSelector);
   const installed = await waitFor(
     () => evaluate(`(() => {
       const root = document.querySelector(${selector});
       if (!root) return false;
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const textRoot = ${textSelector} ? root.querySelector(${textSelector}) : root;
+      if (!textRoot) return false;
+      const walker = document.createTreeWalker(textRoot, NodeFilter.SHOW_TEXT);
       const nodes = [];
       let node;
       while ((node = walker.nextNode())) nodes.push(node);
@@ -289,16 +297,17 @@ async function placeCaretInText(text, offset, rootSelector = ".ProseMirror") {
   return waitFor(
     () => evaluate(`(() => {
       const root = document.querySelector(${selector});
+      const textRoot = ${textSelector} ? root?.querySelector(${textSelector}) : root;
       const selection = getSelection();
-      if (document.activeElement !== root || !selection.anchorNode) return false;
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      if (document.activeElement !== root || !textRoot || !selection.anchorNode) return false;
+      const walker = document.createTreeWalker(textRoot, NodeFilter.SHOW_TEXT);
       let consumed = 0;
       let node;
       while ((node = walker.nextNode())) {
         if (node === selection.anchorNode) break;
         consumed += node.data.length;
       }
-      const combined = root.textContent || "";
+      const combined = textRoot.textContent || "";
       const start = combined.indexOf(${expected});
       return node === selection.anchorNode && consumed + selection.anchorOffset === start + ${offset};
     })()`),
@@ -460,6 +469,19 @@ async function dispatchCopyAndCaptureText() {
     const text = window.__tetherParityCopyText;
     delete window.__tetherParityCopyText;
     return text;
+  })()`);
+}
+
+async function dispatchSyntheticClipboardAndCaptureText(type) {
+  return evaluate(`(() => {
+    const transfer = new DataTransfer();
+    const target = document.activeElement || document;
+    target.dispatchEvent(new ClipboardEvent(${JSON.stringify(type)}, {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: transfer
+    }));
+    return transfer.getData("text/plain");
   })()`);
 }
 
@@ -1789,6 +1811,40 @@ async function verifyCodeToCodePointerDragCutPaste() {
   }
 }
 
+async function verifyStructuralMarkerNavigation() {
+  const fixtures = [
+    { name: "closed ATX heading", source: "## Title ##", visible: "Title", caret: 2, selector: "h2" },
+    { name: "bullet list", source: "- Alpha", visible: "Alpha", caret: 1, selector: ".content-dom" },
+    { name: "ordered list", source: "7) Alpha", visible: "Alpha", caret: 2, selector: ".content-dom" },
+    { name: "task list", source: "+ [X] Alpha", visible: "Alpha", caret: 5, selector: ".content-dom" },
+    { name: "blockquote", source: "> Alpha", visible: "Alpha", caret: 1, selector: "blockquote" }
+  ];
+
+  for (const fixture of fixtures) {
+    await startSession(`${fixture.source}\n`, fixture.visible);
+    await placeCaretInText(fixture.visible, 0, ".ProseMirror", fixture.selector);
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === fixture.source &&
+        state.selectionStart === fixture.caret && state.selectionEnd === fixture.caret,
+      `ArrowLeft did not enter the final physical ${fixture.name} prefix byte`
+    );
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 8 });
+    await waitForSourceControl(
+      (state) => state?.active && state.selectionStart === fixture.caret - 1 &&
+        state.selectionEnd === fixture.caret && state.selectionDirection === "backward",
+      `Shift+ArrowLeft did not select one physical ${fixture.name} marker byte`
+    );
+    const copied = await dispatchCopyAndCaptureText();
+    if (copied !== fixture.source.slice(fixture.caret - 1, fixture.caret)) {
+      throw new Error(
+        `${fixture.name} Copy emitted ${JSON.stringify(copied)} instead of its selected source byte`
+      );
+    }
+    await stopSession();
+  }
+}
+
 async function verifyListItemCutPaste() {
   const visibleOffset = 2;
   const selectionStart = listFixture.indexOf("Alpha") + visibleOffset;
@@ -2371,6 +2427,51 @@ async function verifyFenceVariantEditing() {
   await stopSession();
 }
 
+async function verifyCodeCrlfClipboard() {
+  const block = "~~~~js\r\nalpha\r\nbeta\r\n~~~~";
+  const fixture = `Before.\r\n\r\n${block}\r\n\r\nAfter.\r\n`;
+  const cutBlock = "~~~~js\r\na\r\n~~~~";
+  const cutFixture = fixture.replace(block, cutBlock);
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  await startSession(fixture, "alpha");
+  await clickElement(".milkdown-code-block .cm-line:first-child");
+  await waitFor(
+    () => evaluate(`document.activeElement?.matches?.(".cm-content")`),
+    "pointer activation did not focus the first CRLF code line"
+  );
+  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+  await dispatchKey({ key: "End", code: "End", virtualKeyCode: 35, modifiers: 8 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await dispatchKey({ key: "End", code: "End", virtualKeyCode: 35, modifiers: 8 });
+
+  const expected = "alpha\r\nbet";
+  const copied = await dispatchSyntheticClipboardAndCaptureText("copy");
+  if (copied !== expected) {
+    throw new Error(
+      `CRLF code Copy emitted ${JSON.stringify(copied)} instead of exact source ${JSON.stringify(expected)}`
+    );
+  }
+  const cut = await dispatchSyntheticClipboardAndCaptureText("cut");
+  if (cut !== expected) {
+    throw new Error(
+      `CRLF code Cut emitted ${JSON.stringify(cut)} instead of exact source ${JSON.stringify(expected)}`
+    );
+  }
+  await waitForSaveState(false);
+  await save(cutFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(fixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(cutFixture);
+  await stopSession();
+}
+
 async function verifyCodeBlockLayout() {
   await startSession(codeFixture, "const value = 1;");
   await waitFor(
@@ -2576,6 +2677,11 @@ async function run() {
     console.log("Verified CRLF tilde fences retain exact metadata and marker source after editing.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "code-crlf-clipboard") {
+    await verifyCodeCrlfClipboard();
+    console.log("Verified fenced-code Copy and Cut retain physical CRLF source and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-to-prose") {
     await verifyCodeToProseSelection();
     console.log("Verified real Electron code-to-prose source selection and history.");
@@ -2604,6 +2710,11 @@ async function run() {
   if (process.env.TETHER_PARITY_CASE === "code-to-code-pointer-drag-cut-paste") {
     await verifyCodeToCodePointerDragCutPaste();
     console.log("Verified pointer drags between code blocks retain partial content and physical fence source.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "structural-marker-navigation") {
+    await verifyStructuralMarkerNavigation();
+    console.log("Verified rendered structural markers navigate one physical source byte at a time.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "list-item-cut-paste") {
@@ -2675,6 +2786,7 @@ async function run() {
   await verifyBackwardCodeToProseCutPaste();
   await verifyCodePointerDragCutPaste();
   await verifyCodeToCodePointerDragCutPaste();
+  await verifyStructuralMarkerNavigation();
   await verifyListItemCutPaste();
   await verifyTaskCheckboxHistory();
   await verifyTableBoundaryCutPasteHistory();
@@ -2691,6 +2803,7 @@ async function run() {
   await verifyCodeEditing();
   await stopSession();
   await verifyFenceVariantEditing();
+  await verifyCodeCrlfClipboard();
   await verifyCodeBlockLayout();
   await verifyCodeLanguagePickerPresentation();
   await verifyCodeLanguagePickerSourceFidelity();
