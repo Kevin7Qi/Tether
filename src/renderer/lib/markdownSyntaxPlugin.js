@@ -21,6 +21,15 @@ const markdownSyntaxKey = new PluginKey("TETHER_MARKDOWN_SYNTAX");
 export const externalMarkdownTransactionMeta = "tetherExternalMarkdown";
 export const markdownSourceDraftEvent = "tether-markdown-source-draft";
 
+function publishMarkdownSourceDraft(view, markdown) {
+  const EventType = view?.dom?.ownerDocument?.defaultView?.CustomEvent;
+  if (typeof markdown !== "string" || !EventType || !view.dom.isConnected) return;
+  view.dom.dispatchEvent(new EventType(markdownSourceDraftEvent, {
+    bubbles: true,
+    detail: { markdown }
+  }));
+}
+
 export function isUnmarkedFullDocumentReplacement(transaction, state) {
   if (
     !transaction?.docChanged
@@ -4521,6 +4530,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     } finally {
       exactSourceDispatchDepth -= 1;
     }
+    // Exact selections can include source-only bytes that Milkdown's normal
+    // rendered change listener does not report. Publish the authoritative
+    // serialization immediately so dirty state and Save track the transaction.
+    publishMarkdownSourceDraft(view, afterSource);
     if (
       preserveSourcePosition
       && afterSelection
@@ -5961,12 +5974,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             unit,
             value
           );
-          const EventType = editorView.dom.ownerDocument?.defaultView?.CustomEvent;
-          if (markdown == null || !EventType) return;
-          editorView.dom.dispatchEvent(new EventType(markdownSourceDraftEvent, {
-            bubbles: true,
-            detail: { markdown }
-          }));
+          if (markdown == null) return;
+          publishMarkdownSourceDraft(editorView, markdown);
         };
         const editorDecoration = Decoration.widget(unit.from, () => continuousSourceEditor(
           source,

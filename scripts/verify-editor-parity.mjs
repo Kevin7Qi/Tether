@@ -12,6 +12,8 @@ const editedInlineFixture = "Before **boXld** after.\n";
 const deletedInlineMarkerFixture = "Before *bold** after.\n";
 const codeFixture = "Before.\n\n```js\nconst value = 1;\n```\n\nAfter.\n";
 const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n";
+const codeBlockSource = "```js\nconst value = 1;\n```";
+const codeContent = "const value = 1;";
 const inlineBoundaryFixtures = [
   { name: "emphasis", source: "*italic*" },
   { name: "inline code", source: "`code`" },
@@ -225,6 +227,7 @@ async function sourceControlState() {
       value: control.value,
       selectionStart: control.selectionStart,
       selectionEnd: control.selectionEnd,
+      selectionDirection: control.selectionDirection,
       active: document.activeElement === control
     } : null;
   })()`);
@@ -541,6 +544,144 @@ async function verifyInlineConstructDeletion() {
   }
 }
 
+async function verifyInlineCrossBoundarySelection() {
+  const source = "[guide](https://example.com)";
+  const markdown = `Before ${source} after.\n`;
+  await startSession(markdown, "Before ");
+  await placeCaretInText("Before ", "Before ".length - 2);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await assertSourceControlClosed("Link selection setup skipped its rendered start boundary");
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === 1 && state.selectionEnd === 1,
+    "Link source did not finish forward boundary activation"
+  );
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === 0 && state.selectionEnd === 1 &&
+      state.selectionDirection === "backward",
+    "Shift-ArrowLeft did not select the first hidden link source character"
+  );
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 8 });
+  await waitFor(
+    async () => !(await sourceControlState()),
+    "Link selection did not cross from hidden source into preceding rendered text"
+  );
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+  await waitForSaveState(false);
+  const backwardDeleted = `Before${source.slice(1)} after.\n`;
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(backwardDeleted);
+  await stopSession();
+
+  await startSession(markdown, " after.");
+  await placeCaretInText(" after.", 2);
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await assertSourceControlClosed("Link selection setup skipped its rendered end boundary");
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === source.length - 1 &&
+      state.selectionEnd === source.length - 1,
+    "Link source did not finish backward boundary activation"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === source.length - 1 &&
+      state.selectionEnd === source.length && state.selectionDirection === "forward",
+    "Shift-ArrowRight did not select the last hidden link source character"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await waitFor(
+    async () => !(await sourceControlState()),
+    "Link selection did not cross from hidden source into following rendered text"
+  );
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  const forwardDeleted = `Before ${source.slice(0, -1)}after.\n`;
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(forwardDeleted);
+  await stopSession();
+}
+
+async function focusCodeBoundary(edge) {
+  await waitFor(
+    () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .cm-content"))`),
+    "rendered code editor did not become ready"
+  );
+  await clickElement(".milkdown-code-block .cm-content");
+  await waitFor(
+    () => evaluate(`document.activeElement?.matches?.(".cm-content")`),
+    "pointer activation did not focus the rendered code editor"
+  );
+  await dispatchKey({
+    key: edge === "start" ? "Home" : "End",
+    code: edge === "start" ? "Home" : "End",
+    virtualKeyCode: edge === "start" ? 36 : 35
+  });
+}
+
+async function verifyCodeBoundaryNavigation() {
+  const contentStart = codeBlockSource.indexOf("\n") + 1;
+  const closingStart = codeBlockSource.lastIndexOf("\n") + 1;
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("start");
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource &&
+      state.selectionStart === contentStart - 1 && state.selectionEnd === contentStart - 1,
+    "ArrowLeft skipped the physical opening-fence newline"
+  );
+  await stopSession();
+
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("end");
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource &&
+      state.selectionStart === closingStart && state.selectionEnd === closingStart,
+    "ArrowRight skipped the physical closing-fence newline"
+  );
+  await stopSession();
+}
+
+async function verifyCodeBoundaryDeletion() {
+  const contentStart = codeBlockSource.indexOf("\n") + 1;
+  const openingNewlineDeleted = `${codeBlockSource.slice(0, contentStart - 1)}${
+    codeBlockSource.slice(contentStart)
+  }`;
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("start");
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === openingNewlineDeleted &&
+      state.selectionStart === contentStart - 1 && state.selectionEnd === contentStart - 1,
+    "Backspace did not delete exactly the physical opening-fence newline"
+  );
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(codeFixture.replace(codeBlockSource, openingNewlineDeleted));
+  await stopSession();
+
+  const contentEnd = contentStart + codeContent.length;
+  const closingNewlineDeleted = `${codeBlockSource.slice(0, contentEnd)}${
+    codeBlockSource.slice(contentEnd + 1)
+  }`;
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("end");
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === closingNewlineDeleted &&
+      state.selectionStart === contentEnd && state.selectionEnd === contentEnd,
+    "Delete did not remove exactly the physical closing-fence newline"
+  );
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(codeFixture.replace(codeBlockSource, closingNewlineDeleted));
+  await stopSession();
+}
+
 async function verifyCodeEditing() {
   await startSession(codeFixture, "const value = 1;");
   await waitFor(
@@ -590,6 +731,9 @@ async function run() {
   await stopSession();
   await verifyInlineConstructBoundaries();
   await verifyInlineConstructDeletion();
+  await verifyInlineCrossBoundarySelection();
+  await verifyCodeBoundaryNavigation();
+  await verifyCodeBoundaryDeletion();
   await verifyCodeEditing();
   console.log("Verified real Electron typing, saving, and history preserve inline and fenced-code Markdown source.");
 }
