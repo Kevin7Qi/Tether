@@ -240,6 +240,14 @@ async function waitForSourceControl(expected, message) {
   }
 }
 
+async function assertSourceControlClosed(message) {
+  await delay(120);
+  const control = await sourceControlState();
+  if (!control?.active) return;
+  const state = await editorState().catch(() => null);
+  throw new Error(`${message}\nSource control: ${JSON.stringify(control)}\nEditor state: ${JSON.stringify(state)}`);
+}
+
 async function dispatchKey({ key, code, virtualKeyCode, modifiers = 0 }) {
   const common = { key, code, modifiers, windowsVirtualKeyCode: virtualKeyCode };
   await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...common });
@@ -438,12 +446,13 @@ async function verifyInlineConstructBoundaries() {
   for (const fixture of inlineBoundaryFixtures) {
     const markdown = `Before ${fixture.source} after.\n`;
     await startSession(markdown, "Before ");
-    await placeCaretInText("Before ", "Before ".length - 1);
+    await placeCaretInText("Before ", "Before ".length - 2);
     await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-    await delay(120);
-    if (!(await sourceControlState())?.active) {
-      await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-    }
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await assertSourceControlClosed(
+      `ArrowRight skipped the rendered boundary before ${fixture.name}`
+    );
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
     await waitForSourceControl(
       (state) => state?.active && state.value === fixture.source &&
         state.selectionStart === 1 && state.selectionEnd === 1,
@@ -455,18 +464,79 @@ async function verifyInlineConstructBoundaries() {
     // Enter the boundary through a normal text movement. A collapsed DOM Range
     // placed directly beside a non-editable atom is ambiguous to ProseMirror's
     // virtual-cursor plugin and can be biased to the atom's other side.
-    await placeCaretInText(" after.", 1);
+    await placeCaretInText(" after.", 2);
     await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
-    await delay(120);
-    if (!(await sourceControlState())?.active) {
-      await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
-    }
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    await assertSourceControlClosed(
+      `ArrowLeft skipped the rendered boundary after ${fixture.name}`
+    );
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
     await waitForSourceControl(
       (state) => state?.active && state.value === fixture.source &&
         state.selectionStart === fixture.source.length - 1 &&
         state.selectionEnd === fixture.source.length - 1,
       `ArrowLeft skipped the last physical ${fixture.name} source character`
     );
+    await stopSession();
+  }
+}
+
+async function verifyInlineConstructDeletion() {
+  for (const fixture of inlineBoundaryFixtures) {
+    const markdown = `Before ${fixture.source} after.\n`;
+    const forwardSource = fixture.source.slice(1);
+    const forwardMarkdown = `Before ${forwardSource} after.\n`;
+    await startSession(markdown, "Before ");
+    await placeCaretInText("Before ", "Before ".length - 2);
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await assertSourceControlClosed(
+      `Delete setup skipped the rendered boundary before ${fixture.name}`
+    );
+    await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === forwardSource &&
+        state.selectionStart === 0 && state.selectionEnd === 0,
+      `Delete did not remove exactly the first physical ${fixture.name} source character`
+    );
+    await waitForSaveState(false);
+    if (fixture.name === "emphasis") {
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+      await waitForSourceControl(
+        (state) => state?.active && state.value === fixture.source,
+        "Undo did not restore an activation-time source deletion"
+      );
+      await waitForSaveState(true);
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+      await waitForSourceControl(
+        (state) => state?.active && state.value === forwardSource,
+        "Redo did not restore an activation-time source deletion"
+      );
+      await waitForSaveState(false);
+    }
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(forwardMarkdown);
+    await stopSession();
+
+    const backwardSource = fixture.source.slice(0, -1);
+    const backwardMarkdown = `Before ${backwardSource} after.\n`;
+    await startSession(markdown, " after.");
+    await placeCaretInText(" after.", 2);
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    await assertSourceControlClosed(
+      `Backspace setup skipped the rendered boundary after ${fixture.name}`
+    );
+    await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === backwardSource &&
+        state.selectionStart === backwardSource.length &&
+        state.selectionEnd === backwardSource.length,
+      `Backspace did not remove exactly the last physical ${fixture.name} source character`
+    );
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(backwardMarkdown);
     await stopSession();
   }
 }
@@ -519,6 +589,7 @@ async function run() {
   await verifyInlineBoundaryNavigation();
   await stopSession();
   await verifyInlineConstructBoundaries();
+  await verifyInlineConstructDeletion();
   await verifyCodeEditing();
   console.log("Verified real Electron typing, saving, and history preserve inline and fenced-code Markdown source.");
 }

@@ -3310,6 +3310,7 @@ function continuousSourceEditor(
     const end = change.end ?? change.caret;
     editor.setSelectionRange(start, end, change.direction || "none");
     resize();
+    onDraftChange?.(editor.value);
     return true;
   };
   editor.tetherHandleHistoryCommand = applyInitialHistoryCommand;
@@ -3591,6 +3592,10 @@ function continuousSourceEditor(
   requestAnimationFrame(() => {
     if (finished || !editor.isConnected) return;
     resize();
+    // Boundary Backspace/Delete is applied while this temporary control is
+    // created, before a native input event exists. Publish that first value so
+    // dirty state, Save, and history reflect the edit immediately.
+    if (initialDeletionHistory) onDraftChange?.(editor.value);
     if (!shouldFocus()) return;
     editor.focus();
     const caret = Math.max(0, Math.min(editor.value.length, startingCaret));
