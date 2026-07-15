@@ -16,10 +16,11 @@ import {
 } from "@milkdown/kit/core";
 import { Clock, Container, Ctx } from "@milkdown/kit/ctx";
 import { EditorState } from "@milkdown/kit/prose/state";
-import { paragraphSchema, textSchema } from "@milkdown/kit/preset/commonmark";
+import { textSchema } from "@milkdown/kit/preset/commonmark";
 import {
   annotateDocumentGaps,
   documentGaps,
+  normalizeEmptyMarkdownDocument,
   sourceFaithfulDocumentRemark,
   sourceFaithfulDocumentSchema
 } from "../src/renderer/lib/markdownDocument.js";
@@ -31,6 +32,7 @@ import {
   normalizeSerializedMarkdown,
   tetherStringifyOptions
 } from "../src/renderer/lib/markdownStyle.js";
+import { sourceFaithfulParagraphSchema } from "../src/renderer/lib/markdownParagraph.js";
 import {
   documentGapSourceSelection,
   documentSourceSegments,
@@ -79,7 +81,7 @@ async function milkdownTransformer() {
   const userHandlers = [
     sourceFaithfulDocumentRemark,
     sourceFaithfulDocumentSchema,
-    paragraphSchema,
+    sourceFaithfulParagraphSchema,
     textSchema,
     sourceFaithfulFenceRemark,
     sourceFaithfulCodeBlockSchema
@@ -107,6 +109,21 @@ test("root gap annotation captures exact prefix, separators, and suffix", () => 
   const tree = unified().use(remarkParse).parse(source);
   annotateDocumentGaps(tree, { value: source });
   assert.deepEqual(documentGaps(tree.markdownBlockGaps, 2), ["", "\n", "\n"]);
+});
+
+test("an empty Markdown source normalizes to a synthetic paragraph, never a code block", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const parsed = parse("");
+  const code = parsed.type.schema.nodes.code_block.create();
+  const mistakenCodeDocument = parsed.type.create(parsed.attrs, [code]);
+  const normalized = normalizeEmptyMarkdownDocument(mistakenCodeDocument, "");
+
+  assert.equal(normalized.firstChild.type.name, "paragraph");
+  assert.equal(normalized.firstChild.content.size, 0);
+  assert.equal(normalized.firstChild.attrs.tetherSyntheticTrailing, true);
+  assert.equal(serialize(normalized), "");
+  assert.equal(normalizeEmptyMarkdownDocument(normalized, ""), normalized);
+  assert.equal(normalizeEmptyMarkdownDocument(mistakenCodeDocument, "```\n```"), mistakenCodeDocument);
 });
 
 test("serialized edits preserve the source file's exact terminal newline convention", async () => {

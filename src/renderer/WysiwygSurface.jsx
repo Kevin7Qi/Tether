@@ -72,6 +72,7 @@ import { sourceFaithfulInlineMathSchema, sourceFaithfulMathRemark } from "./lib/
 import { sourceFaithfulParagraphRemark, sourceFaithfulParagraphSchema } from "./lib/markdownParagraph.js";
 import {
   documentGaps,
+  normalizeEmptyMarkdownDocument,
   sourceFaithfulDocumentRemark,
   sourceFaithfulDocumentSchema
 } from "./lib/markdownDocument.js";
@@ -142,14 +143,28 @@ import {
 function replaceAllMarkdown(markdown) {
   return (ctx) => {
     const view = ctx.get(editorViewCtx);
-    const doc = ctx.get(parserCtx)(markdown);
-    if (!doc) return;
+    const parsed = ctx.get(parserCtx)(markdown);
+    if (!parsed) return;
+    const doc = normalizeEmptyMarkdownDocument(parsed, markdown);
     view.dispatch(
       view.state.tr
         .replace(0, view.state.doc.content.size, new Slice(doc.content, 0, 0))
         .setMeta(externalMarkdownTransactionMeta, true)
     );
   };
+}
+
+function normalizeInitialEmptyMarkdown(crepe, markdown) {
+  const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
+  const doc = normalizeEmptyMarkdownDocument(view.state.doc, markdown);
+  if (doc === view.state.doc) return doc;
+  view.dispatch(
+    view.state.tr
+      .replace(0, view.state.doc.content.size, new Slice(doc.content, 0, 0))
+      .setMeta(externalMarkdownTransactionMeta, true)
+      .setMeta("addToHistory", false)
+  );
+  return view.state.doc;
 }
 
 const copyIcon = `
@@ -1498,6 +1513,7 @@ export default function WysiwygSurface({
         if (latestMarkdown !== initialMarkdown) {
           crepe.editor.action(replaceAllMarkdown(latestMarkdown));
         }
+        normalizeInitialEmptyMarkdown(crepe, latestMarkdown);
         lastMarkdownRef.current = latestMarkdown;
         settleFrame = window.requestAnimationFrame(() => {
           secondSettleFrame = window.requestAnimationFrame(() => {

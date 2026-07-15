@@ -36,6 +36,21 @@ export function documentGaps(value, childCount = null) {
   }
 }
 
+export function normalizeEmptyMarkdownDocument(doc, markdown) {
+  if (markdown !== "" || !doc?.type?.schema?.nodes?.paragraph) return doc;
+  const current = doc.childCount === 1 ? doc.firstChild : null;
+  const isEmptyEditableBlock = doc.childCount === 0 || (
+    current
+    && !current.content.size
+    && ["paragraph", "code_block"].includes(current.type.name)
+  );
+  if (!isEmptyEditableBlock || current?.attrs?.tetherSyntheticTrailing) return doc;
+  const paragraph = doc.type.schema.nodes.paragraph.create({
+    tetherSyntheticTrailing: true
+  });
+  return doc.type.create(doc.attrs, [paragraph]);
+}
+
 export const sourceFaithfulDocumentRemark = $remark(
   "tetherSourceFaithfulDocument",
   () => () => annotateDocumentGaps

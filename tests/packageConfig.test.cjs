@@ -424,6 +424,7 @@ test("reading view mounts the Markdown surface in readonly mode", () => {
   assert.match(wysiwyg, /aria-label", "Edit table Markdown source"/);
   assert.match(wysiwyg, /tether-content-copy/);
   assert.match(wysiwyg, /markSyntheticTrailingParagraph/);
+  assert.match(wysiwyg, /normalizeInitialEmptyMarkdown\(crepe, latestMarkdown\)/);
   assert.match(wysiwyg, /setNodeAttribute\(position, "tetherSyntheticTrailing", true\)/);
   assert.match(wysiwyg, /copyIcon,\s*copyText: "Copy",\s*onCopy:/s);
 });
