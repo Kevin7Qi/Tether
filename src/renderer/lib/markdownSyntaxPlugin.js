@@ -2092,6 +2092,28 @@ export function rootBoundarySourceSelection(state, direction, serializer, extend
   };
 }
 
+export function rootBoundarySourceDeletionEdit(state, direction, parser, serializer) {
+  if (typeof parser !== "function" || typeof serializer !== "function") return null;
+  const deletionSelection = rootBoundarySourceSelection(
+    state,
+    direction,
+    serializer,
+    true
+  );
+  if (!deletionSelection) return null;
+  const beforeSelection = {
+    ...deletionSelection,
+    head: deletionSelection.anchor
+  };
+  const transaction = replaceSourceSelectionTransaction(
+    state,
+    deletionSelection,
+    "",
+    parser
+  );
+  return transaction ? { transaction, beforeSelection, deletionSelection } : null;
+}
+
 export function documentSourceTarget(state, sourceOffset, serializer, affinity = "forward") {
   const documentSource = documentSourceSegments(state, serializer);
   if (!documentSource) return null;
@@ -5026,6 +5048,32 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 })
               );
               _view.focus();
+              return true;
+            }
+          }
+          if (
+            !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && !event.shiftKey
+            && ["Backspace", "Delete"].includes(event.key)
+            && !activeSourceControl?.element?.isConnected
+          ) {
+            const direction = event.key === "Backspace" ? "backward" : "forward";
+            const edit = rootBoundarySourceDeletionEdit(
+              _view.state,
+              direction,
+              ctx.get(parserCtx),
+              ctx.get(serializerCtx)
+            );
+            if (edit) {
+              event.preventDefault();
+              dispatchExactEdit(
+                _view,
+                edit.transaction,
+                edit.beforeSelection,
+                edit.deletionSelection
+              );
               return true;
             }
           }

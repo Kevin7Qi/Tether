@@ -47,6 +47,7 @@ import {
   documentSourceUnitBoundaryNavigationOffset,
   documentSourceUnitStartOffset,
   replaceSourceSelectionTransaction,
+  rootBoundarySourceDeletionEdit,
   sourceAwareClipboardText,
   sourceClipboardEdit,
   sourceDocumentJumpSelection,
@@ -455,6 +456,29 @@ test("edited fenced code preserves CRLF wrappers and unclosed source", async () 
     serialize(unclosedDoc.type.create(unclosedDoc.attrs, [editedUnclosed])),
     "```js\r\nchanged\r\n```After\r\n"
   );
+});
+
+test("Backspace after a fence deletes physical separator newlines before fence markers", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "```js\ncode\n```\n\nAfter\n";
+  const doc = parse(source);
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, textPosition(doc, "After"))
+  });
+
+  const first = rootBoundarySourceDeletionEdit(state, "backward", parse, serialize);
+  assert.ok(first);
+  assert.equal(serialize(first.transaction.doc), "```js\ncode\n```\nAfter\n");
+  assert.equal(first.transaction.doc.firstChild.attrs.fenceClosed, true);
+  assert.equal(first.transaction.doc.childCount, 2);
+
+  const afterFirst = state.apply(first.transaction);
+  const second = rootBoundarySourceDeletionEdit(afterFirst, "backward", parse, serialize);
+  assert.ok(second);
+  assert.equal(serialize(second.transaction.doc), "```js\ncode\n```After\n");
+  assert.equal(second.transaction.doc.firstChild.attrs.fenceClosed, false);
+  assert.equal(second.transaction.doc.firstChild.textContent, "code\n```After");
 });
 
 test("a partial code-to-prose selection includes the physical closing fence", async () => {
