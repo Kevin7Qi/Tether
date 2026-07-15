@@ -618,6 +618,23 @@ async function verifyLiteralSourceTokens() {
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(editedHeadingFixture);
   await stopSession();
+
+  const mixedFixture = "Before **bold** and &copy; plus \\*literal\\* after.\n";
+  const editedMixedFixture = "Before **bold** and &copy; plus \\*lXiteral\\* after.\n";
+  const mixedText = "Before bold and © plus *literal* after.";
+  await startSession(mixedFixture, mixedText);
+  await placeCaretInText(mixedText, mixedText.indexOf("*literal*"));
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "\\*" && state.selectionStart === 1,
+    "mixed paragraph ArrowRight skipped the hidden escape character"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await cdp.send("Input.insertText", { text: "X" });
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedMixedFixture);
+  await stopSession();
 }
 
 async function verifyInlineConstructBoundaries() {
@@ -1195,6 +1212,11 @@ async function run() {
   if (process.env.TETHER_PARITY_CASE === "literal-source-tokens") {
     await verifyLiteralSourceTokens();
     console.log("Verified escaped characters and entities retain physical source navigation.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "inline-construct-deletion") {
+    await verifyInlineConstructDeletion();
+    console.log("Verified inline delimiter deletion stays source-faithful.");
     return;
   }
   await verifyInlineEditing();

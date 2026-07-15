@@ -1,22 +1,39 @@
 import { decodeString } from "micromark-util-decode-string";
 
 const markdownEscapeOrReference = /^(?:\\[!-/:-@[-`{-~]|&(?:#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});)/i;
+const markdownInlineDelimiter = /^[*_~`$]$/;
 
-export function decodedMarkdownSourceOffset(raw, text, targetOffset) {
-  if (targetOffset === 0) return 0;
+export function decodedMarkdownSourceOffset(
+  raw,
+  text,
+  targetOffset,
+  { skipMarkdownDelimiters = false } = {}
+) {
+  if (targetOffset < 0 || targetOffset > text.length) return null;
+  const boundaries = [0];
   let rawOffset = 0;
   let visibleOffset = 0;
-  while (rawOffset < raw.length && visibleOffset < targetOffset) {
+  while (rawOffset < raw.length) {
     const token = raw.slice(rawOffset).match(markdownEscapeOrReference)?.[0] || raw[rawOffset];
     const decoded = decodeString(token);
     const sourceToken = decoded === token && token.length > 1 ? token[0] : token;
     const visibleToken = sourceToken === token ? decoded : sourceToken;
-    if (text.slice(visibleOffset, visibleOffset + visibleToken.length) !== visibleToken) return null;
-    if (targetOffset < visibleOffset + visibleToken.length) return null;
-    rawOffset += sourceToken.length;
-    visibleOffset += visibleToken.length;
+    if (text.slice(visibleOffset, visibleOffset + visibleToken.length) === visibleToken) {
+      rawOffset += sourceToken.length;
+      visibleOffset += visibleToken.length;
+      boundaries[visibleOffset] = rawOffset;
+      continue;
+    }
+    if (skipMarkdownDelimiters && markdownInlineDelimiter.test(sourceToken)) {
+      rawOffset += sourceToken.length;
+      boundaries[visibleOffset] = rawOffset;
+      continue;
+    }
+    return null;
   }
-  return visibleOffset === targetOffset ? rawOffset : null;
+  return visibleOffset === text.length && Number.isFinite(boundaries[targetOffset])
+    ? boundaries[targetOffset]
+    : null;
 }
 
 export function sourceTabEdit(value, selectionStart, selectionEnd, outdent = false) {

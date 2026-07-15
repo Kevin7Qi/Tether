@@ -43,7 +43,10 @@ import {
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   activeMarkdownBlockSyntax,
+  documentPositionAtSourceOffset,
+  documentSourceUnitBoundaryNavigationOffset,
   plainTextMarkdownSourceSelection,
+  plainTextMarkdownSourceToken,
   replaceSourceSelectionTransaction,
   sourceSelectionText
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
@@ -197,6 +200,74 @@ test("plain paragraph edits preserve untouched escape and entity source", async 
     sourceSelectionText(plainTextMarkdownSourceSelection(entityState, serialize)),
     "&copy;"
   );
+});
+
+test("literal source remains exact beside rendered emphasis", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "Before **bold** and &copy; plus \\*literal\\* after.\n";
+  const doc = parse(source);
+  const rendered = "Before bold and © plus *literal* after.";
+  const entity = textPosition(doc, "©");
+  const entityState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, entity)
+  });
+  const entityToken = plainTextMarkdownSourceToken(entityState, "forward", serialize);
+  assert.equal(entityToken?.unit.source, "&copy;");
+  assert.equal(entityToken?.unit.segmentSourceOffset, source.indexOf("&copy;"));
+
+  const afterBold = textPosition(doc, "bold") + "bold".length;
+  const boldBoundaryState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, afterBold)
+  });
+  assert.equal(plainTextMarkdownSourceSelection(boldBoundaryState, serialize), null);
+  assert.equal(plainTextMarkdownSourceToken(boldBoundaryState, "backward", serialize), null);
+  const boldUnit = {
+    from: textPosition(doc, "bold"),
+    to: afterBold,
+    kind: "inline",
+    name: "strong",
+    names: ["strong"]
+  };
+  const afterFollowingSpace = documentSourceUnitBoundaryNavigationOffset(
+    boldBoundaryState,
+    boldUnit,
+    "forward",
+    serialize
+  );
+  assert.equal(afterFollowingSpace, source.indexOf(" and") + 1);
+  assert.equal(
+    documentPositionAtSourceOffset(boldBoundaryState, afterFollowingSpace, serialize),
+    afterBold + 1
+  );
+
+  const escape = textPosition(doc, "*literal*");
+  const escapeState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, escape)
+  });
+  assert.equal(
+    plainTextMarkdownSourceToken(escapeState, "forward", serialize)?.unit.source,
+    "\\*"
+  );
+
+  const insertion = textPosition(doc, "literal") + 1;
+  const insertionState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, insertion)
+  });
+  const transaction = replaceSourceSelectionTransaction(
+    insertionState,
+    plainTextMarkdownSourceSelection(insertionState, serialize),
+    "X",
+    parse
+  );
+  assert.equal(
+    serialize(transaction.doc),
+    "Before **bold** and &copy; plus \\*lXiteral\\* after.\n"
+  );
+  assert.equal(doc.textContent, rendered);
 });
 
 test("ordinary paragraph carets stay in rendered editing instead of opening block source", async () => {

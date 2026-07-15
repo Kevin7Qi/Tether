@@ -117,6 +117,7 @@ const explicitSourceBlockNames = new Set(["paragraph", "code_block", ...structur
 // CodeMirror's hidden fence newline is handled separately by the host: only an
 // actual deletion of that syntax opens the complete fenced source temporarily.
 const sourceDeletionBlockNames = new Set();
+const literalTextblockDecodeOptions = { skipMarkdownDelimiters: true };
 
 const inactivePluginState = () => ({
   active: false,
@@ -2737,9 +2738,8 @@ function literalTextblockSourceMapping(
     || !["paragraph", "heading"].includes(selection.$from.parent.type.name)
   ) return null;
   const textblock = selection.$from.parent;
-  const textNode = textblock.childCount === 1 ? textblock.firstChild : null;
-  const text = textNode?.isText && !textNode.marks.length ? textNode.text : null;
-  if (typeof text !== "string") return null;
+  const text = textblock.textContent;
+  if (!text) return null;
 
   const documentSource = typeof serializer === "function"
     ? documentSourceSegments(state, serializer)
@@ -2798,7 +2798,12 @@ function literalTextblockSourceMapping(
     segmentSourceOffset = from;
   }
   if (source === text) return null;
-  if (decodedMarkdownSourceOffset(source, text, text.length) !== source.length) return null;
+  if (decodedMarkdownSourceOffset(
+    source,
+    text,
+    text.length,
+    literalTextblockDecodeOptions
+  ) !== source.length) return null;
   return { textblock, source, text, segmentSourceOffset, segment, documentSource };
 }
 
@@ -2806,7 +2811,11 @@ function literalTextblockDocumentSourceOffset(state, position, serializer) {
   if (!state?.doc || !Number.isFinite(position) || typeof serializer !== "function") return null;
   let selection;
   try {
-    if (!state.doc.resolve(position).parent.isTextblock) return null;
+    const resolved = state.doc.resolve(position);
+    if (!resolved.parent.isTextblock) return null;
+    if ([resolved.nodeBefore, resolved.nodeAfter].some((node) => (
+      node?.isText && node.marks.length
+    ))) return null;
     selection = TextSelection.create(state.doc, position);
   } catch {
     return null;
@@ -2817,7 +2826,8 @@ function literalTextblockDocumentSourceOffset(state, position, serializer) {
   const sourceOffset = decodedMarkdownSourceOffset(
     mapping.source,
     mapping.text,
-    visibleOffset
+    visibleOffset,
+    literalTextblockDecodeOptions
   );
   return Number.isFinite(sourceOffset)
     ? mapping.segment.from + mapping.segmentSourceOffset + sourceOffset
@@ -2829,14 +2839,30 @@ export function plainTextMarkdownSourceSelection(
   serializer,
   selection = state?.selection
 ) {
+  if ([
+    selection?.$from?.nodeBefore,
+    selection?.$from?.nodeAfter,
+    selection?.$to?.nodeBefore,
+    selection?.$to?.nodeAfter
+  ].some((node) => node?.isText && node.marks.length)) return null;
   const mapping = literalTextblockSourceMapping(state, selection, serializer);
   if (!mapping || typeof serializer !== "function") return null;
   const { source, text, segmentSourceOffset } = mapping;
   const start = selection.$from.start();
   const visibleFrom = selection.from - start;
   const visibleTo = selection.to - start;
-  const sourceFrom = decodedMarkdownSourceOffset(source, text, visibleFrom);
-  const sourceTo = decodedMarkdownSourceOffset(source, text, visibleTo);
+  const sourceFrom = decodedMarkdownSourceOffset(
+    source,
+    text,
+    visibleFrom,
+    literalTextblockDecodeOptions
+  );
+  const sourceTo = decodedMarkdownSourceOffset(
+    source,
+    text,
+    visibleTo,
+    literalTextblockDecodeOptions
+  );
   if (!Number.isFinite(sourceFrom) || !Number.isFinite(sourceTo)) return null;
   const documentSource = mapping.documentSource || documentSourceSegments(state, serializer);
   const segment = mapping.segment || documentSource?.segments.find(({ position, node }) => (
@@ -2869,14 +2895,27 @@ export function plainTextMarkdownSourceToken(state, direction, serializer = null
     ? boundaries.find((boundary) => boundary > caret)
     : caret;
   if (!Number.isFinite(visibleFrom) || !Number.isFinite(visibleTo)) return null;
-  const sourceFrom = decodedMarkdownSourceOffset(source, text, visibleFrom);
-  const sourceTo = decodedMarkdownSourceOffset(source, text, visibleTo);
+  const sourceFrom = decodedMarkdownSourceOffset(
+    source,
+    text,
+    visibleFrom,
+    literalTextblockDecodeOptions
+  );
+  const sourceTo = decodedMarkdownSourceOffset(
+    source,
+    text,
+    visibleTo,
+    literalTextblockDecodeOptions
+  );
   if (!Number.isFinite(sourceFrom) || !Number.isFinite(sourceTo) || sourceFrom >= sourceTo) {
     return null;
   }
   const tokenSource = source.slice(sourceFrom, sourceTo);
   const visibleToken = text.slice(visibleFrom, visibleTo);
   if (tokenSource === visibleToken) return null;
+  if (decodedMarkdownSourceOffset(tokenSource, visibleToken, visibleToken.length) !== tokenSource.length) {
+    return null;
+  }
 
   const boundaryOffset = direction === "forward" ? 0 : tokenSource.length;
   return {
