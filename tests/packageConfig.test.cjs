@@ -96,6 +96,8 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(surface, /codeBoundaryNavigationSourceOffset/);
   assert.match(surface, /continuousMarkdownSource/);
   assert.match(surface, /control\.setAttribute\("aria-disabled", "true"\)/);
+  assert.doesNotMatch(surface, /feature\/block-edit/);
+  assert.doesNotMatch(surface, /addFeature\(blockEdit/);
   assert.match(styles, /textarea\.tether-continuous-source\.is-code_block/);
   assert.match(surface, /use\(sourceFaithfulFenceRemark\)/);
   assert.match(surface, /use\(sourceFaithfulCodeBlockSchema\)/);

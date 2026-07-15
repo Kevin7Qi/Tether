@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { CrepeBuilder } from "@milkdown/crepe/builder";
-import { blockEdit } from "@milkdown/crepe/feature/block-edit";
 import { codeMirror } from "@milkdown/crepe/feature/code-mirror";
 import { cursor } from "@milkdown/crepe/feature/cursor";
 import { latex } from "@milkdown/crepe/feature/latex";
@@ -1385,7 +1384,6 @@ export default function WysiwygSurface({
       .addFeature(cursor)
       .addFeature(listItem)
       .addFeature(linkTooltip)
-      .addFeature(blockEdit)
       .addFeature(placeholder, { text: "Start writing…", mode: "doc" })
       .addFeature(toolbar)
       .addFeature(codeMirror, {
