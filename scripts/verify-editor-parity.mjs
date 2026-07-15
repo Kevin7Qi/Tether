@@ -1093,6 +1093,66 @@ async function verifyProseToCodeDelete() {
   await stopSession();
 }
 
+async function verifyProseToCodeDeletionHistory() {
+  const beforeEnd = codeFixture.indexOf("\n");
+  const onceDeleted = `${codeFixture.slice(0, beforeEnd)}${codeFixture.slice(beforeEnd + 1)}`;
+  const twiceDeleted = `${codeFixture.slice(0, beforeEnd)}${codeFixture.slice(beforeEnd + 2)}`;
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  await startSession(codeFixture, "Before.");
+  await placeCaretInText("Before.", "Before.".length - 2);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await delay(150);
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await delay(80);
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  await save(twiceDeleted);
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(onceDeleted);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(codeFixture);
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(onceDeleted);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(twiceDeleted);
+  await stopSession();
+}
+
+async function verifyCrlfProseToCodeDelete() {
+  const beforeEnd = variantCodeFixture.indexOf("\r\n");
+  const onceDeleted = `${variantCodeFixture.slice(0, beforeEnd)}${
+    variantCodeFixture.slice(beforeEnd + 2)
+  }`;
+  const twiceDeleted = `${variantCodeFixture.slice(0, beforeEnd)}${
+    variantCodeFixture.slice(beforeEnd + 4)
+  }`;
+  await startSession(variantCodeFixture, "Before.");
+  await placeCaretInText("Before.", "Before.".length - 2);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await delay(150);
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(onceDeleted);
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(twiceDeleted);
+  await stopSession();
+}
+
 async function verifyLayeredCodeSourceHistory() {
   const contentStart = codeBlockSource.indexOf("\n") + 1;
   const deletedSource = `${codeBlockSource.slice(0, contentStart - 1)}${
@@ -1283,6 +1343,16 @@ async function run() {
     console.log("Verified repeated Delete before fenced code removes one physical newline at a time.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "prose-to-code-deletion-history") {
+    await verifyProseToCodeDeletionHistory();
+    console.log("Verified consecutive fence-gap deletions keep independent Undo and Redo steps.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "crlf-prose-to-code-delete") {
+    await verifyCrlfProseToCodeDelete();
+    console.log("Verified CRLF fence gaps delete one complete physical line ending at a time.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "fence-variant-editing") {
     await verifyFenceVariantEditing();
     console.log("Verified CRLF tilde fences retain exact metadata and marker source after editing.");
@@ -1342,6 +1412,8 @@ async function run() {
   await verifyCodeBoundaryDeletion();
   await verifyCodeToProseBackspace();
   await verifyProseToCodeDelete();
+  await verifyProseToCodeDeletionHistory();
+  await verifyCrlfProseToCodeDelete();
   await verifyLayeredCodeSourceHistory();
   await verifyEmptyCodeEditing();
   await verifyCodeEditing();

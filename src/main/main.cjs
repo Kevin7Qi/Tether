@@ -322,6 +322,8 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor,
     show: !editorParityRun,
+    focusable: !editorParityRun,
+    skipTaskbar: editorParityRun,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

@@ -21,10 +21,14 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(main, /process\.env\.TETHER_EDITOR_PARITY === "1"/);
   assert.match(main, /setActivationPolicy\("accessory"\)/);
   assert.match(main, /show:\s*!editorParityRun/);
+  assert.match(main, /focusable:\s*!editorParityRun/);
+  assert.match(main, /skipTaskbar:\s*editorParityRun/);
   assert.match(main, /backgroundThrottling:\s*!editorParityRun/);
   assert.match(verifier, /TETHER_EDITOR_PARITY:\s*"1"/);
   assert.match(markerVerifier, /setActivationPolicy\("accessory"\)/);
   assert.match(markerVerifier, /show:\s*false/);
+  assert.match(markerVerifier, /focusable:\s*false/);
+  assert.match(markerVerifier, /skipTaskbar:\s*true/);
   assert.match(markerVerifier, /backgroundThrottling:\s*false/);
 });
 

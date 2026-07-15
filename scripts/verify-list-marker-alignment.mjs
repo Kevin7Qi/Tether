@@ -106,6 +106,8 @@ async function verifyAlignment() {
   console.log("Electron is ready; measuring marker geometry...");
   window = new BrowserWindow({
     show: false,
+    focusable: false,
+    skipTaskbar: true,
     width: 800,
     height: 600,
     webPreferences: { sandbox: true, backgroundThrottling: false }
