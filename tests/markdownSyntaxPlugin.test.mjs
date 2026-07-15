@@ -10,8 +10,8 @@ import {
   adjacentCodeSourceSelection,
   adjacentCodeSourceTarget,
   activateMarkdownBlockSourceAt,
-  blockSourceVerticalDirection,
   blockSourceBoundarySelectionDirection,
+  blockSourceVerticalDirection,
   completedInlineMarkdownSource,
   continuousMarkdownSource,
   documentSelectionFromCodeBoundary,
@@ -32,6 +32,7 @@ import {
   inlineSourceContentOffset,
   inlineSourceVerticalDirection,
   exactSourceProtectionDecision,
+  finishUnchangedSourceHandoff,
   isUnmarkedCodeBlockBoundaryMutation,
   isUnmarkedCodeBlockDeletion,
   isUnmarkedFullDocumentReplacement,
@@ -44,6 +45,7 @@ import {
   markdownBoundarySourceTarget,
   markdownDeletionSourceUnit,
   markdownDeletionTarget,
+  markdownGapSelectionAt,
   markdownSourceSelectionAt,
   markdownTableSyntaxAt,
   mappedPosition,
@@ -1110,6 +1112,25 @@ test("selection across a block boundary represents the source newline without co
   );
   assert.equal(fromInlineEnd.from, forward.from);
   assert.equal(fromInlineEnd.to, forward.to);
+});
+
+test("source gaps bias their hidden document caret away from fenced code", () => {
+  const before = blockSchema.node("paragraph", null, [blockSchema.text("before")]);
+  const code = blockSchema.node("code_block", null, [blockSchema.text("alpha")]);
+  const after = blockSchema.node("paragraph", null, [blockSchema.text("after")]);
+  const doc = blockSchema.node("doc", null, [before, code, after]);
+  const codeFrom = before.nodeSize;
+  const codeTo = codeFrom + code.nodeSize;
+
+  const backward = markdownGapSelectionAt(doc, codeFrom, "backward");
+  assert.equal(backward.head, codeFrom - 1);
+  assert.equal(backward.$head.parent.type.name, "paragraph");
+  assert.equal(backward.$head.parent.textContent, "before");
+
+  const forward = markdownGapSelectionAt(doc, codeTo, "forward");
+  assert.equal(forward.head, codeTo + 1);
+  assert.equal(forward.$head.parent.type.name, "paragraph");
+  assert.equal(forward.$head.parent.textContent, "after");
 });
 
 test("horizontal root-boundary arrows traverse every physical separator newline", () => {
@@ -2476,6 +2497,28 @@ test("exact source handoffs focus the root before dispatch and synchronize after
   dispatchFocusedSourceSelection(view, transaction);
 
   assert.deepEqual(calls, ["blur", "root-focus", "dispatch", "prosemirror-focus"]);
+});
+
+test("unchanged source handoffs install their destination before fallback closure", () => {
+  const calls = [];
+  const editor = { isConnected: true };
+  const cancel = () => calls.push("cancel");
+  const successfulHandoff = () => {
+    calls.push("handoff");
+    editor.isConnected = false;
+  };
+
+  finishUnchangedSourceHandoff(editor, cancel, successfulHandoff, true);
+  assert.deepEqual(calls, ["handoff"]);
+
+  calls.length = 0;
+  editor.isConnected = true;
+  finishUnchangedSourceHandoff(editor, cancel, () => calls.push("blocked"), true);
+  assert.deepEqual(calls, ["blocked", "cancel"]);
+
+  calls.length = 0;
+  finishUnchangedSourceHandoff(editor, cancel, null, true);
+  assert.deepEqual(calls, ["cancel"]);
 });
 
 test("temporary source controls undo and redo activation-time deletion", () => {

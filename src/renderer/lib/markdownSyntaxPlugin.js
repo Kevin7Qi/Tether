@@ -166,6 +166,14 @@ export function markdownSourceSelectionAt(doc, position, atomPosition = null) {
   return Selection.near(resolved);
 }
 
+export function markdownGapSelectionAt(doc, position, direction) {
+  const bounded = Math.max(0, Math.min(position, doc.content.size));
+  return Selection.near(
+    doc.resolve(bounded),
+    direction === "backward" ? -1 : 1
+  );
+}
+
 export function focusProseMirrorRoot(view) {
   // ProseMirror considers a focused CodeMirror descendant to be focused too,
   // so view.focus() can leave keyboard input in the code block after a jump
@@ -274,7 +282,7 @@ function activateDocumentSourceOffset(
     dispatchFocusedSourceSelection(
       view,
       view.state.tr
-        .setSelection(markdownSourceSelectionAt(view.state.doc, target.position))
+        .setSelection(markdownGapSelectionAt(view.state.doc, target.position, affinity))
         .setMeta(markdownSyntaxKey, {
           action: "source-selection",
           sourceSelection: gapSelection
@@ -2932,6 +2940,29 @@ export function isSourceInputComposing(event) {
   return Boolean(event?.isComposing) || event?.keyCode === 229;
 }
 
+export function finishUnchangedSourceHandoff(
+  editor,
+  onCancel,
+  afterFinish,
+  sync = false,
+  scheduleFrame = globalThis.requestAnimationFrame
+) {
+  if (!afterFinish) {
+    onCancel();
+    return;
+  }
+  const handoff = () => {
+    afterFinish(null);
+    // A successful destination transaction removes this source widget. If a
+    // guarded callback could not move anywhere, close it normally instead of
+    // leaving a finished but still-mounted control behind.
+    if (editor?.isConnected) onCancel();
+  };
+  if (sync) handoff();
+  else if (typeof scheduleFrame === "function") scheduleFrame(handoff);
+  else handoff();
+}
+
 function continuousSourceEditor(
   source,
   kind,
@@ -3071,13 +3102,12 @@ function continuousSourceEditor(
       // Committing an untouched value would still rewrite the block through the
       // parser (dirtying the document and polluting undo); treat it as a cancel.
       if (commit && value !== source) onCommit(value, afterFinish, sync);
-      else {
-        onCancel();
-        if (afterFinish) {
-          if (sync) afterFinish(null);
-          else requestAnimationFrame(() => afterFinish(null));
-        }
-      }
+      else finishUnchangedSourceHandoff(
+        editor,
+        onCancel,
+        afterFinish,
+        sync
+      );
     };
     if (sync) run();
     else requestAnimationFrame(run);
@@ -5179,9 +5209,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             dispatchFocusedSourceSelection(
               editorView,
               editorView.state.tr
-                .setSelection(markdownSourceSelectionAt(
+                .setSelection(markdownGapSelectionAt(
                   editorView.state.doc,
-                  boundaryGap.position
+                  boundaryGap.position,
+                  direction
                 ))
                 .setMeta(markdownSyntaxKey, {
                   action: "source-selection",

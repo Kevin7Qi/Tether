@@ -354,6 +354,18 @@ test("exact source edits preserve source-only carets or refocus the rendered sur
   assert.ok((syntax.match(/dispatchExactEdit\(/g) || []).length >= 5);
 });
 
+test("temporary source handoffs install their destination before fallback closure", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /function finishUnchangedSourceHandoff\([\s\S]*afterFinish\(null\)[\s\S]*editor\?\.isConnected\) onCancel\(\)/);
+  assert.match(syntax, /else finishUnchangedSourceHandoff\([\s\S]*editor,[\s\S]*onCancel,[\s\S]*afterFinish/);
+});
+
+test("source gap handoffs bias the hidden caret in the traversal direction", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /function markdownGapSelectionAt\([\s\S]*direction === "backward" \? -1 : 1/);
+  assert.match(syntax, /markdownGapSelectionAt\([\s\S]*boundaryGap\.position,[\s\S]*direction/);
+});
+
 test("active blockquotes expose their source marker and use structural Backspace semantics", () => {
   const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
