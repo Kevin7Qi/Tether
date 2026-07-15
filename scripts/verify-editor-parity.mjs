@@ -1297,6 +1297,12 @@ async function verifyEmptyCodeEditing() {
 
 async function verifyCodeEditing() {
   await startSession(codeFixture, "const value = 1;");
+  const initialLanguage = await evaluate(
+    `document.querySelector(".milkdown-code-block .language-button")?.textContent?.trim()`
+  );
+  if (!initialLanguage?.startsWith("JavaScript")) {
+    throw new Error(`code-language control exposes a raw identifier: ${initialLanguage}`);
+  }
   await waitFor(
     () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .cm-content"))`),
     "rendered code editor did not become ready"
@@ -1353,16 +1359,57 @@ async function verifyFenceVariantEditing() {
   await stopSession();
 }
 
+async function verifyCodeBlockLayout() {
+  await startSession(codeFixture, "const value = 1;");
+  const geometry = await evaluate(`(() => {
+    const block = document.querySelector(".milkdown-code-block");
+    const tools = block?.querySelector(".tools");
+    const line = block?.querySelector(".cm-line");
+    const blockRect = block?.getBoundingClientRect();
+    const toolsRect = tools?.getBoundingClientRect();
+    const lineRect = line?.getBoundingClientRect();
+    if (!blockRect || !toolsRect || !lineRect) return null;
+    return {
+      blockHeight: blockRect.height,
+      toolsHeight: toolsRect.height,
+      topToText: lineRect.top - blockRect.top,
+      textToBottom: blockRect.bottom - lineRect.bottom
+    };
+  })()`);
+  const compact = geometry
+    && geometry.blockHeight >= 60
+    && geometry.blockHeight <= 65
+    && geometry.toolsHeight <= 24.5
+    && geometry.topToText >= 28
+    && geometry.topToText <= 31
+    && geometry.textToBottom >= 12
+    && geometry.textToBottom <= 15;
+  if (!compact) throw new Error(`single-line code block spacing is imbalanced: ${JSON.stringify(geometry)}`);
+  if (process.env.TETHER_PARITY_SCREENSHOT) {
+    await captureElementsScreenshot([".milkdown-code-block"], process.env.TETHER_PARITY_SCREENSHOT);
+  }
+  await stopSession();
+}
+
 async function verifyCodeLanguagePickerPresentation() {
   await startSession(codeFixture, "const value = 1;");
+  const closedOverflow = await evaluate(
+    `getComputedStyle(document.querySelector(".milkdown-code-block")).overflow`
+  );
+  if (closedOverflow !== "hidden") {
+    throw new Error(`closed code block no longer clips its contents: ${closedOverflow}`);
+  }
   await evaluate(`document.querySelector(".milkdown-code-block .language-button")?.click()`);
   await waitFor(
-    () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .language-picker:not(.hidden)"))`),
+    () => evaluate(`Boolean(
+      document.querySelector(".milkdown-code-block .language-button[data-expanded='true']")
+      && document.querySelector(".milkdown-code-block .language-picker .list-wrapper")
+    )`),
     "code language picker did not open"
   );
   const presentation = await evaluate(`(() => {
     const block = document.querySelector(".milkdown-code-block");
-    const picker = block?.querySelector(".language-picker:not(.hidden)");
+    const picker = block?.querySelector(".language-picker:has(.list-wrapper)");
     const blockRect = block?.getBoundingClientRect();
     const pickerRect = picker?.getBoundingClientRect();
     if (!block || !picker || !blockRect || !pickerRect) return null;
@@ -1384,17 +1431,56 @@ async function verifyCodeLanguagePickerPresentation() {
   }
   if (process.env.TETHER_PARITY_SCREENSHOT) {
     await captureElementsScreenshot(
-      [".milkdown-code-block", ".milkdown-code-block .language-picker:not(.hidden)"],
+      [".milkdown-code-block", ".milkdown-code-block .language-picker:has(.list-wrapper)"],
       process.env.TETHER_PARITY_SCREENSHOT
     );
   }
   await stopSession();
 }
 
+async function verifyCodeLanguagePickerSourceFidelity() {
+  const expected = variantCodeFixture.replace("~~~~js title=demo", "~~~~python title=demo");
+  await startSession(variantCodeFixture, "const answer = 42;");
+  await evaluate(`document.querySelector(".milkdown-code-block .language-button")?.click()`);
+  await waitFor(
+    () => evaluate(`Boolean(document.querySelector(
+      ".milkdown-code-block .language-list-item[data-language='python']"
+    ))`),
+    "Python code-language option did not render"
+  );
+  const selected = await evaluate(`(() => {
+    const option = document.querySelector(
+      ".milkdown-code-block .language-list-item[data-language='python']"
+    );
+    option?.click();
+    return Boolean(option);
+  })()`);
+  if (!selected) throw new Error("Could not select Python from the code-language picker");
+  await waitFor(
+    () => evaluate(`document.querySelector(".milkdown-code-block .language-button")?.textContent
+      ?.startsWith("Python")`),
+    "code-language control did not update to Python"
+  );
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(expected);
+  await stopSession();
+}
+
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "code-block-layout") {
+    await verifyCodeBlockLayout();
+    console.log("Verified compact, balanced single-line fenced-code spacing.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-language-picker") {
     await verifyCodeLanguagePickerPresentation();
     console.log("Verified the code language picker escapes the block and remains interactive.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "code-language-picker-source") {
+    await verifyCodeLanguagePickerSourceFidelity();
+    console.log("Verified language selection preserves custom fence metadata and line endings.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "prose-to-code-replacement") {
@@ -1488,7 +1574,9 @@ async function run() {
   await verifyCodeEditing();
   await stopSession();
   await verifyFenceVariantEditing();
+  await verifyCodeBlockLayout();
   await verifyCodeLanguagePickerPresentation();
+  await verifyCodeLanguagePickerSourceFidelity();
   console.log("Verified real Electron typing, saving, history, and fenced-code presentation.");
 }
 

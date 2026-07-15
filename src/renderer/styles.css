@@ -2864,7 +2864,7 @@ textarea:focus-visible,
   border: 1px solid var(--line-strong);
   border-radius: 6px;
   background: color-mix(in srgb, var(--code) 84%, var(--surface));
-  padding: 6px 0 14px;
+  padding: 4px 0 10px;
   color: var(--ink);
   font-family: var(--mono);
   font-size: 13px;
@@ -2888,28 +2888,28 @@ textarea:focus-visible,
 /* The language menu is an absolutely positioned child that is intentionally
    taller than the code block. Let it escape only while open so it remains
    visible and interactive without giving up rounded clipping during editing. */
-.tether-wysiwyg .milkdown-code-block:has(.language-picker:not(.hidden)) {
+.tether-wysiwyg .milkdown-code-block:has(.language-button[data-expanded="true"]) {
   z-index: 20;
   overflow: visible;
 }
 
 .tether-wysiwyg .milkdown-code-block .tools {
-  min-height: 28px;
-  padding: 0 7px 3px 13px;
+  min-height: 24px;
+  padding: 0 7px 0 13px;
 }
 
 .tether-wysiwyg .milkdown-code-block .tools .language-button {
   margin: 0;
   border-radius: 3px;
   background: transparent;
-  padding: 3px 4px;
+  padding: 2px 4px;
   color: var(--ink2);
   font-family: var(--mono);
   font-size: 10.5px;
   font-weight: 500;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.03em;
   opacity: 0.82;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .tether-wysiwyg .milkdown-code-block:hover .tools .language-button,
@@ -2952,7 +2952,7 @@ textarea:focus-visible,
    control and bring it into the same visual system as formula copying. */
 .tether-wysiwyg .milkdown-code-block .tools button.copy-button {
   min-width: 26px;
-  height: 25px;
+  height: 23px;
   display: inline-flex;
   align-items: center;
   justify-content: center;

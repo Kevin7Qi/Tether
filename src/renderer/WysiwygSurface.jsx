@@ -1533,7 +1533,25 @@ export default function WysiwygSurface({
         else control.removeAttribute("tabindex");
       });
       host.querySelectorAll(".milkdown-code-block .language-button").forEach((control) => {
-        const frontmatter = Boolean(control.closest(".tether-frontmatter-block"));
+        const block = control.closest(".milkdown-code-block");
+        const frontmatter = Boolean(block?.classList.contains("tether-frontmatter-block"));
+        const labelNode = [...control.childNodes].find(({ nodeType }) => nodeType === Node.TEXT_NODE);
+        let language = String(labelNode?.nodeValue || "").trim();
+        if (editorView && block) {
+          try {
+            language = String(
+              enclosingCodeBlock(editorView.state.doc, editorView.posAtDOM(block, 0, -1))
+                ?.node.attrs.language || ""
+            );
+          } catch {
+            // Keep the mounted component's current value until its document
+            // position is available during the next widget refresh.
+          }
+        }
+        const renderedLanguage = tetherCodeLanguageLabel(language);
+        if (labelNode && labelNode.nodeValue !== renderedLanguage) {
+          labelNode.nodeValue = renderedLanguage;
+        }
         if (readOnly || frontmatter) {
           control.setAttribute("tabindex", "-1");
           control.setAttribute("aria-disabled", "true");
