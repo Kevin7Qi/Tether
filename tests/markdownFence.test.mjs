@@ -37,8 +37,12 @@ import {
   typedCodeFenceTransaction
 } from "../src/renderer/lib/markdownFence.js";
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
-import { sourceFaithfulParagraphSchema } from "../src/renderer/lib/markdownParagraph.js";
 import {
+  sourceFaithfulParagraphRemark,
+  sourceFaithfulParagraphSchema
+} from "../src/renderer/lib/markdownParagraph.js";
+import {
+  collapsedDocumentSourceSelection,
   continuousMarkdownSource,
   documentGapFocusDirection,
   documentGapSourceSelection,
@@ -49,6 +53,7 @@ import {
   documentSourceUnitSegment,
   documentSourceUnitBoundaryNavigationOffset,
   documentSourceUnitStartOffset,
+  plainTextMarkdownSourceSelection,
   replaceSourceSelectionTransaction,
   rootBoundarySourceDeletionEdit,
   sourceAwareClipboardText,
@@ -89,6 +94,7 @@ async function milkdownTransformer() {
   const userHandlers = [
     sourceFaithfulFenceRemark,
     sourceFaithfulDocumentRemark,
+    sourceFaithfulParagraphRemark,
     sourceFaithfulDocumentSchema,
     sourceFaithfulParagraphSchema,
     textSchema,
@@ -486,7 +492,6 @@ test("Backspace after a fence deletes physical separator newlines before fence m
     doc,
     selection: TextSelection.create(doc, textPosition(doc, "After"))
   });
-
   const first = rootBoundarySourceDeletionEdit(state, "backward", parse, serialize);
   assert.ok(first);
   assert.equal(serialize(first.transaction.doc), "```js\ncode\n```\nAfter\n");
@@ -814,4 +819,30 @@ test("a prose-to-code replacement preserves the unselected physical closing fenc
   const replacement = replaceSourceSelectionTransaction(state, sourceSelection, "Z", parse);
   assert.ok(replacement);
   assert.equal(serialize(replacement.doc), "Before Zta\ngamma\n```\n\nAfter code paragraph.\n");
+});
+
+test("a collapsed prose caret can paste source that restores an opening fence", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const original = "Before.\n\n```js\nconst value = 1;\n```\n\nAfter.\n";
+  const from = "Bef".length;
+  const codeStart = original.indexOf("```js");
+  const to = codeStart + from;
+  const selectedText = original.slice(from, to);
+  const cutSource = `${original.slice(0, from)}${original.slice(to)}`;
+  const state = EditorState.create({ doc: parse(original) });
+  const cut = sourceClipboardEdit(state, "", parse, serialize, {
+    anchor: from,
+    head: to,
+    fullSource: original
+  });
+  assert.ok(cut);
+  const cutState = state.apply(cut.transaction);
+  assert.equal(serialize(cutState.doc), cutSource);
+  assert.equal(plainTextMarkdownSourceSelection(cutState, serialize), null);
+  const sourceSelection = collapsedDocumentSourceSelection(cutState, serialize);
+  assert.equal(sourceSelection?.anchor, from);
+  assert.equal(sourceSelection?.head, from);
+  const pasted = sourceClipboardEdit(cutState, selectedText, parse, serialize, sourceSelection);
+  assert.ok(pasted);
+  assert.equal(serialize(pasted.transaction.doc), original);
 });

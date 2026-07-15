@@ -48,6 +48,7 @@ import {
   plainTextMarkdownSourceSelection,
   plainTextMarkdownSourceToken,
   replaceSourceSelectionTransaction,
+  sourceClipboardEdit,
   sourceSelectionText
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
@@ -190,6 +191,12 @@ test("plain paragraph edits preserve untouched escape and entity source", async 
     parse
   );
   assert.equal(serialize(transaction.doc), "Before \\*lXiteral\\* and &copy; after.\n");
+
+  const pasted = sourceClipboardEdit(state, "X", parse, serialize, sourceSelection);
+  assert.ok(pasted);
+  assert.equal(pasted.selectedText, "");
+  assert.equal(serialize(pasted.transaction.doc), "Before \\*lXiteral\\* and &copy; after.\n");
+  assert.equal(sourceClipboardEdit(state, "", parse, serialize, sourceSelection), null);
 
   const entity = textPosition(doc, "©");
   const entityState = EditorState.create({

@@ -3,9 +3,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow } from "electron";
 
-// This verifier never needs to become a foreground macOS application. Using
-// accessory activation avoids Dock/menu-bar flashes while retaining an
-// offscreen BrowserWindow for real Chromium layout measurements.
+// This verifier only needs an offscreen renderer. Accessory activation keeps
+// its hidden BrowserWindow functional without a Dock or menu-bar presence.
 if (process.platform === "darwin") app.setActivationPolicy("accessory");
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");

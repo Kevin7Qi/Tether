@@ -27,9 +27,8 @@ const editorParityRun = process.env.TETHER_EDITOR_PARITY === "1";
 app.setName("Tether");
 app.commandLine.appendSwitch("force-color-profile", "srgb");
 if (process.platform === "win32") app.setAppUserModelId("app.tether.markdown");
-// Keep automated parity runs out of the Dock and menu bar on macOS. A hidden
-// BrowserWindow alone still lets Electron briefly activate the application,
-// which causes the distracting screen/menu-bar flash during repeated checks.
+// Automated parity runs only need an offscreen renderer. Accessory activation
+// keeps hidden BrowserWindows functional without a Dock or menu-bar presence.
 if (editorParityRun && process.platform === "darwin") app.setActivationPolicy("accessory");
 
 function installApplicationMenu() {
@@ -37,7 +36,7 @@ function installApplicationMenu() {
   // application menu for the standard editing and window shortcuts. Undo and
   // redo are routed to the renderer because native roles bypass ProseMirror
   // and CodeMirror's transaction histories.
-  if (process.platform !== "darwin") {
+  if (process.platform !== "darwin" || editorParityRun) {
     Menu.setApplicationMenu(null);
     return;
   }
@@ -996,7 +995,9 @@ function assertString(value, label) {
 app.whenReady().then(() => {
   // Packaged macOS builds must use the bundle's multi-resolution .icns. A
   // runtime PNG override changes how macOS composites the transparent glyph.
-  if (process.platform === "darwin" && app.dock && !app.isPackaged) app.dock.setIcon(appIconPath);
+  if (process.platform === "darwin" && app.dock && !app.isPackaged && !editorParityRun) {
+    app.dock.setIcon(appIconPath);
+  }
   installApplicationMenu();
   provider.setKnownHostsPath(getTrustedHostsPath());
   loadLocalGrants();
@@ -1016,5 +1017,6 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
+  if (editorParityRun) return;
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });

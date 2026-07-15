@@ -2913,6 +2913,42 @@ export function plainTextMarkdownSourceSelection(
   };
 }
 
+export function collapsedDocumentSourceSelection(
+  state,
+  serializer,
+  selection = state?.selection
+) {
+  if (
+    !state?.doc
+    || !selection?.empty
+    || !selection.$from?.parent?.isTextblock
+    || typeof serializer !== "function"
+  ) return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const directSegment = documentSource?.segments.find(({ position, node }) => (
+    node === selection.$from.parent
+    && selection.head > position
+    && selection.head < position + node.nodeSize
+  ));
+  const directParagraphSource = selection.$from.parent.attrs?.paragraphSource;
+  const sourceOffset = directSegment
+    && directParagraphSource === selection.$from.parent.textContent
+    ? directSegment.from + selection.$from.parentOffset
+    : documentSourceOffsetAtPosition(
+        { doc: state.doc, selection },
+        selection.head,
+        serializer,
+        "forward"
+      );
+  if (!documentSource || !Number.isFinite(sourceOffset)) return null;
+  return {
+    anchor: sourceOffset,
+    head: sourceOffset,
+    fullSource: documentSource.fullSource,
+    boundary: selection.head
+  };
+}
+
 export function plainTextMarkdownSourceToken(state, direction, serializer = null) {
   const { selection } = state || {};
   if (!selection?.empty || !["backward", "forward"].includes(direction)) return null;
@@ -3292,7 +3328,7 @@ export function sourceClipboardEdit(
   const selectedText = exactSelection
     ? sourceSelectionText(exactSelection)
     : sourceNewlineClipboardText(state);
-  if (selectedText == null || selectedText === "") return null;
+  if (selectedText == null || (selectedText === "" && replacement === "")) return null;
   const transaction = exactSelection
     ? replaceSourceSelectionTransaction(state, exactSelection, replacement, parser)
     : replaceSourceNewlineSelectionTransaction(state, replacement, parser, serializer);
@@ -3906,6 +3942,11 @@ function continuousSourceEditor(
       if (applySourceHistoryCommand(command)) {
         event.preventDefault();
         event.stopPropagation();
+        return;
+      }
+      if (editor.closest(".ProseMirror")?.tetherRunBoundaryHistory?.(command)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         return;
       }
     }
@@ -5427,29 +5468,32 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         dispatchExactEdit(view, transaction, exactSelection, exactSelection);
         return true;
       },
-      handlePaste(view, event) {
-        const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection
-          || plainTextMarkdownSourceSelection(view.state, ctx.get(serializerCtx));
-        const text = event.clipboardData?.getData("text/plain");
-        if (text == null) return false;
-        const edit = sourceClipboardEdit(
-          view.state,
-          text,
-          ctx.get(parserCtx),
-          ctx.get(serializerCtx),
-          sourceSelection
-        );
-        if (!edit) return false;
-        event.preventDefault();
-        dispatchExactEdit(
-          view,
-          edit.transaction,
-          edit.sourceSelection,
-          edit.sourceSelection
-        );
-        return true;
-      },
       handleDOMEvents: {
+        paste(view, event) {
+          const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection
+            || collapsedDocumentSourceSelection(view.state, ctx.get(serializerCtx))
+            || plainTextMarkdownSourceSelection(view.state, ctx.get(serializerCtx));
+          const text = event.clipboardData?.getData("text/plain");
+          if (text == null) return false;
+          const edit = sourceClipboardEdit(
+            view.state,
+            text,
+            ctx.get(parserCtx),
+            ctx.get(serializerCtx),
+            sourceSelection
+          );
+          if (!edit) return false;
+          event.preventDefault();
+          dispatchExactEdit(
+            view,
+            edit.transaction,
+            edit.sourceSelection,
+            edit.sourceSelection,
+            null,
+            { isolatedHistory: true }
+          );
+          return true;
+        },
         beforeinput(view, event) {
           if (["historyUndo", "historyRedo"].includes(event.inputType)) {
             restoreExactSelectionAfterHistory(view);

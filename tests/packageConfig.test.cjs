@@ -18,13 +18,23 @@ test("real Electron editor verification keeps its windows hidden", () => {
     path.join(root, "scripts", "verify-list-marker-alignment.mjs"),
     "utf8"
   );
+  const backgroundElectron = fs.readFileSync(
+    path.join(root, "scripts", "background-electron.mjs"),
+    "utf8"
+  );
   assert.match(main, /process\.env\.TETHER_EDITOR_PARITY === "1"/);
   assert.match(main, /setActivationPolicy\("accessory"\)/);
+  assert.match(main, /process\.platform !== "darwin" \|\| editorParityRun/);
+  assert.match(main, /!app\.isPackaged && !editorParityRun/);
   assert.match(main, /show:\s*!editorParityRun/);
   assert.match(main, /focusable:\s*!editorParityRun/);
   assert.match(main, /skipTaskbar:\s*editorParityRun/);
   assert.match(main, /backgroundThrottling:\s*!editorParityRun/);
   assert.match(verifier, /TETHER_EDITOR_PARITY:\s*"1"/);
+  assert.match(verifier, /prepareBackgroundElectron\(electronPath\)/);
+  assert.match(backgroundElectron, /Add :LSUIElement bool true/);
+  assert.match(backgroundElectron, /"--force", "--deep", "--sign", "-"/);
+  assert.match(packageJson.scripts["verify:list-markers"], /run-background-electron\.mjs/);
   assert.match(markerVerifier, /setActivationPolicy\("accessory"\)/);
   assert.match(markerVerifier, /show:\s*false/);
   assert.match(markerVerifier, /focusable:\s*false/);
@@ -329,6 +339,10 @@ test("code history changes restore the same embedded editor focus", () => {
   assert.match(syntax, /addEventListener\("keydown", captureExactDeletion, true\)/);
   assert.match(syntax, /view\.dom\.tetherRunBoundaryHistory = runBoundaryHistory/);
   assert.match(syntax, /delete view\.dom\.tetherRunBoundaryHistory/);
+  assert.match(
+    syntax,
+    /editor\.closest\("\.ProseMirror"\)\?\.tetherRunBoundaryHistory\?\.\(command\)/
+  );
 });
 
 test("multi-click activation carries word and line selection into raw Markdown controls", () => {

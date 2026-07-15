@@ -5,8 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import electronPath from "electron";
+import { prepareBackgroundElectron } from "./background-electron.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const backgroundElectron = await prepareBackgroundElectron(electronPath);
 const inlineFixture = "Before **bold** after.\n";
 const editedInlineFixture = "Before **boXld** after.\n";
 const deletedInlineMarkerFixture = "Before *bold** after.\n";
@@ -301,6 +303,19 @@ async function dispatchPasteText(text) {
   })()`);
 }
 
+async function dispatchCutAndCaptureText() {
+  await evaluate(`document.addEventListener("cut", (event) => {
+    window.__tetherParityCutText = event.clipboardData?.getData("text/plain") ?? null;
+  }, { once: true })`);
+  const handled = await evaluate(`document.execCommand("cut")`);
+  if (!handled) throw new Error("Chromium did not dispatch the Cut command");
+  return evaluate(`(() => {
+    const text = window.__tetherParityCutText;
+    delete window.__tetherParityCutText;
+    return text;
+  })()`);
+}
+
 async function waitForSavedSource(expected) {
   try {
     return await waitFor(
@@ -349,7 +364,7 @@ async function startSession(fixture, visibleText) {
   const port = await availablePort();
   await writeFile(samplePath, fixture, "utf8");
   child = spawn(
-    electronPath,
+    backgroundElectron.executable,
     [`--remote-debugging-port=${port}`, `--user-data-dir=${profilePath}`, root],
     {
       cwd: root,
@@ -1131,12 +1146,7 @@ async function verifyCodeToProseCutPaste() {
     await waitForCompletedSave(source);
   };
 
-  await evaluate(`document.addEventListener("cut", (event) => {
-    window.__tetherParityCutText = event.clipboardData?.getData("text/plain") ?? null;
-  }, { once: true })`);
-  const cutHandled = await evaluate(`document.execCommand("cut")`);
-  if (!cutHandled) throw new Error("Chromium did not dispatch the code-to-prose Cut command");
-  const cutText = await evaluate(`window.__tetherParityCutText`);
+  const cutText = await dispatchCutAndCaptureText();
   const expectedCutText = codeFixture.slice(selectionStart, selectionStart + selectedLength);
   if (cutText !== expectedCutText) {
     throw new Error(`Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(expectedCutText)}`);
@@ -1197,6 +1207,59 @@ async function verifyProseToCodeReplacement() {
   await waitForSaveState(false);
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(expected);
+  await stopSession();
+}
+
+async function verifyProseToCodeCutPaste() {
+  const anchor = "Bef".length;
+  const codeStart = codeFixture.indexOf(codeBlockSource);
+  const selectionEnd = codeStart + anchor;
+  const selectedText = codeFixture.slice(anchor, selectionEnd);
+  const cutSource = `${codeFixture.slice(0, anchor)}${codeFixture.slice(selectionEnd)}`;
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  await startSession(codeFixture, "Before.");
+  await placeCaretInText("Before.", anchor);
+  await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 8 });
+  const cutText = await dispatchCutAndCaptureText();
+  if (cutText !== selectedText) {
+    throw new Error(`Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(selectedText)}`);
+  }
+  await waitForSaveState(false);
+  await save(cutSource);
+
+  const pasteDispatched = await dispatchPasteText(selectedText);
+  if (pasteDispatched == null) {
+    throw new Error("No focused element received the prose-to-code Paste event");
+  }
+  await waitForSaveState(false);
+  await save(codeFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(cutSource);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(codeFixture);
+  await stopSession();
+
+  const prosePaste = "X\nY";
+  const prosePasteFixture = `${codeFixture.slice(0, anchor)}${prosePaste}${codeFixture.slice(anchor)}`;
+  await startSession(codeFixture, "Before.");
+  await placeCaretInText("Before.", anchor);
+  if (await dispatchPasteText(prosePaste) == null) {
+    throw new Error("No focused prose editor received the multiline Paste event");
+  }
+  await waitForSaveState(false);
+  await save(prosePasteFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(codeFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(prosePasteFixture);
   await stopSession();
 }
 
@@ -1655,6 +1718,11 @@ async function run() {
     console.log("Verified real Electron prose-to-code source replacement history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "prose-to-code-cut-paste") {
+    await verifyProseToCodeCutPaste();
+    console.log("Verified prose-to-code Cut/Paste retains physical Markdown source and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-to-prose-backspace") {
     await verifyCodeToProseBackspace();
     console.log("Verified repeated Backspace after fenced code removes one physical newline at a time.");
@@ -1739,6 +1807,7 @@ async function run() {
   await verifyCodeToProseReplacement();
   await verifyCodeToProseCutPaste();
   await verifyProseToCodeReplacement();
+  await verifyProseToCodeCutPaste();
   await verifyCodeBoundaryDeletion();
   await verifyCodeToProseBackspace();
   await verifyProseToCodeDelete();
@@ -1759,6 +1828,7 @@ try {
   await run();
 } finally {
   await stopSession();
+  await backgroundElectron.cleanup();
 }
 
 // Multiple Node WebSocket sessions can leave an idle undici handle behind even
