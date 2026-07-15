@@ -2549,6 +2549,49 @@ test("exact source selections indent physical lines without losing direction", (
   });
 });
 
+test("rendered Select All maps to exact physical source before Tab indentation", () => {
+  const first = blockSchema.node("paragraph", null, [blockSchema.text("One")]);
+  const second = blockSchema.node("paragraph", null, [blockSchema.text("Two")]);
+  const gaps = ["\r\n", "\r\n\r\n", "\r\n"];
+  const fullSource = `${gaps[0]}One${gaps[1]}Two${gaps[2]}`;
+  const doc = blockSchema.node("doc", {
+    markdownBlockGaps: JSON.stringify(gaps)
+  }, [first, second]);
+  const serializer = (value) => {
+    const blocks = [];
+    value.forEach((node) => blocks.push(node.textContent));
+    let storedGaps = null;
+    try {
+      storedGaps = JSON.parse(value.attrs.markdownBlockGaps);
+    } catch {
+      // Partial documents use ordinary Markdown spacing.
+    }
+    if (Array.isArray(storedGaps) && storedGaps.length === blocks.length + 1) {
+      return blocks.reduce(
+        (source, block, index) => `${source}${block}${storedGaps[index + 1]}`,
+        storedGaps[0]
+      );
+    }
+    return `${blocks.join("\n\n")}\n`;
+  };
+  const state = EditorState.create({
+    doc,
+    selection: new AllSelection(doc)
+  });
+
+  const exact = sourceSelectionFromDocumentSelection(state, serializer);
+  assert.deepEqual(exact, {
+    anchor: 0,
+    head: fullSource.length,
+    fullSource,
+    boundary: 0
+  });
+  assert.equal(
+    sourceSelectionTabEdit(exact).fullSource,
+    "\t\r\n\tOne\r\n\t\r\n\tTwo\r\n"
+  );
+});
+
 test("document-jump shortcuts cover native macOS and Windows key combinations", () => {
   assert.equal(sourceDocumentJumpEdge({ key: "ArrowUp", metaKey: true }), "start");
   assert.equal(sourceDocumentJumpEdge({ key: "ArrowDown", metaKey: true, shiftKey: true }), "end");

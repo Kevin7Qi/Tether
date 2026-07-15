@@ -26,6 +26,29 @@ const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n"
 const codeBlockSource = "```js\nconst value = 1;\n```";
 const codeContent = "const value = 1;";
 const selectAllCodeFixture = `\n${codeFixture}\n`;
+const proseSelectAllLines = [
+  "",
+  "# Head &copy; #",
+  "",
+  "Intro **bold** and \\*literal\\*.",
+  "",
+  "- [ ] Task",
+  "",
+  "```js title=demo",
+  "const value = 1;",
+  "```",
+  "",
+  "| Left | Right |",
+  "| :--- | ----: |",
+  "| A | B |",
+  "",
+  "> Quote",
+  ""
+];
+const proseSelectAllFixture = proseSelectAllLines.join("\r\n");
+const indentedProseSelectAllFixture = proseSelectAllLines
+  .map((line, index) => index === proseSelectAllLines.length - 1 ? line : `\t${line}`)
+  .join("\r\n");
 const indentedSelectAllCodeFixture = [
   "\t",
   "\tBefore.",
@@ -423,6 +446,19 @@ async function dispatchCutAndCaptureText() {
   return evaluate(`(() => {
     const text = window.__tetherParityCutText;
     delete window.__tetherParityCutText;
+    return text;
+  })()`);
+}
+
+async function dispatchCopyAndCaptureText() {
+  await evaluate(`(document.activeElement || document).addEventListener("copy", (event) => {
+    window.__tetherParityCopyText = event.clipboardData?.getData("text/plain") ?? null;
+  }, { once: true })`);
+  const handled = await evaluate(`document.execCommand("copy")`);
+  if (!handled) throw new Error("Chromium did not dispatch the Copy command");
+  return evaluate(`(() => {
+    const text = window.__tetherParityCopyText;
+    delete window.__tetherParityCopyText;
     return text;
   })()`);
 }
@@ -1251,6 +1287,77 @@ async function verifyCodeSelectAllEditing() {
   await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
   await waitForSaveState(false);
   await save(replacement);
+  await stopSession();
+}
+
+async function verifyProseSelectAllEditing() {
+  const replacement = "Replacement";
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+  const selectAllFromProse = async () => {
+    await placeCaretInText("Intro ", 3);
+    await dispatchKey({ key: "a", code: "KeyA", virtualKeyCode: 65, modifiers: 4 });
+    await delay(120);
+  };
+
+  await startSession(proseSelectAllFixture, "Intro bold and *literal*.");
+  await selectAllFromProse();
+  const copiedText = await dispatchCopyAndCaptureText();
+  if (copiedText !== proseSelectAllFixture) {
+    throw new Error(
+      `Prose-focused Select All Copy emitted ${JSON.stringify(copiedText)} instead of ${JSON.stringify(proseSelectAllFixture)}`
+    );
+  }
+  const cutText = await dispatchCutAndCaptureText();
+  if (cutText !== proseSelectAllFixture) {
+    throw new Error(
+      `Prose-focused Select All Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(proseSelectAllFixture)}`
+    );
+  }
+  await waitForSaveState(false);
+  await save("");
+  if (await dispatchPasteText(proseSelectAllFixture) == null) {
+    throw new Error("No rendered document editor received the Select All Paste event");
+  }
+  await waitForSaveState(false);
+  await save(proseSelectAllFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save("");
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(proseSelectAllFixture);
+  await stopSession();
+
+  await startSession(proseSelectAllFixture, "Intro bold and *literal*.");
+  await selectAllFromProse();
+  await cdp.send("Input.insertText", { text: replacement });
+  await waitForSaveState(false);
+  await save(replacement);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(proseSelectAllFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(replacement);
+  await stopSession();
+
+  await startSession(proseSelectAllFixture, "Intro bold and *literal*.");
+  await selectAllFromProse();
+  await dispatchKey({ key: "Tab", code: "Tab", virtualKeyCode: 9 });
+  await waitForSaveState(false);
+  await save(indentedProseSelectAllFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(proseSelectAllFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(indentedProseSelectAllFixture);
+  await dispatchKey({ key: "Tab", code: "Tab", virtualKeyCode: 9, modifiers: 8 });
+  await waitForSaveState(false);
+  await save(proseSelectAllFixture);
   await stopSession();
 }
 
@@ -2409,6 +2516,11 @@ async function run() {
     console.log("Verified CodeMirror Select All edits the exact physical Markdown document.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "prose-select-all-editing") {
+    await verifyProseSelectAllEditing();
+    console.log("Verified rendered-prose Select All edits the exact physical Markdown document.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-select-all-tab-history") {
     await verifyCodeSelectAllTabHistory();
     console.log("Verified CodeMirror Select All Tab and Shift-Tab preserve every physical line and history.");
@@ -2554,6 +2666,7 @@ async function run() {
   await verifyCodeJumpNavigation();
   await verifyCodeDocumentJumpReplacement();
   await verifyCodeSelectAllEditing();
+  await verifyProseSelectAllEditing();
   await verifyCodeSelectAllTabHistory();
   await verifyClosingFenceReplacement();
   await verifyCodeToProseSelection();

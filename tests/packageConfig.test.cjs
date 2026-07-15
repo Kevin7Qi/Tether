@@ -43,6 +43,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /connectRendererTarget\(outgoingTargetId\)/);
   assert.match(verifier, /window\.remoteMarkdown\.resetEditorParity/);
   assert.match(verifier, /window\.localStorage\.clear\(\)/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "prose-select-all-editing"/);
   assert.match(verifier, /tetherGetLoadedSource/);
   assert.match(
     fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8"),

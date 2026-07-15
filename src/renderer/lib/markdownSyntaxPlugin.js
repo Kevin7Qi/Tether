@@ -5817,20 +5817,28 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             return true;
           }
           const serializer = ctx.get(serializerCtx);
-          if (
-            sourceSelection
-            && event.key === "Tab"
+          const sourceTabShortcut = event.key === "Tab"
             && !event.altKey
             && !event.ctrlKey
-            && !event.metaKey
-          ) {
-            const next = sourceSelectionTabEdit(sourceSelection, Boolean(event.shiftKey));
+            && !event.metaKey;
+          // CodeMirror Select All already installs an exact source selection.
+          // Rendered Cmd+A leaves ProseMirror's AllSelection instead, so map it
+          // to the same physical range before applying source-native Tab.
+          const tabSourceSelection = sourceTabShortcut
+            ? sourceSelection || (
+                _view.state.selection instanceof AllSelection
+                  ? sourceSelectionFromDocumentSelection(_view.state, serializer)
+                  : null
+              )
+            : null;
+          if (tabSourceSelection) {
+            const next = sourceSelectionTabEdit(tabSourceSelection, Boolean(event.shiftKey));
             event.preventDefault();
-            if (next.fullSource === sourceSelection.fullSource) return true;
+            if (next.fullSource === tabSourceSelection.fullSource) return true;
             const fullSelection = {
-              ...sourceSelection,
+              ...tabSourceSelection,
               anchor: 0,
-              head: sourceSelection.fullSource.length
+              head: tabSourceSelection.fullSource.length
             };
             const transaction = replaceSourceSelectionTransaction(
               _view.state,
@@ -5842,7 +5850,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             dispatchExactEdit(
               _view,
               transaction,
-              sourceSelection,
+              tabSourceSelection,
               fullSelection,
               next
             );
