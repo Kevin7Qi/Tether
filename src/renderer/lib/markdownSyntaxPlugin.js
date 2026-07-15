@@ -2286,6 +2286,25 @@ export function documentSourceTarget(state, sourceOffset, serializer, affinity =
   return null;
 }
 
+export function sourceSelectionSpansDocumentUnits(state, sourceSelection, serializer) {
+  if (
+    !state?.doc
+    || !sourceSelection
+    || sourceSelection.anchor === sourceSelection.head
+    || typeof serializer !== "function"
+  ) return false;
+  const from = Math.min(sourceSelection.anchor, sourceSelection.head);
+  const to = Math.max(sourceSelection.anchor, sourceSelection.head);
+  const start = documentSourceTarget(state, from, serializer, "forward");
+  const end = documentSourceTarget(state, to, serializer, "backward");
+  if (!start || !end) return false;
+  if (start.kind !== end.kind) return true;
+  if (start.kind === "gap") {
+    return start.gapFrom !== end.gapFrom || start.gapTo !== end.gapTo;
+  }
+  return start.segment?.index !== end.segment?.index;
+}
+
 export function sourceDocumentJumpSelection(
   state,
   edge,
@@ -4506,7 +4525,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       transaction,
       preserveSourcePosition ? afterSelection : null
     );
-    if (isolatedHistory && historySelection && afterSelection) {
+    const useIsolatedHistory = isolatedHistory || sourceSelectionSpansDocumentUnits(
+      view.state,
+      historySelection,
+      serializer
+    );
+    if (useIsolatedHistory && historySelection && afterSelection) {
       const firstUndone = boundaryEditHistory.findIndex((entry) => entry.state === "undone");
       if (firstUndone >= 0) boundaryEditHistory.splice(firstUndone);
       boundaryEditHistory.push({

@@ -700,11 +700,10 @@ async function verifyCodeBoundarySelection() {
   await stopSession();
 }
 
-async function verifyCodeToProseSelection() {
+async function selectCodeEndIntoFollowingProse() {
   const contentStart = codeBlockSource.indexOf("\n") + 1;
   const contentEnd = contentStart + codeContent.length;
   const codeStart = codeFixture.indexOf(codeBlockSource);
-  await startSession(codeFixture, codeContent);
   await focusCodeBoundary("end");
   for (let step = 1; step <= 4; step += 1) {
     await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
@@ -722,9 +721,13 @@ async function verifyCodeToProseSelection() {
   );
   await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
   await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  return { selectionStart: codeStart + contentEnd, selectedLength: 7 };
+}
+
+async function verifyCodeToProseSelection() {
+  await startSession(codeFixture, codeContent);
+  const { selectionStart, selectedLength } = await selectCodeEndIntoFollowingProse();
   await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
-  const selectionStart = codeStart + contentEnd;
-  const selectedLength = 7;
   const expected = `${codeFixture.slice(0, selectionStart)}${
     codeFixture.slice(selectionStart + selectedLength)
   }`;
@@ -734,6 +737,27 @@ async function verifyCodeToProseSelection() {
   await waitFor(
     () => evaluate(`document.querySelector(".cm-content")?.textContent === ${JSON.stringify(codeContent)} && document.querySelector(".ProseMirror")?.textContent.includes("After.")`),
     "undo did not restore the fenced block and following prose"
+  );
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(expected);
+  await stopSession();
+}
+
+async function verifyCodeToProseReplacement() {
+  await startSession(codeFixture, codeContent);
+  const { selectionStart, selectedLength } = await selectCodeEndIntoFollowingProse();
+  await cdp.send("Input.insertText", { text: "X" });
+  const expected = `${codeFixture.slice(0, selectionStart)}X${
+    codeFixture.slice(selectionStart + selectedLength)
+  }`;
+  await waitForSaveState(false);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(true);
+  await waitFor(
+    () => evaluate(`document.querySelector(".cm-content")?.textContent === ${JSON.stringify(codeContent)} && document.querySelector(".ProseMirror")?.textContent.includes("After.")`),
+    "undo did not restore a code-to-prose source replacement"
   );
   await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
   await waitForSaveState(false);
@@ -894,6 +918,11 @@ async function run() {
     console.log("Verified real Electron code-to-prose source selection and history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "code-to-prose-replacement") {
+    await verifyCodeToProseReplacement();
+    console.log("Verified real Electron code-to-prose replacement history.");
+    return;
+  }
   await verifyInlineEditing();
   await stopSession();
   await verifyInlineBoundaryNavigation();
@@ -904,6 +933,7 @@ async function run() {
   await verifyCodeBoundaryNavigation();
   await verifyCodeBoundarySelection();
   await verifyCodeToProseSelection();
+  await verifyCodeToProseReplacement();
   await verifyCodeBoundaryDeletion();
   await verifyEmptyCodeEditing();
   await verifyCodeEditing();

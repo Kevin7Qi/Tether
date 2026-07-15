@@ -81,6 +81,7 @@ import {
   sourceSelectionFromDocumentSelection,
   sourceSelectionAfterEdit,
   sourceSelectionHasAdjacentBlocks,
+  sourceSelectionSpansDocumentUnits,
   sourceSelectionLineJump,
   sourceSelectionRangeAfterMotion,
   sourceSelectionTabEdit,
@@ -1586,6 +1587,29 @@ test("exact source history restores the original range on undo and the edited ca
   );
   assert.equal(exactSourceSelectionAfterHistory(history, "Else", "BeX"), null);
   assert.equal(sourceEditCaretOffset(sourceSelection, "BeX"), 3);
+});
+
+test("exact source replacements isolate history only when their selection spans root units", () => {
+  const doc = blockSchema.node("doc", null, [
+    blockSchema.node("paragraph", null, [blockSchema.text("Before")]),
+    blockSchema.node("paragraph", null, [blockSchema.text("After")])
+  ]);
+  const state = EditorState.create({ doc });
+  const serializer = (value) => `${Array.from(
+    { length: value.childCount },
+    (_unused, index) => value.child(index).textContent
+  ).join("\n\n")}\n`;
+  const fullSource = serializer(doc);
+  assert.equal(sourceSelectionSpansDocumentUnits(state, {
+    anchor: 1,
+    head: 4,
+    fullSource
+  }, serializer), false);
+  assert.equal(sourceSelectionSpansDocumentUnits(state, {
+    anchor: "Before".length,
+    head: fullSource.indexOf("After") + 1,
+    fullSource
+  }, serializer), true);
 });
 
 test("isolated source history walks adjacent deletions backward and forward exactly", () => {
