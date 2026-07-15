@@ -28,6 +28,7 @@ import {
   codeBoundarySourcePosition,
   codeContentSourcePosition,
   codeDragDocumentRange,
+  codeToCodeDragRange,
   codeLineEndSourceOffset,
   codeLineStartSourceOffset,
   codeOuterHistoryDirection,
@@ -1479,6 +1480,37 @@ export default function WysiwygSurface({
         const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
         const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
         if (!view || !serializer || !pending.block.isConnected) return;
+        const targetAtPoint = document.elementFromPoint(point.left, point.top);
+        const targetBlock = targetAtPoint?.closest(".milkdown-code-block");
+        const targetCodeView = tetherCodeViewForElement(targetAtPoint);
+        if (targetBlock && targetBlock !== pending.block && targetCodeView) {
+          let targetBlockPosition;
+          try {
+            targetBlockPosition = view.posAtDOM(targetBlock, 0, -1);
+          } catch {
+            return;
+          }
+          const anchorNode = view.state.doc.nodeAt(pending.blockPosition);
+          const headBlock = enclosingCodeBlock(view.state.doc, targetBlockPosition);
+          const codeHead = targetCodeView.posAtCoords({ x: point.left, y: point.top });
+          const range = anchorNode?.type.name === "code_block" && headBlock && codeHead != null
+            ? codeToCodeDragRange(
+                pending.blockPosition,
+                anchorNode.content.size,
+                pending.codeView.state.selection.main.anchor,
+                headBlock.position,
+                headBlock.node.content.size,
+                codeHead
+              )
+            : null;
+          if (!range) return;
+          activateDocumentSourceSelection(
+            view,
+            TextSelection.create(view.state.doc, range.anchor, range.head),
+            serializer
+          );
+          return;
+        }
         const hit = view.posAtCoords(point);
         const node = view.state.doc.nodeAt(pending.blockPosition);
         if (!hit || node?.type.name !== "code_block") return;

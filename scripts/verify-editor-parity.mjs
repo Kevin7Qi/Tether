@@ -25,6 +25,24 @@ const tableFixture = `${tableBlockSource}\n\nAfter.\n`;
 const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n";
 const codeBlockSource = "```js\nconst value = 1;\n```";
 const codeContent = "const value = 1;";
+const firstCodeContent = "const first = 1;";
+const secondCodeContent = "second = 2";
+const twoCodeFixture = [
+  "Before.",
+  "",
+  "```js",
+  firstCodeContent,
+  "```",
+  "",
+  "Between.",
+  "",
+  "```python",
+  secondCodeContent,
+  "```",
+  "",
+  "After.",
+  ""
+].join("\n");
 const variantCodeBlockSource = "~~~~js title=demo\r\nconst answer = 42;\r\n~~~~~";
 const variantCodeFixture = `Before.\r\n\r\n${variantCodeBlockSource}\r\n\r\nAfter.\r\n`;
 const editedVariantCodeFixture = variantCodeFixture.replace("const answer = 42;", "const answer = 43;");
@@ -1324,6 +1342,8 @@ async function verifyCodePointerDragCutPaste() {
   const proseOffset = 2;
   const beforeOffset = 3;
   const contentStart = codeFixture.indexOf(codeContent);
+  const beforeSelectionStart = codeFixture.indexOf("Before.") + beforeOffset;
+  const afterSelectionEnd = codeFixture.indexOf("After.") + proseOffset;
   const scenarios = [
     {
       name: "code-to-prose",
@@ -1346,6 +1366,28 @@ async function verifyCodePointerDragCutPaste() {
       endRoot: ".cm-content",
       selectionStart: codeFixture.indexOf("Before.") + beforeOffset,
       selectionEnd: contentStart + codeOffset
+    },
+    {
+      name: "prose-across-code-forward",
+      startText: "Before.",
+      startOffset: beforeOffset,
+      startRoot: ".ProseMirror",
+      endText: "After.",
+      endOffset: proseOffset,
+      endRoot: ".ProseMirror",
+      selectionStart: beforeSelectionStart,
+      selectionEnd: afterSelectionEnd
+    },
+    {
+      name: "prose-across-code-backward",
+      startText: "After.",
+      startOffset: proseOffset,
+      startRoot: ".ProseMirror",
+      endText: "Before.",
+      endOffset: beforeOffset,
+      endRoot: ".ProseMirror",
+      selectionStart: beforeSelectionStart,
+      selectionEnd: afterSelectionEnd
     }
   ];
   const save = async (source) => {
@@ -1394,6 +1436,76 @@ async function verifyCodePointerDragCutPaste() {
     await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
     await waitForSaveState(false);
     await save(codeFixture);
+    await stopSession();
+  }
+}
+
+async function verifyCodeToCodePointerDragCutPaste() {
+  const firstOffset = firstCodeContent.indexOf("first");
+  const secondOffset = secondCodeContent.indexOf("second") + 3;
+  const selectionStart = twoCodeFixture.indexOf(firstCodeContent) + firstOffset;
+  const selectionEnd = twoCodeFixture.indexOf(secondCodeContent) + secondOffset;
+  const selectedText = twoCodeFixture.slice(selectionStart, selectionEnd);
+  const cutSource = `${twoCodeFixture.slice(0, selectionStart)}${twoCodeFixture.slice(selectionEnd)}`;
+  const scenarios = [
+    {
+      name: "forward",
+      startText: firstCodeContent,
+      startOffset: firstOffset,
+      endText: secondCodeContent,
+      endOffset: secondOffset
+    },
+    {
+      name: "backward",
+      startText: secondCodeContent,
+      startOffset: secondOffset,
+      endText: firstCodeContent,
+      endOffset: firstOffset
+    }
+  ];
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  for (const scenario of scenarios) {
+    await startSession(twoCodeFixture, firstCodeContent);
+    const start = await textBoundaryPoint(
+      scenario.startText,
+      scenario.startOffset,
+      ".ProseMirror"
+    );
+    const end = await textBoundaryPoint(
+      scenario.endText,
+      scenario.endOffset,
+      ".ProseMirror"
+    );
+    await dragBetweenTextBoundaries(start, end);
+    const dragState = await evaluate(`(() => ({
+      activeElement: document.activeElement?.className || document.activeElement?.tagName || null,
+      domSelection: getSelection()?.toString() || "",
+      codeSelections: [...document.querySelectorAll(".cm-selectionBackground")]
+        .map((selection) => selection.getBoundingClientRect().toJSON()),
+      exactMarkerText: document.querySelector(".tether-source-newline-selection")?.textContent || null
+    }))()`);
+    const cutText = await dispatchCutAndCaptureText();
+    if (cutText !== selectedText) {
+      throw new Error(`${scenario.name} code-to-code pointer Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(selectedText)}; drag state: ${JSON.stringify(dragState)}`);
+    }
+    await waitForSaveState(false);
+    await save(cutSource);
+
+    if (await dispatchPasteText(selectedText) == null) {
+      throw new Error(`No focused editor received the ${scenario.name} code-to-code pointer Paste event`);
+    }
+    await waitForSaveState(false);
+    await save(twoCodeFixture);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+    await waitForSaveState(false);
+    await save(cutSource);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+    await waitForSaveState(false);
+    await save(twoCodeFixture);
     await stopSession();
   }
 }
@@ -2181,6 +2293,11 @@ async function run() {
     console.log("Verified bidirectional pointer drags between code and prose retain physical fence source and history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "code-to-code-pointer-drag-cut-paste") {
+    await verifyCodeToCodePointerDragCutPaste();
+    console.log("Verified pointer drags between code blocks retain partial content and physical fence source.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "list-item-cut-paste") {
     await verifyListItemCutPaste();
     console.log("Verified list-item Cut/Paste retains physical markers and history.");
@@ -2246,6 +2363,7 @@ async function run() {
   await verifyCodeToProseCutPaste();
   await verifyBackwardCodeToProseCutPaste();
   await verifyCodePointerDragCutPaste();
+  await verifyCodeToCodePointerDragCutPaste();
   await verifyListItemCutPaste();
   await verifyTaskCheckboxHistory();
   await verifyTableBoundaryCutPasteHistory();

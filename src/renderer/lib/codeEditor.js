@@ -163,6 +163,27 @@ export function documentDragIntoCodeRange(
   return reversed ? { anchor: reversed.head, head: reversed.anchor } : null;
 }
 
+export function codeToCodeDragRange(
+  anchorBlockPosition,
+  anchorContentLength,
+  codeAnchor,
+  headBlockPosition,
+  headContentLength,
+  codeHead
+) {
+  if (anchorBlockPosition === headBlockPosition) return null;
+  return {
+    anchor: codeContentSourcePosition(
+      anchorBlockPosition,
+      Math.min(Math.max(0, codeAnchor), Math.max(0, anchorContentLength))
+    ),
+    head: codeContentSourcePosition(
+      headBlockPosition,
+      Math.min(Math.max(0, codeHead), Math.max(0, headContentLength))
+    )
+  };
+}
+
 function closingFenceLineStart(source) {
   const openingLineEnd = source.indexOf("\n");
   if (openingLineEnd < 0) return null;

@@ -14,6 +14,7 @@ import {
   codeBoundarySelectionDirection,
   codeBoundarySourcePosition,
   codeContentSourcePosition,
+  codeToCodeDragRange,
   codeDragDocumentRange,
   codeLineEndSourceOffset,
   codeLineStartSourceOffset,
@@ -509,6 +510,19 @@ test("code mouse drags bridge a CodeMirror anchor to surrounding document prose"
   assert.deepEqual(documentDragIntoCodeRange(20, 12, 8, 5), { anchor: 8, head: 26 });
   assert.deepEqual(documentDragIntoCodeRange(20, 12, 40, 99), { anchor: 40, head: 33 });
   assert.equal(documentDragIntoCodeRange(20, 12, 22, 5), null);
+  assert.deepEqual(codeToCodeDragRange(20, 12, 5, 50, 8, 3), {
+    anchor: 26,
+    head: 54
+  });
+  assert.deepEqual(codeToCodeDragRange(50, 8, 3, 20, 12, 5), {
+    anchor: 54,
+    head: 26
+  });
+  assert.deepEqual(codeToCodeDragRange(20, 12, 99, 50, 8, -4), {
+    anchor: 33,
+    head: 51
+  });
+  assert.equal(codeToCodeDragRange(20, 12, 5, 20, 12, 8), null);
 });
 
 test("code language choices include a real plain-text option and stable Markdown fence identifiers", async () => {
