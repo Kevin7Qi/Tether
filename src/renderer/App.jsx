@@ -84,6 +84,7 @@ import {
   scheduleEditorHistoryFocusRestore
 } from "./lib/editorCommands.js";
 import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, rekeyTabsForSource, selectNeighborTab } from "./lib/tabs.js";
+import { buildLocalWorkspaceSourceSession, consolidateSourceSessions } from "./lib/sourceSessions.js";
 import { DocumentSurfaceFallback, FilesPanel, OutlinePanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
 import {
   ConnectionPalette,
@@ -1492,7 +1493,7 @@ export default function App() {
       label: basename(response.file.path),
       file: response.file
     });
-    rememberSourceSession(buildLocalFileSourceSession(response.file.path, response.directory || localDirname(response.file.path)));
+    rememberSourceSession(buildLocalWorkspaceSourceSession(response.file.path, response.directory || localDirname(response.file.path)));
     setStatus({ state: "idle", message: "Opened local file", checkedAt: null, metadata: response.file.metadata });
   }
 
@@ -1572,7 +1573,7 @@ export default function App() {
     if (activeSession?.kind === "local-folder") {
       rememberSourceSession(buildLocalFolderSourceSession(activeSession.rootPath || currentDirectory, currentDirectory, response.file.path, activeSession.id));
     } else {
-      rememberSourceSession(buildLocalFileSourceSession(response.file.path, currentDirectory));
+      rememberSourceSession(buildLocalWorkspaceSourceSession(response.file.path, currentDirectory));
     }
     setStatus({ state: "idle", message: "Opened local file", checkedAt: null, metadata: response.file.metadata });
   }
@@ -1790,7 +1791,7 @@ export default function App() {
         if (activeSession?.kind === "local-folder") {
           rememberSourceSession(buildLocalFolderSourceSession(activeSession.rootPath || sourceRoot, directory, response.file.path, activeSession.id));
         } else {
-          rememberSourceSession(buildLocalFileSourceSession(response.file.path, directory));
+          rememberSourceSession(buildLocalWorkspaceSourceSession(response.file.path, directory));
         }
         setStatus({ state: "idle", message: "Created local file", checkedAt: null, metadata: response.file.metadata });
       }
@@ -2584,7 +2585,7 @@ export default function App() {
         setCurrentDirectory(directory);
         setFileEntries(entriesResponse.ok ? entriesResponse.entries : []);
         adoptFileIntoTab({ sourceKey: localSourceKey(directory), kind: "local", path: fileResponse.file.path, label: basename(fileResponse.file.path), file: fileResponse.file });
-        rememberSourceSession(buildLocalFileSourceSession(fileResponse.file.path, directory, session.id));
+        rememberSourceSession(buildLocalWorkspaceSourceSession(fileResponse.file.path, directory, session.id));
         setStatus({ state: "idle", message: "Restored local file", checkedAt: null, metadata: fileResponse.file.metadata });
         return;
       }
@@ -3828,7 +3829,10 @@ function getInitialSourceSessions() {
   try {
     const storedSessions = getInitialStateValue("sourceSessions", SOURCE_SESSIONS_KEY, []);
     if (!Array.isArray(storedSessions)) return [];
-    return storedSessions.map(normalizeSourceSession).filter(Boolean).slice(0, SOURCE_SESSION_LIMIT);
+    return consolidateSourceSessions(
+      storedSessions.map(normalizeSourceSession).filter(Boolean),
+      SOURCE_SESSION_LIMIT
+    );
   } catch {
     return [];
   }
@@ -3967,10 +3971,10 @@ function upsertSourceSession(sourceSessions, nextSession) {
   if (existingIndex >= 0) {
     const nextSessions = [...sourceSessions];
     nextSessions[existingIndex] = normalized;
-    return nextSessions.slice(0, SOURCE_SESSION_LIMIT);
+    return consolidateSourceSessions(nextSessions, SOURCE_SESSION_LIMIT);
   }
 
-  return [normalized, ...sourceSessions].slice(0, SOURCE_SESSION_LIMIT);
+  return consolidateSourceSessions([normalized, ...sourceSessions], SOURCE_SESSION_LIMIT);
 }
 
 function buildRemoteSourceSession(connection, directory, selectedPath = "", sessionId = "") {
@@ -4009,22 +4013,6 @@ function buildLocalFolderSourceSession(rootPath, directory = rootPath, selectedP
     rootPath: rootPath || directory || "",
     directory: directory || rootPath || "",
     selectedPath: selectedPath || "",
-    updatedAt: new Date().toISOString()
-  };
-}
-
-function buildLocalFileSourceSession(filePath, directory = localDirname(filePath), sessionId = "") {
-  const id = sessionId || `local-file:${filePath}`;
-  return {
-    id,
-    kind: "local-file",
-    label: basename(filePath) || "local file",
-    detail: formatSourcePathDetail(directory),
-    title: filePath,
-    tag: "file",
-    rootPath: directory || "",
-    directory: directory || "",
-    selectedPath: filePath || "",
     updatedAt: new Date().toISOString()
   };
 }
