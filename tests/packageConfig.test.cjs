@@ -11,6 +11,14 @@ test("macOS packaging includes shared main-process runtime files", () => {
   assert.match(packageJson.scripts["package:mac"], /verify-mac-package\.cjs/);
 });
 
+test("real Electron editor verification keeps its windows hidden", () => {
+  const main = fs.readFileSync(path.join(root, "src", "main", "main.cjs"), "utf8");
+  const verifier = fs.readFileSync(path.join(root, "scripts", "verify-editor-parity.mjs"), "utf8");
+  assert.match(main, /process\.env\.TETHER_EDITOR_PARITY === "1"/);
+  assert.match(main, /show:\s*!editorParityRun/);
+  assert.match(verifier, /TETHER_EDITOR_PARITY:\s*"1"/);
+});
+
 test("file move and delete operations are bridged through guarded main-process APIs", () => {
   const main = fs.readFileSync(path.join(root, "src", "main", "main.cjs"), "utf8");
   const preload = fs.readFileSync(path.join(root, "src", "main", "preload.cjs"), "utf8");

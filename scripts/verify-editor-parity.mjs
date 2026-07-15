@@ -12,6 +12,14 @@ const editedInlineFixture = "Before **boXld** after.\n";
 const deletedInlineMarkerFixture = "Before *bold** after.\n";
 const codeFixture = "Before.\n\n```js\nconst value = 1;\n```\n\nAfter.\n";
 const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n";
+const inlineBoundaryFixtures = [
+  { name: "emphasis", source: "*italic*" },
+  { name: "inline code", source: "`code`" },
+  { name: "link", source: "[guide](https://example.com)" },
+  { name: "strikethrough", source: "~~strike~~" },
+  { name: "image", source: "![Alt](https://example.com/image.png)" },
+  { name: "inline math", source: "$x + y$" }
+];
 let child = null;
 let cdp = null;
 let profilePath = null;
@@ -291,7 +299,11 @@ async function startSession(fixture, visibleText) {
     {
       cwd: root,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "true" }
+      env: {
+        ...process.env,
+        ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
+        TETHER_EDITOR_PARITY: "1"
+      }
     }
   );
   for (const stream of [child.stdout, child.stderr]) {
@@ -422,6 +434,43 @@ async function verifyInlineBoundaryNavigation() {
   await waitForCompletedSave(deletedInlineMarkerFixture);
 }
 
+async function verifyInlineConstructBoundaries() {
+  for (const fixture of inlineBoundaryFixtures) {
+    const markdown = `Before ${fixture.source} after.\n`;
+    await startSession(markdown, "Before ");
+    await placeCaretInText("Before ", "Before ".length - 1);
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await delay(120);
+    if (!(await sourceControlState())?.active) {
+      await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    }
+    await waitForSourceControl(
+      (state) => state?.active && state.value === fixture.source &&
+        state.selectionStart === 1 && state.selectionEnd === 1,
+      `ArrowRight skipped the first physical ${fixture.name} source character`
+    );
+    await stopSession();
+
+    await startSession(markdown, " after.");
+    // Enter the boundary through a normal text movement. A collapsed DOM Range
+    // placed directly beside a non-editable atom is ambiguous to ProseMirror's
+    // virtual-cursor plugin and can be biased to the atom's other side.
+    await placeCaretInText(" after.", 1);
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    await delay(120);
+    if (!(await sourceControlState())?.active) {
+      await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    }
+    await waitForSourceControl(
+      (state) => state?.active && state.value === fixture.source &&
+        state.selectionStart === fixture.source.length - 1 &&
+        state.selectionEnd === fixture.source.length - 1,
+      `ArrowLeft skipped the last physical ${fixture.name} source character`
+    );
+    await stopSession();
+  }
+}
+
 async function verifyCodeEditing() {
   await startSession(codeFixture, "const value = 1;");
   await waitFor(
@@ -469,6 +518,7 @@ async function run() {
   await stopSession();
   await verifyInlineBoundaryNavigation();
   await stopSession();
+  await verifyInlineConstructBoundaries();
   await verifyCodeEditing();
   console.log("Verified real Electron typing, saving, and history preserve inline and fenced-code Markdown source.");
 }

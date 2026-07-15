@@ -38,6 +38,7 @@ import {
   isUnmarkedCodeBlockDeletion,
   isUnmarkedFullDocumentReplacement,
   isSourceInputComposing,
+  landedOnRenderedSourceBoundary,
   hardbreakBoundaryBackspaceTransaction,
   hardbreakSourceReplacement,
   liftListMarkerAtCursor,
@@ -1791,6 +1792,69 @@ test("Backspace at a rendered math boundary targets its Markdown source", () => 
     explicitUnitPosition: null,
     edge: "start"
   });
+});
+
+test("source boundary arrows traverse a selected inline atom in source coordinates", () => {
+  const image = blockSchema.node("image", {
+    src: "image.png",
+    alt: "Alt",
+    title: null
+  });
+  const doc = blockSchema.node("doc", null, [
+    blockSchema.node("paragraph", null, [
+      blockSchema.text("Before "),
+      image,
+      blockSchema.text(" after")
+    ])
+  ]);
+  const imagePosition = 1 + "Before ".length;
+  const state = EditorState.create({
+    doc,
+    selection: NodeSelection.create(doc, imagePosition)
+  });
+
+  assert.deepEqual(markdownBoundarySourceTarget(state, "backward"), {
+    position: imagePosition,
+    atomPosition: imagePosition,
+    explicitUnitPosition: null,
+    edge: "end"
+  });
+  assert.deepEqual(markdownBoundarySourceTarget(state, "forward"), {
+    position: imagePosition,
+    atomPosition: imagePosition,
+    explicitUnitPosition: null,
+    edge: "start"
+  });
+});
+
+test("native arrows retain the representable caret before entering hidden inline source", () => {
+  const link = schema.marks.link.create({ href: "https://example.com", title: null });
+  const before = schema.text("Before ");
+  const label = schema.text("guide", [link]);
+  const linkDoc = schema.node("doc", null, [
+    schema.node("paragraph", null, [before, label, schema.text(" after")])
+  ]);
+  const linkEnd = 1 + before.nodeSize + label.nodeSize;
+
+  assert.equal(landedOnRenderedSourceBoundary(EditorState.create({
+    doc: linkDoc,
+    selection: TextSelection.create(linkDoc, linkEnd)
+  }), "ArrowLeft"), true);
+
+  const image = blockSchema.node("image", { src: "image.png", alt: "Alt", title: null });
+  const imageBefore = blockSchema.text("Before ");
+  const imagePosition = 1 + imageBefore.nodeSize;
+  const imageDoc = blockSchema.node("doc", null, [
+    blockSchema.node("paragraph", null, [imageBefore, image, blockSchema.text(" after")])
+  ]);
+  assert.equal(landedOnRenderedSourceBoundary(EditorState.create({
+    doc: imageDoc,
+    selection: TextSelection.create(imageDoc, imagePosition + image.nodeSize)
+  }), "ArrowLeft"), true);
+  assert.equal(landedOnRenderedSourceBoundary(EditorState.create({
+    doc: linkDoc,
+    selection: TextSelection.create(linkDoc, linkEnd - 1)
+  }), "ArrowLeft"), false);
 });
 
 test("hard-break navigation exposes only its hidden marker source", () => {

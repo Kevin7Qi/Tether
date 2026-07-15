@@ -307,6 +307,7 @@ function toRendererError(error) {
 
 function createWindow() {
   const backgroundColor = getResolvedWindowBackground();
+  const editorParityRun = process.env.TETHER_EDITOR_PARITY === "1";
   mainWindow = new BrowserWindow({
     width: 1320,
     height: 860,
@@ -316,6 +317,7 @@ function createWindow() {
     icon: appIconPath,
     autoHideMenuBar: true,
     backgroundColor,
+    show: !editorParityRun,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

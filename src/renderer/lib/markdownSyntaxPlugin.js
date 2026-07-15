@@ -4284,6 +4284,16 @@ export function hardbreakBoundaryBackspaceTransaction(state) {
 
 export function markdownBoundarySourceTarget(state, direction) {
   const { selection } = state;
+  if (selection.node) {
+    const atom = markdownAtomSyntaxAt(state, selection.from);
+    if (!atom) return null;
+    return {
+      position: atom.from,
+      atomPosition: atom.from,
+      explicitUnitPosition: null,
+      edge: direction === "backward" ? "end" : "start"
+    };
+  }
   if (!selection.empty) return null;
 
   const adjacentNode = direction === "backward" ? selection.$from.nodeBefore : selection.$from.nodeAfter;
@@ -4318,6 +4328,15 @@ export function markdownBoundarySourceTarget(state, direction) {
     explicitUnitPosition: null,
     edge: direction === "backward" ? "end" : "start"
   };
+}
+
+export function landedOnRenderedSourceBoundary(state, key) {
+  const direction = key === "ArrowLeft"
+    ? "backward"
+    : key === "ArrowRight"
+      ? "forward"
+      : null;
+  return Boolean(direction && markdownBoundarySourceTarget(state, direction));
 }
 
 export function markdownDeletionSourceUnit(state, target) {
@@ -4660,7 +4679,16 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           };
         }
         if (transaction.selectionSet && pendingActivation) {
+          const activationKey = pendingActivation;
           pendingActivation = false;
+          // This native arrow moved onto a rendered caret boundary beside
+          // hidden Markdown. The boundary itself is a physical source offset;
+          // keep it rendered and let the next arrow consume the delimiter.
+          // Activating here skips that offset (and, for links, their full URL).
+          if (landedOnRenderedSourceBoundary({
+            doc: transaction.doc,
+            selection: transaction.selection
+          }, activationKey)) return inactivePluginState();
           return {
             active: true,
             atomPosition: null,
@@ -5367,7 +5395,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             }
           }
           if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
-            pendingActivation = true;
+            pendingActivation = event.key;
           }
           return false;
         }
