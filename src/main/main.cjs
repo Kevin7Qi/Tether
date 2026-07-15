@@ -309,9 +309,18 @@ function toRendererError(error) {
   };
 }
 
-function createWindow() {
+function loadEditorWindow(window) {
+  const devServerUrl = getTrustedDevServerUrl();
+  if (devServerUrl) {
+    window.loadURL(devServerUrl);
+  } else {
+    window.loadFile(path.join(__dirname, "../../dist/index.html"));
+  }
+}
+
+function createWindow({ deferLoad = false } = {}) {
   const backgroundColor = getResolvedWindowBackground();
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 1320,
     height: 860,
     minWidth: 900,
@@ -323,23 +332,29 @@ function createWindow() {
     show: !editorParityRun,
     focusable: !editorParityRun,
     skipTaskbar: editorParityRun,
+    hiddenInMissionControl: editorParityRun,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      backgroundThrottling: !editorParityRun
+      backgroundThrottling: !editorParityRun,
+      // A hidden native window can still be composited for a frame while a
+      // macOS Electron process starts. OSR keeps parity-test pixels entirely
+      // offscreen while preserving the real Chromium layout and input stack.
+      offscreen: editorParityRun
     }
   });
-  mainWindow.setMenuBarVisibility(false);
-  mainWindow.setAutoHideMenuBar(true);
+  mainWindow = window;
+  window.setMenuBarVisibility(false);
+  window.setAutoHideMenuBar(true);
 
-  if (typeof mainWindow.removeMenu === "function") {
-    mainWindow.removeMenu();
+  if (typeof window.removeMenu === "function") {
+    window.removeMenu();
   }
 
-  mainWindow.webContents.on("before-input-event", (event, input) => {
-    if (handleZoomShortcut(mainWindow.webContents, input)) {
+  window.webContents.on("before-input-event", (event, input) => {
+    if (handleZoomShortcut(window.webContents, input)) {
       event.preventDefault();
       return;
     }
@@ -347,23 +362,19 @@ function createWindow() {
     if (isBlockedShellShortcut(input)) event.preventDefault();
   });
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  window.webContents.setWindowOpenHandler(({ url }) => {
     openExternalUrl(url);
     return { action: "deny" };
   });
 
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (isAllowedAppNavigation(url, mainWindow.webContents.getURL())) return;
+  window.webContents.on("will-navigate", (event, url) => {
+    if (isAllowedAppNavigation(url, window.webContents.getURL())) return;
     event.preventDefault();
     openExternalUrl(url);
   });
 
-  const devServerUrl = getTrustedDevServerUrl();
-  if (devServerUrl) {
-    mainWindow.loadURL(devServerUrl);
-  } else {
-    mainWindow.loadFile(path.join(__dirname, "../../dist/index.html"));
-  }
+  if (!deferLoad) loadEditorWindow(window);
+  return window;
 }
 
 function getTrustedDevServerUrl() {
@@ -467,6 +478,27 @@ provider.on("error", (error) => sendToRenderer("remote:error", toRendererError(e
 
 ipcMain.on("state:getUiState", (event) => {
   event.returnValue = readUiState();
+});
+
+ipcMain.on("test:resetEditorParity", (event, fixture) => {
+  if (!editorParityRun || typeof fixture !== "string") return;
+  const outgoingWindow = BrowserWindow.fromWebContents(event.sender);
+  void (async () => {
+    await fs.mkdir(path.dirname(getUserSamplePath()), { recursive: true });
+    await fs.writeFile(getUserSamplePath(), fixture, "utf8");
+    const replacementWindow = createWindow({ deferLoad: true });
+    if (outgoingWindow && !outgoingWindow.isDestroyed()) outgoingWindow.destroy();
+    // The outgoing renderer may persist convenience state during teardown.
+    // Remove it only after destruction, then seed the exact source once more.
+    await Promise.all([
+      fs.rm(getUiStatePath(), { force: true }),
+      fs.writeFile(getUserSamplePath(), fixture, "utf8")
+    ]);
+    loadEditorWindow(replacementWindow);
+  })().catch((error) => {
+    console.error("Could not reset the parity-test window", error);
+    app.exit(1);
+  });
 });
 
 ipcMain.handle("state:saveUiState", async (_event, patch = {}) => {

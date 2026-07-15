@@ -288,6 +288,20 @@ export default function WysiwygSurface({
   readOnlyRef.current = readOnly;
 
   useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return undefined;
+    const getLoadedSource = () => applyingExternalRef.current
+      ? null
+      : baselineSourceRef.current;
+    host.tetherGetLoadedSource = getLoadedSource;
+    return () => {
+      if (host.tetherGetLoadedSource === getLoadedSource) {
+        delete host.tetherGetLoadedSource;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!editorApiRef) return undefined;
     editorApiRef.current = {
       // Commit any in-progress inline source edit and return the up-to-date

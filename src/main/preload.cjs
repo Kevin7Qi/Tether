@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld("remoteMarkdown", {
   moveLocalFile: (payload) => ipcRenderer.invoke("local:moveFile", payload),
   deleteLocalFile: (filePath) => ipcRenderer.invoke("local:deleteFile", filePath),
   saveLocalSample: (content) => ipcRenderer.invoke("local:saveSample", content),
+  resetEditorParity: (fixture) => ipcRenderer.send("test:resetEditorParity", fixture),
   onEditorCommand: (callback) => subscribe("editor:command", callback),
   onStatus: (callback) => subscribe("remote:status", callback),
   onUpdate: (callback) => subscribe("remote:update", callback),

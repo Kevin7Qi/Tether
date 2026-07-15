@@ -73,6 +73,8 @@ let child = null;
 let cdp = null;
 let profilePath = null;
 let samplePath = null;
+let remoteDebugPort = null;
+let cdpTargetId = null;
 let electronOutput = "";
 
 function delay(ms) {
@@ -466,53 +468,96 @@ async function waitForCompletedSave(expected) {
   await waitForSaveState(true);
 }
 
-async function startSession(fixture, visibleText) {
-  profilePath = await mkdtemp(path.join(os.tmpdir(), "tether-editor-parity-"));
-  samplePath = path.join(profilePath, "sample.md");
-  electronOutput = "";
-  const port = await availablePort();
-  await writeFile(samplePath, fixture, "utf8");
-  child = spawn(
-    backgroundElectron.executable,
-    [`--remote-debugging-port=${port}`, `--user-data-dir=${profilePath}`, root],
-    {
-      cwd: root,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
-        TETHER_EDITOR_PARITY: "1"
-      }
-    }
-  );
-  for (const stream of [child.stdout, child.stderr]) {
-    stream?.on("data", (chunk) => {
-      electronOutput = `${electronOutput}${chunk}`.slice(-8000);
-    });
-  }
-
+async function connectRendererTarget(excludedTargetId = null) {
   const target = await waitFor(async () => {
-    const response = await fetch(`http://127.0.0.1:${port}/json/list`);
+    const response = await fetch(`http://127.0.0.1:${remoteDebugPort}/json/list`);
     if (!response.ok) return null;
     const targets = await response.json();
-    return targets.find((candidate) => candidate.type === "page" && candidate.url.includes("dist/index.html"));
+    return targets.find((candidate) =>
+      candidate.type === "page"
+      && candidate.id !== excludedTargetId
+      && candidate.url.includes("dist/index.html")
+    );
   }, "Tether renderer did not expose a CDP target");
 
+  cdpTargetId = target.id;
   cdp = new CdpSession(target.webSocketDebuggerUrl);
   await cdp.open();
   await cdp.send("Runtime.enable");
   await cdp.send("Page.enable");
+}
+
+async function startSession(fixture, visibleText) {
+  electronOutput = "";
+  if (!child) {
+    profilePath = await mkdtemp(path.join(os.tmpdir(), "tether-editor-parity-"));
+    samplePath = path.join(profilePath, "sample.md");
+    remoteDebugPort = await availablePort();
+    await writeFile(samplePath, fixture, "utf8");
+    child = spawn(
+      backgroundElectron.executable,
+      [
+        `--remote-debugging-port=${remoteDebugPort}`,
+        `--user-data-dir=${profilePath}`,
+        root
+      ],
+      {
+        cwd: root,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
+          TETHER_EDITOR_PARITY: "1"
+        }
+      }
+    );
+    for (const stream of [child.stdout, child.stderr]) {
+      stream?.on("data", (chunk) => {
+        electronOutput = `${electronOutput}${chunk}`.slice(-8000);
+      });
+    }
+
+    await connectRendererTarget();
+    await waitFor(
+      () => evaluate(`typeof window.remoteMarkdown?.resetEditorParity === "function"`),
+      "Tether native sample API did not become ready"
+    );
+  } else {
+    const outgoingTargetId = cdpTargetId;
+    await evaluate(`(() => {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      window.remoteMarkdown.resetEditorParity(${JSON.stringify(fixture)});
+      return true;
+    })()`);
+    cdp.close();
+    cdp = null;
+    cdpTargetId = null;
+    await connectRendererTarget(outgoingTargetId);
+  }
+
+  // Reuse one background Electron process for the entire parity suite. Each
+  // fixture still gets a fresh offscreen BrowserWindow and editor history
+  // without repeatedly asking macOS to launch and terminate an application
+  // (the source of the distracting screen/menu-bar flashes).
   await waitFor(
     () => evaluate(`typeof window.remoteMarkdown?.saveLocalSample === "function"`),
     "Tether native sample API did not become ready"
   );
-  const seeded = await evaluate(`window.remoteMarkdown.saveLocalSample(${JSON.stringify(fixture)})`);
-  if (!seeded?.ok) throw new Error(`Could not seed the isolated native sample: ${JSON.stringify(seeded)}`);
-  await cdp.send("Page.reload", { ignoreCache: true });
   await waitFor(
     () => evaluate(`Boolean(document.querySelector(".tether-wysiwyg.is-ready .ProseMirror") && !document.querySelector(".document-loading"))`),
     "Tether editor did not become ready"
   );
+  try {
+    await waitFor(
+      () => evaluate(`document.querySelector(".tether-wysiwyg-host")?.tetherGetLoadedSource?.() === ${JSON.stringify(fixture)}`),
+      "Tether editor did not adopt the exact fixture source"
+    );
+  } catch (error) {
+    const actual = await evaluate(`document.querySelector(".tether-wysiwyg-host")?.tetherGetLoadedSource?.()`)
+      .catch(() => null);
+    throw new Error(`${error.message}; expected ${JSON.stringify(fixture)}, received ${JSON.stringify(actual)}`);
+  }
   await waitFor(
     () => evaluate(`document.querySelector(".ProseMirror")?.textContent.includes(${JSON.stringify(visibleText)})`),
     `fixture did not render ${JSON.stringify(visibleText)}`
@@ -520,7 +565,11 @@ async function startSession(fixture, visibleText) {
   await delay(200);
 }
 
-async function stopSession() {
+async function stopSession(force = false) {
+  // Individual checks call stopSession to document their isolation boundary.
+  // A fresh BrowserWindow in startSession supplies that isolation; only the
+  // outer cleanup terminates Electron, so a full run performs one app launch.
+  if (!force) return;
   const sessionCdp = cdp;
   const sessionChild = child;
   const sessionProfilePath = profilePath;
@@ -528,6 +577,8 @@ async function stopSession() {
   child = null;
   profilePath = null;
   samplePath = null;
+  remoteDebugPort = null;
+  cdpTargetId = null;
 
   try {
     await sessionCdp?.send("Browser.close");
@@ -2536,7 +2587,7 @@ async function run() {
 try {
   await run();
 } finally {
-  await stopSession();
+  await stopSession(true);
   await backgroundElectron.cleanup();
 }
 

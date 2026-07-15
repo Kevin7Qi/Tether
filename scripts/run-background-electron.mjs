@@ -20,6 +20,11 @@ try {
     child.once("error", reject);
     child.once("exit", (code, signal) => resolve({ code, signal }));
   });
+  if (result.code !== 0 || result.signal) {
+    console.error(
+      `Background Electron exited ${result.signal ? `from ${result.signal}` : `with code ${result.code}`}.`
+    );
+  }
   process.exitCode = result.code ?? (result.signal ? 1 : 0);
 } finally {
   await prepared.cleanup();

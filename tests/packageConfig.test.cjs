@@ -14,6 +14,7 @@ test("macOS packaging includes shared main-process runtime files", () => {
 test("real Electron editor verification keeps its windows hidden", () => {
   const main = fs.readFileSync(path.join(root, "src", "main", "main.cjs"), "utf8");
   const verifier = fs.readFileSync(path.join(root, "scripts", "verify-editor-parity.mjs"), "utf8");
+  const preload = fs.readFileSync(path.join(root, "src", "main", "preload.cjs"), "utf8");
   const markerVerifier = fs.readFileSync(
     path.join(root, "scripts", "verify-list-marker-alignment.mjs"),
     "utf8"
@@ -29,16 +30,36 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(main, /show:\s*!editorParityRun/);
   assert.match(main, /focusable:\s*!editorParityRun/);
   assert.match(main, /skipTaskbar:\s*editorParityRun/);
+  assert.match(main, /hiddenInMissionControl:\s*editorParityRun/);
   assert.match(main, /backgroundThrottling:\s*!editorParityRun/);
+  assert.match(main, /offscreen:\s*editorParityRun/);
   assert.match(verifier, /TETHER_EDITOR_PARITY:\s*"1"/);
   assert.match(verifier, /prepareBackgroundElectron\(electronPath\)/);
+  assert.match(verifier, /async function stopSession\(force = false\)/);
+  assert.match(verifier, /await stopSession\(true\)/);
+  assert.match(main, /ipcMain\.on\("test:resetEditorParity"/);
+  assert.match(main, /createWindow\(\{ deferLoad: true \}\)/);
+  assert.match(preload, /resetEditorParity: \(fixture\) => ipcRenderer\.send\("test:resetEditorParity", fixture\)/);
+  assert.match(verifier, /connectRendererTarget\(outgoingTargetId\)/);
+  assert.match(verifier, /window\.remoteMarkdown\.resetEditorParity/);
+  assert.match(verifier, /window\.localStorage\.clear\(\)/);
+  assert.match(verifier, /tetherGetLoadedSource/);
+  assert.match(
+    fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8"),
+    /host\.tetherGetLoadedSource = getLoadedSource/
+  );
   assert.match(backgroundElectron, /Add :LSUIElement bool true/);
   assert.match(backgroundElectron, /"--force", "--deep", "--sign", "-"/);
+  assert.match(
+    fs.readFileSync(path.join(root, "scripts", "run-background-electron.mjs"), "utf8"),
+    /Background Electron exited/
+  );
   assert.match(packageJson.scripts["verify:list-markers"], /run-background-electron\.mjs/);
   assert.match(markerVerifier, /setActivationPolicy\("accessory"\)/);
   assert.match(markerVerifier, /show:\s*false/);
   assert.match(markerVerifier, /focusable:\s*false/);
   assert.match(markerVerifier, /skipTaskbar:\s*true/);
+  assert.match(markerVerifier, /hiddenInMissionControl:\s*true/);
   assert.match(markerVerifier, /backgroundThrottling:\s*false/);
 });
 

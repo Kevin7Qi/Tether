@@ -107,8 +107,11 @@ async function verifyAlignment() {
     show: false,
     focusable: false,
     skipTaskbar: true,
+    hiddenInMissionControl: true,
     width: 800,
     height: 600,
+    // This geometry verifier intentionally uses the production compositor:
+    // OSR rasterizes font ink differently enough to hide subpixel regressions.
     webPreferences: { sandbox: true, backgroundThrottling: false }
   });
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
