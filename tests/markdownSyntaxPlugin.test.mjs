@@ -61,6 +61,7 @@ import {
   sourceCharacterDeletionRange,
   sourceControlInitialDeletion,
   sourceControlInitialHistoryChange,
+  sourceControlClipboardEdit,
   sourceControlInputHistoryStep,
   sourceControlSaveFocus,
   sourceEditCaretOffset,
@@ -2871,6 +2872,19 @@ test("temporary source controls replay explicit live-input snapshots", () => {
     history: { undo: [before], redo: [] }
   });
   assert.equal(sourceControlInputHistoryStep({ undo: [], redo: [] }, "undo", after), null);
+});
+
+test("temporary source controls cut and paste exact hidden Markdown bytes", () => {
+  assert.deepEqual(sourceControlClipboardEdit("| Alpha | Beta |", 7, 8), {
+    value: "| Alpha| Beta |",
+    selectedText: " ",
+    caret: 7
+  });
+  assert.deepEqual(sourceControlClipboardEdit("| Alpha| Beta |", 7, 7, " "), {
+    value: "| Alpha | Beta |",
+    selectedText: "",
+    caret: 8
+  });
 });
 
 test("source selections move vertically by physical source lines and preserve columns", () => {

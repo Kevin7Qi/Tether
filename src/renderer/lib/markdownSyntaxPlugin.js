@@ -1,6 +1,11 @@
 import { parserCtx, serializerCtx } from "@milkdown/kit/core";
 import { Fragment, Slice } from "@milkdown/kit/prose/model";
 import { joinBackward, joinForward, lift, splitBlock } from "@milkdown/kit/prose/commands";
+import {
+  closeHistory,
+  redo as redoProseMirror,
+  undo as undoProseMirror
+} from "@milkdown/kit/prose/history";
 import { liftListItem, splitListItem } from "@milkdown/kit/prose/schema-list";
 import { AllSelection, EditorState, Plugin, PluginKey, Selection, TextSelection } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet } from "@milkdown/kit/prose/view";
@@ -1139,7 +1144,10 @@ function selectionAfter(transaction, position) {
 
 function dispatchSourceReplacement(view, transaction, afterCommit, sync = false) {
   const mapping = transaction.mapping;
-  view.dispatch(transaction.scrollIntoView());
+  // A temporary source control is one logical editing session. Once it is
+  // committed (including by Save), keep that session distinct from the next
+  // reconstructed control so Undo never merges two separately saved edits.
+  view.dispatch(closeHistory(transaction).scrollIntoView());
   if (sync) {
     if (afterCommit) afterCommit(mapping);
     return;
@@ -3168,6 +3176,23 @@ export function sourceControlInputHistoryStep(history, command, currentSnapshot)
   };
 }
 
+export function sourceControlClipboardEdit(
+  value,
+  selectionStart,
+  selectionEnd,
+  replacement = ""
+) {
+  const source = String(value ?? "");
+  const start = Math.max(0, Math.min(source.length, Number(selectionStart) || 0));
+  const end = Math.max(start, Math.min(source.length, Number(selectionEnd) || 0));
+  const inserted = String(replacement ?? "");
+  return {
+    value: `${source.slice(0, start)}${inserted}${source.slice(end)}`,
+    selectedText: source.slice(start, end),
+    caret: start + inserted.length
+  };
+}
+
 export function extendSourceSelection(sourceSelection, direction) {
   if (!sourceSelection || !["backward", "forward"].includes(direction)) return null;
   const nextHead = sourceOffsetAfterCharacter(
@@ -3887,6 +3912,52 @@ function continuousSourceEditor(
       initialDeletionHistory.nativeRedoIndex = 0;
     }
   });
+  const applyClipboardEdit = (replacement, inputType) => {
+    const before = sourceInputSnapshot();
+    const edit = sourceControlClipboardEdit(
+      editor.value,
+      before.start,
+      before.end,
+      replacement
+    );
+    if (edit.value === editor.value) return edit;
+    pendingSourceInputSnapshot = before;
+    editor.value = edit.value;
+    editor.setSelectionRange(edit.caret, edit.caret, "none");
+    editor.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType,
+      data: inputType === "insertFromPaste" ? String(replacement ?? "") : null
+    }));
+    return edit;
+  };
+  editor.addEventListener("copy", (event) => {
+    if (!event.clipboardData) return;
+    const { selectedText } = sourceControlClipboardEdit(
+      editor.value,
+      editor.selectionStart,
+      editor.selectionEnd
+    );
+    if (!selectedText) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.clipboardData.setData("text/plain", selectedText);
+  });
+  editor.addEventListener("cut", (event) => {
+    if (!event.clipboardData || editor.selectionStart === editor.selectionEnd) return;
+    const selectedText = editor.value.slice(editor.selectionStart, editor.selectionEnd);
+    event.preventDefault();
+    event.stopPropagation();
+    event.clipboardData.setData("text/plain", selectedText);
+    applyClipboardEdit("", "deleteByCut");
+  });
+  editor.addEventListener("paste", (event) => {
+    if (!event.clipboardData) return;
+    const text = event.clipboardData.getData("text/plain");
+    event.preventDefault();
+    event.stopPropagation();
+    applyClipboardEdit(text, "insertFromPaste");
+  });
   editor.addEventListener("mousedown", (event) => {
     if (event.button !== 0) return;
     const caret = caretAtClientX(event.clientX);
@@ -3945,6 +4016,11 @@ function continuousSourceEditor(
         return;
       }
       if (editor.closest(".ProseMirror")?.tetherRunBoundaryHistory?.(command)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (editor.closest(".ProseMirror")?.tetherRunSourceControlHistory?.(command)) {
         event.preventDefault();
         event.stopImmediatePropagation();
         return;
@@ -5173,6 +5249,16 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     return true;
   };
 
+  const runSourceControlHistory = (command) => {
+    const view = editorView;
+    const historyCommand = command === "undo"
+      ? undoProseMirror
+      : command === "redo" ? redoProseMirror : null;
+    if (!view || !historyCommand?.(view.state, view.dispatch)) return false;
+    protectedExactSource = serializeMarkdownDocument(view.state.doc, ctx.get(serializerCtx));
+    return true;
+  };
+
   const restoreExactSelectionAfterHistory = (view) => {
     if (!exactEditHistory.length) return;
     const serializer = ctx.get(serializerCtx);
@@ -5380,6 +5466,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       };
       view.dom.tetherProtectCurrentSource = protectCurrentSource;
       view.dom.tetherRunBoundaryHistory = runBoundaryHistory;
+      view.dom.tetherRunSourceControlHistory = runSourceControlHistory;
       view.dom.tetherReplaceExactSourceSelection = replaceExactSourceSelection;
       const captureExactDeletion = (event) => {
         if (
@@ -5429,6 +5516,9 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           }
           if (view.dom.tetherRunBoundaryHistory === runBoundaryHistory) {
             delete view.dom.tetherRunBoundaryHistory;
+          }
+          if (view.dom.tetherRunSourceControlHistory === runSourceControlHistory) {
+            delete view.dom.tetherRunSourceControlHistory;
           }
           if (view.dom.tetherReplaceExactSourceSelection === replaceExactSourceSelection) {
             delete view.dom.tetherReplaceExactSourceSelection;

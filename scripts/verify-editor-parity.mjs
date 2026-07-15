@@ -15,6 +15,13 @@ const deletedInlineMarkerFixture = "Before *bold** after.\n";
 const literalSourceFixture = "Before \\*literal\\* and &copy; after.\n";
 const codeFixture = "Before.\n\n```js\nconst value = 1;\n```\n\nAfter.\n";
 const listFixture = "Before.\n\n- Alpha\n- Beta\n\nAfter.\n";
+const taskFixture = "- [ ] Alpha\n- [X] Beta\n";
+const tableBlockSource = [
+  "| Alpha | Beta |",
+  "| :---- | ----: |",
+  "| One   | Two  |"
+].join("\n");
+const tableFixture = `${tableBlockSource}\n\nAfter.\n`;
 const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n";
 const codeBlockSource = "```js\nconst value = 1;\n```";
 const codeContent = "const value = 1;";
@@ -305,7 +312,7 @@ async function dispatchPasteText(text) {
 }
 
 async function dispatchCutAndCaptureText() {
-  await evaluate(`document.addEventListener("cut", (event) => {
+  await evaluate(`(document.activeElement || document).addEventListener("cut", (event) => {
     window.__tetherParityCutText = event.clipboardData?.getData("text/plain") ?? null;
   }, { once: true })`);
   const handled = await evaluate(`document.execCommand("cut")`);
@@ -1278,6 +1285,94 @@ async function verifyListItemCutPaste() {
   await stopSession();
 }
 
+async function verifyTaskCheckboxHistory() {
+  const checkedFixture = taskFixture.replace("[ ] Alpha", "[x] Alpha");
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  await startSession(taskFixture, "Alpha");
+  await clickElement(".milkdown-list-item-block .label.unchecked");
+  await waitFor(
+    () => evaluate(`document.querySelectorAll(".milkdown-list-item-block .label.checked").length === 2`),
+    "clicking an unchecked task marker did not render it checked"
+  );
+  await waitForSaveState(false);
+  await save(checkedFixture);
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitFor(
+    () => evaluate(`document.querySelectorAll(".milkdown-list-item-block .label.unchecked").length === 1`),
+    "Undo did not restore the unchecked task marker"
+  );
+  await waitForSaveState(false);
+  await save(taskFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitFor(
+    () => evaluate(`document.querySelectorAll(".milkdown-list-item-block .label.checked").length === 2`),
+    "Redo did not restore the checked task marker"
+  );
+  await waitForSaveState(false);
+  await save(checkedFixture);
+  await stopSession();
+}
+
+async function verifyTableBoundaryCutPasteHistory() {
+  const alphaEnd = tableBlockSource.indexOf("Alpha") + "Alpha".length;
+  const paddingDeletedBlock = `${tableBlockSource.slice(0, alphaEnd)}${
+    tableBlockSource.slice(alphaEnd + 1)
+  }`;
+  const paddingDeletedFixture = tableFixture.replace(tableBlockSource, paddingDeletedBlock);
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  await startSession(tableFixture, "Alpha");
+  await placeCaretInText("Alpha", "Alpha".length);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === tableBlockSource &&
+      state.selectionStart === alphaEnd && state.selectionEnd === alphaEnd + 1 &&
+      state.selectionDirection === "forward",
+    "Shift+Right at a rendered table-cell edge did not select the exact hidden padding byte"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === alphaEnd &&
+      state.selectionEnd === alphaEnd + 2 && state.selectionDirection === "forward" &&
+      state.value.slice(state.selectionStart, state.selectionEnd) === " |",
+    "A second Shift+Right did not extend through the physical table pipe"
+  );
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === alphaEnd &&
+      state.selectionEnd === alphaEnd + 1 && state.selectionDirection === "forward",
+    "Shift+Left did not shrink the table-source selection back to its padding byte"
+  );
+
+  const cutText = await dispatchCutAndCaptureText();
+  if (cutText !== " ") {
+    throw new Error(`Table Cut emitted ${JSON.stringify(cutText)} instead of one padding space`);
+  }
+  await waitForSaveState(false);
+  await save(paddingDeletedFixture);
+
+  if (await dispatchPasteText(" ") == null) {
+    throw new Error("No focused table source editor received the padding Paste event");
+  }
+  await waitForSaveState(false);
+  await save(tableFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(paddingDeletedFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(tableFixture);
+  await stopSession();
+}
+
 async function verifyProseToCodeReplacement() {
   const anchor = "Bef".length;
   const codeStart = codeFixture.indexOf(codeBlockSource);
@@ -1887,6 +1982,16 @@ async function run() {
     console.log("Verified list-item Cut/Paste retains physical markers and history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "task-checkbox-history") {
+    await verifyTaskCheckboxHistory();
+    console.log("Verified rendered task checkboxes retain physical markers and history.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "table-boundary-history") {
+    await verifyTableBoundaryCutPasteHistory();
+    console.log("Verified rendered table boundaries retain physical padding, pipes, and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "closing-fence-replacement") {
     await verifyClosingFenceReplacement();
     console.log("Verified real Electron closing-fence replacement history.");
@@ -1932,6 +2037,8 @@ async function run() {
   await verifyCodeToProseCutPaste();
   await verifyBackwardCodeToProseCutPaste();
   await verifyListItemCutPaste();
+  await verifyTaskCheckboxHistory();
+  await verifyTableBoundaryCutPasteHistory();
   await verifyProseToCodeReplacement();
   await verifyProseToCodeCutPaste();
   await verifyCodeBoundaryDeletion();
