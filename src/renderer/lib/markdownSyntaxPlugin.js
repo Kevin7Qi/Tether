@@ -2809,6 +2809,21 @@ export function sourceControlInitialHistoryChange(history, command, currentValue
   return null;
 }
 
+export function sourceControlInputHistoryStep(history, command, currentSnapshot) {
+  if (!history || !currentSnapshot || !["undo", "redo"].includes(command)) return null;
+  const undo = Array.isArray(history.undo) ? history.undo : [];
+  const redo = Array.isArray(history.redo) ? history.redo : [];
+  const source = command === "undo" ? undo : redo;
+  if (!source.length) return null;
+  const snapshot = source[source.length - 1];
+  return {
+    snapshot,
+    history: command === "undo"
+      ? { undo: source.slice(0, -1), redo: [...redo, currentSnapshot] }
+      : { undo: [...undo, currentSnapshot], redo: source.slice(0, -1) }
+  };
+}
+
 export function extendSourceSelection(sourceSelection, direction) {
   if (!sourceSelection || !["backward", "forward"].includes(direction)) return null;
   const nextHead = sourceOffsetAfterCharacter(
@@ -3222,6 +3237,48 @@ function continuousSourceEditor(
       editor.style.width = `${Math.max(3, Math.min(72, editor.value.length + 1))}ch`;
     }
   };
+  const sourceInputSnapshot = () => ({
+    value: editor.value,
+    start: editor.selectionStart ?? 0,
+    end: editor.selectionEnd ?? editor.selectionStart ?? 0,
+    direction: editor.selectionDirection || "none"
+  });
+  let sourceInputHistory = { undo: [], redo: [] };
+  let pendingSourceInputSnapshot = null;
+  let compositionSourceInputSnapshot = null;
+  let lastSourceInputSnapshot = sourceInputSnapshot();
+  let lastSourceInputType = null;
+  let lastSourceInputAt = 0;
+  const sameSourceInputValue = (left, right) => left?.value === right?.value;
+  const sameSourceInputSelection = (left, right) => Boolean(left && right)
+    && left.start === right.start
+    && left.end === right.end
+    && left.direction === right.direction;
+  const resetSourceInputGroup = () => {
+    lastSourceInputType = null;
+    lastSourceInputAt = 0;
+  };
+  const rememberSourceInputChange = (
+    before,
+    after = sourceInputSnapshot(),
+    groupWithPrevious = false
+  ) => {
+    if (!before || sameSourceInputValue(before, after)) {
+      lastSourceInputSnapshot = after;
+      return;
+    }
+    const previous = sourceInputHistory.undo.at(-1);
+    const reusePreviousSnapshot = (
+      groupWithPrevious && sourceInputHistory.undo.length > 0
+    ) || sameSourceInputValue(previous, before);
+    sourceInputHistory = {
+      undo: reusePreviousSnapshot
+        ? sourceInputHistory.undo
+        : [...sourceInputHistory.undo, before].slice(-100),
+      redo: []
+    };
+    lastSourceInputSnapshot = after;
+  };
   const caretAtClientX = (clientX) => {
     if (isBlock) return null;
     const style = getComputedStyle(editor);
@@ -3338,11 +3395,44 @@ function continuousSourceEditor(
     const start = change.start ?? change.caret;
     const end = change.end ?? change.caret;
     editor.setSelectionRange(start, end, change.direction || "none");
+    pendingSourceInputSnapshot = null;
+    resetSourceInputGroup();
+    lastSourceInputSnapshot = sourceInputSnapshot();
     resize();
     onDraftChange?.(editor.value);
     return true;
   };
-  editor.tetherHandleHistoryCommand = applyInitialHistoryCommand;
+  const applySourceInputHistoryCommand = (command) => {
+    const change = sourceControlInputHistoryStep(
+      sourceInputHistory,
+      command,
+      sourceInputSnapshot()
+    );
+    if (!change) return false;
+    sourceInputHistory = change.history;
+    pendingSourceInputSnapshot = null;
+    resetSourceInputGroup();
+    editor.value = change.snapshot.value;
+    editor.setSelectionRange(
+      change.snapshot.start,
+      change.snapshot.end,
+      change.snapshot.direction || "none"
+    );
+    if (initialDeletionHistory) {
+      initialDeletionHistory.nativeHistoryActive = (
+        initialDeletionHistory.state === "applied"
+        && editor.value !== initialDeletionHistory.afterValue
+      );
+    }
+    lastSourceInputSnapshot = sourceInputSnapshot();
+    resize();
+    onDraftChange?.(editor.value);
+    return true;
+  };
+  const applySourceHistoryCommand = (command) => command === "undo"
+    ? applySourceInputHistoryCommand(command) || applyInitialHistoryCommand(command)
+    : applyInitialHistoryCommand(command) || applySourceInputHistoryCommand(command);
+  editor.tetherHandleHistoryCommand = applySourceHistoryCommand;
 
   handlePointerDragEnd = (event) => {
     if (finished || pointerDragAnchor == null) return;
@@ -3371,7 +3461,59 @@ function continuousSourceEditor(
     finish(true, (mapping) => onPointerDrag(localAnchor, pointer, mapping));
   };
 
+  editor.addEventListener("beforeinput", (event) => {
+    if (["historyUndo", "historyRedo"].includes(event.inputType)) return;
+    if (event.isComposing) {
+      compositionSourceInputSnapshot ||= sourceInputSnapshot();
+      return;
+    }
+    pendingSourceInputSnapshot = sourceInputSnapshot();
+  });
+  editor.addEventListener("compositionstart", () => {
+    compositionSourceInputSnapshot = sourceInputSnapshot();
+  });
+  editor.addEventListener("compositionend", () => {
+    if (!compositionSourceInputSnapshot) return;
+    rememberSourceInputChange(compositionSourceInputSnapshot);
+    resetSourceInputGroup();
+    compositionSourceInputSnapshot = null;
+    pendingSourceInputSnapshot = null;
+  });
   editor.addEventListener("input", (event) => {
+    const currentSnapshot = sourceInputSnapshot();
+    if (event.isComposing) {
+      compositionSourceInputSnapshot ||= pendingSourceInputSnapshot || lastSourceInputSnapshot;
+      pendingSourceInputSnapshot = null;
+      lastSourceInputSnapshot = currentSnapshot;
+    } else if (!["historyUndo", "historyRedo"].includes(event.inputType)) {
+      const before = compositionSourceInputSnapshot
+        || pendingSourceInputSnapshot
+        || lastSourceInputSnapshot;
+      const now = performance.now();
+      const groupableInput = [
+        "insertText",
+        "deleteContentBackward",
+        "deleteContentForward"
+      ].includes(event.inputType);
+      const groupWithPrevious = groupableInput
+        && event.inputType === lastSourceInputType
+        && now - lastSourceInputAt <= 1000
+        && before?.start === before?.end
+        && sameSourceInputSelection(lastSourceInputSnapshot, before);
+      rememberSourceInputChange(
+        before,
+        currentSnapshot,
+        groupWithPrevious
+      );
+      lastSourceInputType = groupableInput ? event.inputType : null;
+      lastSourceInputAt = groupableInput ? now : 0;
+      compositionSourceInputSnapshot = null;
+      pendingSourceInputSnapshot = null;
+    } else {
+      pendingSourceInputSnapshot = null;
+      lastSourceInputSnapshot = currentSnapshot;
+      resetSourceInputGroup();
+    }
     resize();
     onDraftChange?.(editor.value);
     if (!initialDeletionHistory) return;
@@ -3453,7 +3595,7 @@ function continuousSourceEditor(
     if (isEditorHistoryShortcut(event)) {
       const key = String(event.key || "").toLowerCase();
       const command = key === "y" || (key === "z" && event.shiftKey) ? "redo" : "undo";
-      if (applyInitialHistoryCommand(command)) {
+      if (applySourceHistoryCommand(command)) {
         event.preventDefault();
         event.stopPropagation();
         return;
@@ -3597,9 +3739,13 @@ function continuousSourceEditor(
         event.shiftKey
       );
       const direction = editor.selectionDirection || "none";
+      const before = sourceInputSnapshot();
       editor.value = edit.value;
       editor.setSelectionRange(edit.selectionStart, edit.selectionEnd, direction);
+      rememberSourceInputChange(before);
+      resetSourceInputGroup();
       resize();
+      onDraftChange?.(editor.value);
     } else if (!isBlock && event.key === "Enter") {
       event.preventDefault();
       const sourceOffset = editor.selectionStart ?? 0;

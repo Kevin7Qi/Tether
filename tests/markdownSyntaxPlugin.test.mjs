@@ -60,6 +60,7 @@ import {
   sourceCharacterDeletionRange,
   sourceControlInitialDeletion,
   sourceControlInitialHistoryChange,
+  sourceControlInputHistoryStep,
   sourceControlSaveFocus,
   sourceEditCaretOffset,
   sourceLineEndingAt,
@@ -2800,6 +2801,21 @@ test("temporary source controls replay native redo after the activation deletion
     state: "applied",
     nativeRedoIndex: 0
   });
+});
+
+test("temporary source controls replay explicit live-input snapshots", () => {
+  const before = { value: "```js\n```", start: 6, end: 7, direction: "forward" };
+  const after = { value: "```js\nX```", start: 7, end: 7, direction: "none" };
+  const undo = sourceControlInputHistoryStep({ undo: [before], redo: [] }, "undo", after);
+  assert.deepEqual(undo, {
+    snapshot: before,
+    history: { undo: [], redo: [after] }
+  });
+  assert.deepEqual(sourceControlInputHistoryStep(undo.history, "redo", before), {
+    snapshot: after,
+    history: { undo: [before], redo: [] }
+  });
+  assert.equal(sourceControlInputHistoryStep({ undo: [], redo: [] }, "undo", after), null);
 });
 
 test("source selections move vertically by physical source lines and preserve columns", () => {

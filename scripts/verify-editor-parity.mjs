@@ -700,6 +700,39 @@ async function verifyCodeBoundarySelection() {
   await stopSession();
 }
 
+async function verifyClosingFenceReplacement() {
+  const contentEnd = codeBlockSource.indexOf("\n") + 1 + codeContent.length;
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("end");
+  for (let step = 1; step <= 2; step += 1) {
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === codeBlockSource &&
+        state.selectionStart === contentEnd && state.selectionEnd === contentEnd + step &&
+        state.selectionDirection === "forward",
+      `Shift-ArrowRight did not select ${step} closing-fence source character${step === 1 ? "" : "s"}`
+    );
+  }
+  await cdp.send("Input.insertText", { text: "X" });
+  await cdp.send("Input.insertText", { text: "Y" });
+  const replacedSource = `${codeBlockSource.slice(0, contentEnd)}XY${
+    codeBlockSource.slice(contentEnd + 2)
+  }`;
+  const expected = codeFixture.replace(codeBlockSource, replacedSource);
+  await waitForSaveState(false);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(true);
+  await waitFor(
+    () => evaluate(`document.querySelector(".cm-content")?.textContent === ${JSON.stringify(codeContent)} && document.querySelector(".ProseMirror")?.textContent.includes("After.")`),
+    "undo did not restore a closing-fence source replacement"
+  );
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(expected);
+  await stopSession();
+}
+
 async function selectCodeEndIntoFollowingProse() {
   const contentStart = codeBlockSource.indexOf("\n") + 1;
   const contentEnd = contentStart + codeContent.length;
@@ -799,6 +832,54 @@ async function verifyCodeBoundaryDeletion() {
   await waitForSaveState(false);
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(codeFixture.replace(codeBlockSource, closingNewlineDeleted));
+  await stopSession();
+}
+
+async function verifyLayeredCodeSourceHistory() {
+  const contentStart = codeBlockSource.indexOf("\n") + 1;
+  const deletedSource = `${codeBlockSource.slice(0, contentStart - 1)}${
+    codeBlockSource.slice(contentStart)
+  }`;
+  const typedSource = `${deletedSource.slice(0, contentStart - 1)}X${
+    deletedSource.slice(contentStart - 1)
+  }`;
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("start");
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === deletedSource,
+    "boundary deletion did not open its exact fenced source"
+  );
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === typedSource,
+    "typing after a boundary deletion did not update fenced source"
+  );
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === deletedSource,
+    "first Undo did not remove only the live source input"
+  );
+  await waitForSaveState(false);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource,
+    "second Undo did not restore the activation-time boundary deletion"
+  );
+  await waitForSaveState(true);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === deletedSource,
+    "first Redo did not replay the boundary deletion"
+  );
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === typedSource,
+    "second Redo did not replay the live source input"
+  );
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(codeFixture.replace(codeBlockSource, typedSource));
   await stopSession();
 }
 
@@ -923,6 +1004,16 @@ async function run() {
     console.log("Verified real Electron code-to-prose replacement history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "closing-fence-replacement") {
+    await verifyClosingFenceReplacement();
+    console.log("Verified real Electron closing-fence replacement history.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "layered-code-source-history") {
+    await verifyLayeredCodeSourceHistory();
+    console.log("Verified layered fenced-source input and boundary history.");
+    return;
+  }
   await verifyInlineEditing();
   await stopSession();
   await verifyInlineBoundaryNavigation();
@@ -932,9 +1023,11 @@ async function run() {
   await verifyInlineCrossBoundarySelection();
   await verifyCodeBoundaryNavigation();
   await verifyCodeBoundarySelection();
+  await verifyClosingFenceReplacement();
   await verifyCodeToProseSelection();
   await verifyCodeToProseReplacement();
   await verifyCodeBoundaryDeletion();
+  await verifyLayeredCodeSourceHistory();
   await verifyEmptyCodeEditing();
   await verifyCodeEditing();
   console.log("Verified real Electron typing, saving, and history preserve inline and fenced-code Markdown source.");
