@@ -15,6 +15,7 @@ test("file move and delete operations are bridged through guarded main-process A
   const main = fs.readFileSync(path.join(root, "src", "main", "main.cjs"), "utf8");
   const preload = fs.readFileSync(path.join(root, "src", "main", "preload.cjs"), "utf8");
   const app = fs.readFileSync(path.join(root, "src", "renderer", "App.jsx"), "utf8");
+  const panels = fs.readFileSync(path.join(root, "src", "renderer", "components", "panels.jsx"), "utf8");
   assert.match(main, /ipcMain\.handle\("local:moveFile"/);
   assert.match(main, /ipcMain\.handle\("local:deleteFile"/);
   assert.match(main, /assertLocalPathGranted\(payload\.path, \{ markdownFile: true \}\)/);
@@ -29,6 +30,9 @@ test("file move and delete operations are bridged through guarded main-process A
   assert.match(app, /FILE_HAS_UNSAVED_EDITS/);
   assert.match(app, /session\.kind === "local-file"[\s\S]*title: movedPath[\s\S]*rootPath: localDirname\(movedPath\)/);
   assert.match(app, /if \(session\.kind === "local-file"\) return \[\]/);
+  assert.match(app, /onFileActions=\{openFileActions\}/);
+  assert.match(panels, /aria-label=\{`Actions for \$\{entry\.name\}`\}/);
+  assert.match(panels, /onActions\?\.\(event, entry\)/);
 });
 
 test("file dialogs show full wrapping paths instead of truncating them", () => {
@@ -68,6 +72,8 @@ test("macOS menu history commands route into the focused renderer editor", () =>
   assert.match(app, /dispatchEditorHistoryCommand\(command\)/);
   assert.match(app, /scheduleEditorHistoryFocusRestore\(document, historyTarget\)/);
   assert.match(surface, /runHistoryCommand: \(command\) =>[\s\S]*undoProseMirror[\s\S]*redoProseMirror/);
+  assert.match(surface, /if \(!host\?\.isConnected\) return false/);
+  assert.match(surface, /view\.dom\.tetherRunBoundaryHistory\?\.\(command\)/);
 });
 
 test("renderer bundles real italic faces while font synthesis is disabled", () => {
@@ -279,6 +285,12 @@ test("code history changes restore the same embedded editor focus", () => {
   assert.match(surface, /addEventListener\("focusin", rememberCodeFocus, true\)/);
   assert.match(surface, /removeEventListener\("focusin", rememberCodeFocus, true\)/);
   assert.match(surface, /listener\.markdownUpdated\([\s\S]*scheduleCodeFocusRestore\(lastFocusedCodeTarget\)/);
+  assert.match(surface, /tetherRunBoundaryHistory\?\.\(direction\)[\s\S]*settleCodeHistoryFocus\(view, false\)/);
+  assert.match(surface, /if \(lastFocusedCodeTarget && !historyCommandPending\)/);
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /\{ isolatedHistory: \["Backspace", "Delete"\]\.includes\(event\.key\) \}/);
+  assert.match(syntax, /view\.dom\.tetherRunBoundaryHistory = runBoundaryHistory/);
+  assert.match(syntax, /delete view\.dom\.tetherRunBoundaryHistory/);
 });
 
 test("multi-click activation carries word and line selection into raw Markdown controls", () => {

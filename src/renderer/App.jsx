@@ -2131,15 +2131,15 @@ export default function App() {
     openContextMenuAt(rect.right - 184, rect.bottom + 6, documentActionItems());
   }
 
-  function handleFileContextMenu(event, entry) {
-    if (!entry) return;
+  function fileActionItems(entry) {
+    if (!entry) return [];
     const isDir = entry.type === "directory";
     const isRemoteTree = connected;
     const isLocalTree = !connected && documentSource === "local";
     const isSampleTree = !connected && documentSource === "sample";
     const canReadEntry = isRemoteTree || isLocalTree || isSampleTree;
 
-    openContextMenu(event, [
+    return [
       {
         label: isDir ? "Open folder" : "Open",
         icon: isDir ? Folder : File,
@@ -2192,7 +2192,18 @@ export default function App() {
         icon: Copy,
         onSelect: () => copyPathText(entry.path)
       }
-    ]);
+    ];
+  }
+
+  function handleFileContextMenu(event, entry) {
+    if (!entry) return;
+    openContextMenu(event, fileActionItems(entry));
+  }
+
+  function openFileActions(event, entry) {
+    if (!entry) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    openContextMenuAt(rect.right - 184, rect.bottom + 4, fileActionItems(entry));
   }
 
   function handleSourceContextMenu(event, source) {
@@ -3030,6 +3041,7 @@ export default function App() {
               onRefresh={refreshSidebarTree}
               onLoadSample={openLocalSample}
               onFileContextMenu={handleFileContextMenu}
+              onFileActions={openFileActions}
             />
 
           </div>

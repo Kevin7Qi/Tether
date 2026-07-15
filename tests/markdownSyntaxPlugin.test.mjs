@@ -21,6 +21,7 @@ import {
   documentSourceTarget,
   downgradeAtxHeadingAtCursor,
   enclosingCodeBlock,
+  exactSourceHistoryStep,
   exactSourceSelectionAfterUndo,
   exactSourceSelectionAfterHistory,
   extendSourceSelection,
@@ -1566,6 +1567,49 @@ test("exact source history restores the original range on undo and the edited ca
   );
   assert.equal(exactSourceSelectionAfterHistory(history, "Else", "BeX"), null);
   assert.equal(sourceEditCaretOffset(sourceSelection, "BeX"), 3);
+});
+
+test("isolated source history walks adjacent deletions backward and forward exactly", () => {
+  const selections = {
+    a: { anchor: 4, head: 4, fullSource: "A", boundary: 1 },
+    b: { anchor: 3, head: 3, fullSource: "B", boundary: 1 },
+    c: { anchor: 2, head: 2, fullSource: "C", boundary: 1 }
+  };
+  const history = [
+    {
+      beforeSource: "A",
+      afterSource: "B",
+      sourceSelection: selections.a,
+      afterSourceSelection: selections.b,
+      state: "applied"
+    },
+    {
+      beforeSource: "B",
+      afterSource: "C",
+      sourceSelection: selections.b,
+      afterSourceSelection: selections.c,
+      state: "applied"
+    }
+  ];
+
+  const undoC = exactSourceHistoryStep(history, "undo", "C");
+  assert.deepEqual(
+    { index: undoC.index, source: undoC.source, selection: undoC.sourceSelection },
+    { index: 1, source: "B", selection: selections.b }
+  );
+  undoC.entry.state = "undone";
+  const undoB = exactSourceHistoryStep(history, "undo", "B");
+  assert.equal(undoB.index, 0);
+  undoB.entry.state = "undone";
+
+  const redoA = exactSourceHistoryStep(history, "redo", "A");
+  assert.deepEqual(
+    { index: redoA.index, source: redoA.source, selection: redoA.sourceSelection },
+    { index: 0, source: "B", selection: selections.b }
+  );
+  redoA.entry.state = "applied";
+  assert.equal(exactSourceHistoryStep(history, "redo", "B").index, 1);
+  assert.equal(exactSourceHistoryStep(history, "undo", "unrelated"), null);
 });
 
 test("activeMarkdownBlockSyntax leaves table cells visual even inside a blockquote", () => {

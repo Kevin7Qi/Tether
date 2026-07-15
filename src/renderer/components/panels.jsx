@@ -1,10 +1,10 @@
 import { Fragment } from "react";
-import { ArrowRight, ChevronRight, File, FileText, Folder, FolderOpen, Pin, RefreshCw, Settings } from "lucide-react";
+import { ArrowRight, ChevronRight, File, FileText, Folder, FolderOpen, MoreHorizontal, Pin, RefreshCw, Settings } from "lucide-react";
 import { canGoUp, formatSidebarDirectoryPath, localCanGoUp, localParentPath, parentRemotePath } from "../lib/paths.js";
 import { statusTextForLoading } from "../lib/format.js";
 import { hotkey } from "../lib/constants.js";
 
-function FileTreeRows({ entries, depth, expandedDirs, childrenByDir, loadingDirs, selectedPath, onToggle, onOpen, onEnter, onContextMenu }) {
+function FileTreeRows({ entries, depth, expandedDirs, childrenByDir, loadingDirs, selectedPath, onToggle, onOpen, onEnter, onContextMenu, onActions }) {
   return entries.map((entry) => {
     const isDir = entry.type === "directory";
     const expanded = isDir && expandedDirs.has(entry.path);
@@ -13,12 +13,19 @@ function FileTreeRows({ entries, depth, expandedDirs, childrenByDir, loadingDirs
     const unsupported = !isDir && !entry.isMarkdown;
     return (
       <Fragment key={entry.path}>
-        <button
-          className={`file-row tree-row ${entry.path === selectedPath ? "active" : ""} ${entry.name.startsWith(".") ? "muted" : ""} ${unsupported ? "disabled" : ""}`}
+        <div
+          className={`file-row tree-row ${!isDir ? "has-actions" : ""} ${entry.path === selectedPath ? "active" : ""} ${entry.name.startsWith(".") ? "muted" : ""} ${unsupported ? "disabled" : ""}`}
           style={{ paddingLeft: `${indent}px` }}
+          role="button"
+          tabIndex={unsupported ? -1 : 0}
           aria-disabled={unsupported ? "true" : undefined}
           onClick={() => {
             if (unsupported) return;
+            isDir ? onToggle(entry) : onOpen(entry);
+          }}
+          onKeyDown={(event) => {
+            if (unsupported || (event.key !== "Enter" && event.key !== " ")) return;
+            event.preventDefault();
             isDir ? onToggle(entry) : onOpen(entry);
           }}
           onContextMenu={(event) => onContextMenu?.(event, entry)}
@@ -33,9 +40,9 @@ function FileTreeRows({ entries, depth, expandedDirs, childrenByDir, loadingDirs
           {isDir && loadingDirs.has(entry.path) ? (
             <RefreshCw size={12} className="tree-spin" />
           ) : isDir ? (
-            <span
+            <button
+              type="button"
               className="tree-enter"
-              role="button"
               tabIndex={-1}
               title="Open this folder as the root"
               aria-label={`Open ${entry.name} as the root folder`}
@@ -43,11 +50,27 @@ function FileTreeRows({ entries, depth, expandedDirs, childrenByDir, loadingDirs
                 event.stopPropagation();
                 onEnter(entry);
               }}
+              onKeyDown={(event) => event.stopPropagation()}
             >
               <ArrowRight size={13} />
-            </span>
+            </button>
           ) : null}
-        </button>
+          {!isDir && (
+            <button
+              type="button"
+              className="tree-actions"
+              title={`Actions for ${entry.name}`}
+              aria-label={`Actions for ${entry.name}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onActions?.(event, entry);
+              }}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              <MoreHorizontal size={14} />
+            </button>
+          )}
+        </div>
         {expanded && children && children.length > 0 && (
           <FileTreeRows
             entries={children}
@@ -60,6 +83,7 @@ function FileTreeRows({ entries, depth, expandedDirs, childrenByDir, loadingDirs
             onOpen={onOpen}
             onEnter={onEnter}
             onContextMenu={onContextMenu}
+            onActions={onActions}
           />
         )}
         {expanded && children && children.length === 0 && (
@@ -356,7 +380,8 @@ export function FilesPanel({
   onSetSource,
   onRefresh,
   onLoadSample,
-  onFileContextMenu
+  onFileContextMenu,
+  onFileActions
 }) {
   const showLocalTree = !connected && documentSource === "local";
   const canRefreshTree = !sourceLoading && (connected || sampleSourceOpen || showLocalTree);
@@ -494,6 +519,7 @@ export function FilesPanel({
             onOpen={onOpenEntry}
             onEnter={onEnterDir}
             onContextMenu={onFileContextMenu}
+            onActions={onFileActions}
           />
         )}
       </div>

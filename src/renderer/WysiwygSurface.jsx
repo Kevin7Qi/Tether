@@ -379,11 +379,10 @@ export default function WysiwygSurface({
         if (readOnlyRef.current || !["undo", "redo"].includes(command)) return false;
         const host = hostRef.current;
         const activeElement = host?.ownerDocument?.activeElement;
-        const activeCodeEditor = activeElement?.closest?.(".cm-editor");
-        // Crepe may portal a code node view beside the React host even though
-        // it belongs to this ProseMirror document. Treat that focused editor as
-        // part of the surface for canonical history routing.
-        if (!host?.contains(activeElement) && !activeCodeEditor) return false;
+        // editorApiRef belongs to the active document surface. macOS clears
+        // activeElement to BODY before native menu callbacks, so mountedness is
+        // the stable ownership signal for document history.
+        if (!host?.isConnected) return false;
         if (
           activeElement?.matches?.("input, textarea")
           && !activeElement.closest?.(".cm-editor")
@@ -391,8 +390,11 @@ export default function WysiwygSurface({
         const crepe = crepeRef.current;
         if (!crepe) return false;
         const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
+        if (view.dom.tetherRunBoundaryHistory?.(command)) return true;
         const historyCommand = command === "undo" ? undoProseMirror : redoProseMirror;
-        return Boolean(historyCommand(view.state, view.dispatch));
+        const handled = Boolean(historyCommand(view.state, view.dispatch));
+        if (handled) view.dom.tetherProtectCurrentSource?.();
+        return handled;
       }
     };
     return () => {
@@ -856,6 +858,18 @@ export default function WysiwygSurface({
       if (isSourceInputComposing(event)) return;
       const target = event.target instanceof Element ? event.target : null;
       const codeView = tetherCodeViewForElement(target);
+      if (codeView && isEditorHistoryShortcut(event)) {
+        const direction = codeOuterHistoryDirection(event);
+        const view = direction
+          ? crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx))
+          : null;
+        if (direction && view?.dom.tetherRunBoundaryHistory?.(direction)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          settleCodeHistoryFocus(view, false);
+          return;
+        }
+      }
       if (codeView && codeSourceOnlyHistory && isEditorHistoryShortcut(event)) {
         const block = target?.closest(".milkdown-code-block");
         const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
@@ -887,6 +901,8 @@ export default function WysiwygSurface({
               event.preventDefault();
               event.stopImmediatePropagation();
               codeSourceOnlyHistory.state = direction === "undo" ? "undone" : "applied";
+              view.dom.tetherProtectCurrentSource?.();
+              settleCodeHistoryFocus(view);
               return;
             }
           }
@@ -904,11 +920,15 @@ export default function WysiwygSurface({
         // focused code UI. Prefer its history whenever it has an entry; this
         // keeps source-spanning edits reversible after they rebuild the node.
         // If it has nothing to undo/redo, leave the shortcut to CodeMirror.
-        if (view && command?.(view.state, view.dispatch)) {
+        const handledOuterHistory = Boolean(view && command?.(view.state, view.dispatch));
+        if (handledOuterHistory) {
           event.preventDefault();
           event.stopImmediatePropagation();
+          view.dom.tetherProtectCurrentSource?.();
+          settleCodeHistoryFocus(view);
           return;
         }
+        historyCommandPending = false;
       }
       if (
         codeView
@@ -1128,6 +1148,7 @@ export default function WysiwygSurface({
     let pendingTableDrag = null;
     let codeDragFinishFrame = 0;
     let historyFocusFrame = 0;
+    let historyCommandPending = false;
     let lastFocusedCodeTarget = null;
     const codeFocusTargetFromElement = (targetElement) => {
       const originalCodeView = tetherCodeViewForElement(targetElement);
@@ -1208,13 +1229,44 @@ export default function WysiwygSurface({
       const target = event.target instanceof Element ? event.target : null;
       lastFocusedCodeTarget = codeFocusTargetFromElement(target);
     };
+    const settleCodeHistoryFocus = (view, restoreCodeFocus = true) => {
+      historyCommandPending = false;
+      if (historyFocusFrame) {
+        window.cancelAnimationFrame(historyFocusFrame);
+        historyFocusFrame = 0;
+      }
+      if (!restoreCodeFocus) {
+        lastFocusedCodeTarget = null;
+        view.focus();
+        return;
+      }
+      const selectedCode = enclosingCodeBlock(view.state.doc, view.state.selection.head);
+      if (selectedCode) {
+        const head = Math.max(
+          0,
+          Math.min(selectedCode.node.content.size, view.state.selection.head - selectedCode.position - 1)
+        );
+        const codeTarget = { position: selectedCode.position, head };
+        lastFocusedCodeTarget = codeTarget;
+        scheduleCodeFocusRestore(codeTarget);
+        return;
+      }
+      // A source-spanning Undo can restore the caret outside the code block.
+      // In that case the exact-source history selection owns focus; reviving
+      // the outgoing CodeMirror would replay its stale pre-Undo value.
+      lastFocusedCodeTarget = null;
+      view.focus();
+    };
     const restoreFocusAfterHistory = (event) => {
       if (readOnlyRef.current || !isEditorHistoryShortcut(event)) return;
       const target = event.target;
       if (!(target instanceof Node) || !host.contains(target)) return;
       const targetElement = target instanceof Element ? target : target.parentElement;
       const codeTarget = codeFocusTargetFromElement(targetElement) || lastFocusedCodeTarget;
-      if (codeTarget) scheduleCodeFocusRestore(codeTarget);
+      if (codeTarget) {
+        lastFocusedCodeTarget = codeTarget;
+        historyCommandPending = true;
+      }
     };
     const beginCodeDragSelection = (event) => {
       if (readOnlyRef.current || event.button !== 0) return;
@@ -1574,7 +1626,9 @@ export default function WysiwygSurface({
           baselineSourceRef.current
         );
         lastMarkdownRef.current = markdown;
-        if (lastFocusedCodeTarget) scheduleCodeFocusRestore(lastFocusedCodeTarget);
+        if (lastFocusedCodeTarget && !historyCommandPending) {
+          scheduleCodeFocusRestore(lastFocusedCodeTarget);
+        }
         if (applyingExternalRef.current) return;
         if (!hasUserChangeRef.current && markdown === baselineMarkdownRef.current) return;
         const isBaselineDocument = Boolean(currentDoc && baselineDocRef.current?.eq(currentDoc));

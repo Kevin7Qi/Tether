@@ -1549,6 +1549,10 @@ textarea:focus-visible,
   min-height: 27px;
 }
 
+.tree-row.has-actions {
+  padding-right: 30px;
+}
+
 .tree-spin {
   flex: none;
   color: var(--accent);
@@ -1570,8 +1574,10 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   justify-content: center;
+  border: 0;
   border-radius: 3px;
   background: transparent;
+  padding: 0;
   color: var(--ink3);
   opacity: 0;
   cursor: pointer;
@@ -1602,6 +1608,51 @@ textarea:focus-visible,
 
 .tree-enter:active {
   transform: translateY(-50%) scale(0.86);
+}
+
+.file-row .tree-actions {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  width: 21px;
+  min-width: 21px;
+  min-height: 21px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  padding: 0;
+  color: var(--ink3);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease, color 120ms ease, transform 80ms ease;
+}
+
+.tree-row.has-actions:hover .tree-actions,
+.tree-row.has-actions:focus-within .tree-actions {
+  opacity: 1;
+}
+
+.file-row:hover:not(.disabled) .tree-actions svg,
+.file-row .tree-actions svg {
+  color: var(--ink3);
+}
+
+.file-row .tree-actions:hover svg,
+.file-row .tree-actions:focus-visible svg {
+  color: var(--accent);
+}
+
+.tree-actions:active {
+  transform: translateY(-50%) scale(0.86);
+}
+
+.file-row.has-actions:hover::after,
+.file-row.has-actions:focus-within::after {
+  opacity: 0;
 }
 
 .tree-empty {

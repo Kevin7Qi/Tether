@@ -1973,6 +1973,34 @@ export function exactSourceSelectionAfterHistory(history, beforeHistorySource, a
   return null;
 }
 
+export function exactSourceHistoryStep(history, command, currentSource) {
+  if (!Array.isArray(history) || !["undo", "redo"].includes(command)) return null;
+  if (command === "undo") {
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const entry = history[index];
+      if (entry?.state !== "applied" || entry.afterSource !== currentSource) continue;
+      return {
+        entry,
+        index,
+        source: entry.beforeSource,
+        sourceSelection: entry.sourceSelection
+      };
+    }
+    return null;
+  }
+  for (let index = 0; index < history.length; index += 1) {
+    const entry = history[index];
+    if (entry?.state !== "undone" || entry.beforeSource !== currentSource) continue;
+    return {
+      entry,
+      index,
+      source: entry.afterSource,
+      sourceSelection: entry.afterSourceSelection
+    };
+  }
+  return null;
+}
+
 export function sourceEditCaretOffset(sourceSelection, afterSource) {
   if (!sourceSelection || typeof afterSource !== "string") return null;
   const beforeSource = sourceSelection.fullSource;
@@ -4295,6 +4323,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
   let pendingActivation = false;
   let activeSourceControl = null;
   const exactEditHistory = [];
+  const boundaryEditHistory = [];
   let exactHistoryFrame = 0;
   let exactSourceDispatchDepth = 0;
   let protectedExactSource = null;
@@ -4339,7 +4368,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     transaction,
     historySelection,
     editSelection,
-    requestedAfterSelection = null
+    requestedAfterSelection = null,
+    { isolatedHistory = false } = {}
   ) => {
     const serializer = ctx.get(serializerCtx);
     const afterSource = serializer(transaction.doc);
@@ -4368,6 +4398,19 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       transaction,
       preserveSourcePosition ? afterSelection : null
     );
+    if (isolatedHistory && historySelection && afterSelection) {
+      const firstUndone = boundaryEditHistory.findIndex((entry) => entry.state === "undone");
+      if (firstUndone >= 0) boundaryEditHistory.splice(firstUndone);
+      boundaryEditHistory.push({
+        beforeSource: historySelection.fullSource,
+        afterSource,
+        sourceSelection: { ...historySelection },
+        afterSourceSelection: { ...afterSelection },
+        state: "applied"
+      });
+      if (boundaryEditHistory.length > 20) boundaryEditHistory.shift();
+      transaction.setMeta("addToHistory", false);
+    }
     transaction.setMeta(markdownSyntaxKey, { action: "exact-source-edit" });
     // The browser can report a stale DOM reconciliation after a virtual gap
     // edit moves focus out of an embedded CodeMirror. Remember the source
@@ -4392,6 +4435,47 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       )
     ) return;
     focusExactEditSelection(view);
+  };
+
+  const runBoundaryHistory = (command) => {
+    const view = editorView;
+    if (!view) return false;
+    const serializer = ctx.get(serializerCtx);
+    const currentSource = serializer(view.state.doc);
+    const step = exactSourceHistoryStep(boundaryEditHistory, command, currentSource);
+    if (!step?.sourceSelection || typeof step.source !== "string") return false;
+    const parsed = ctx.get(parserCtx)(step.source);
+    if (!parsed) return false;
+    let transaction = view.state.tr.replace(
+      0,
+      view.state.doc.content.size,
+      new Slice(parsed.content, 0, 0)
+    );
+    for (const [name, value] of Object.entries(parsed.attrs || {})) {
+      transaction = transaction.setDocAttribute(name, value);
+    }
+    const sourceSelection = {
+      ...step.sourceSelection,
+      fullSource: step.source
+    };
+    const boundary = Math.max(
+      0,
+      Math.min(Number(sourceSelection.boundary) || 0, transaction.doc.content.size)
+    );
+    transaction = transaction
+      .setSelection(markdownSourceSelectionAt(transaction.doc, boundary))
+      .setMeta("addToHistory", false)
+      .setMeta(markdownSyntaxKey, { action: "source-selection", sourceSelection });
+    protectedExactSource = step.source;
+    exactSourceDispatchDepth += 1;
+    try {
+      view.dispatch(transaction.scrollIntoView());
+    } finally {
+      exactSourceDispatchDepth -= 1;
+    }
+    step.entry.state = command === "undo" ? "undone" : "applied";
+    view.focus();
+    return true;
   };
 
   const restoreExactSelectionAfterHistory = (view) => {
@@ -4555,6 +4639,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     },
     view(view) {
       editorView = view;
+      const protectCurrentSource = () => {
+        const currentView = editorView || view;
+        protectedExactSource = ctx.get(serializerCtx)(currentView.state.doc);
+      };
+      view.dom.tetherProtectCurrentSource = protectCurrentSource;
+      view.dom.tetherRunBoundaryHistory = runBoundaryHistory;
       const captureSourceHandoff = (event) => {
         if (!view.editable) return;
         protectedExactSource = null;
@@ -4579,6 +4669,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         },
         destroy() {
           view.dom.removeEventListener("mousedown", captureSourceHandoff, true);
+          if (view.dom.tetherProtectCurrentSource === protectCurrentSource) {
+            delete view.dom.tetherProtectCurrentSource;
+          }
+          if (view.dom.tetherRunBoundaryHistory === runBoundaryHistory) {
+            delete view.dom.tetherRunBoundaryHistory;
+          }
           editorView = null;
         }
       };
@@ -4961,7 +5057,9 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 _view,
                 transaction,
                 exactSelection,
-                deletionSelection || exactSelection
+                deletionSelection || exactSelection,
+                null,
+                { isolatedHistory: ["Backspace", "Delete"].includes(event.key) }
               );
               return true;
             }
@@ -5072,7 +5170,9 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 _view,
                 edit.transaction,
                 edit.beforeSelection,
-                edit.deletionSelection
+                edit.deletionSelection,
+                null,
+                { isolatedHistory: true }
               );
               return true;
             }
