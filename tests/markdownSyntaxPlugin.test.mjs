@@ -13,6 +13,7 @@ import {
   blockSourceBoundarySelectionDirection,
   blockSourceVerticalDirection,
   completedInlineMarkdownSource,
+  collapsedDocumentSourceSelection,
   continuousMarkdownSource,
   documentSelectionFromCodeBoundary,
   documentSourceUnitStartOffset,
@@ -129,6 +130,36 @@ const literalSchema = new Schema({
     },
     text: {}
   }
+});
+
+const emptyDocumentSchema = new Schema({
+  nodes: {
+    doc: {
+      content: "paragraph+",
+      attrs: { markdownBlockGaps: { default: null } }
+    },
+    paragraph: {
+      content: "text*",
+      attrs: { tetherSyntheticTrailing: { default: false } }
+    },
+    text: {}
+  }
+});
+
+test("a synthetic empty document exposes physical source offset zero for paste", () => {
+  const doc = emptyDocumentSchema.node("doc", null, [
+    emptyDocumentSchema.node("paragraph", { tetherSyntheticTrailing: true })
+  ]);
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, 1)
+  });
+  assert.deepEqual(collapsedDocumentSourceSelection(state, () => ""), {
+    anchor: 0,
+    head: 0,
+    fullSource: "",
+    boundary: 1
+  });
 });
 
 test("saving a temporary source control captures its logical unit and selection", () => {

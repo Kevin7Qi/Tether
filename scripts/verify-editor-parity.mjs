@@ -25,6 +25,7 @@ const tableFixture = `${tableBlockSource}\n\nAfter.\n`;
 const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n";
 const codeBlockSource = "```js\nconst value = 1;\n```";
 const codeContent = "const value = 1;";
+const selectAllCodeFixture = `\n${codeFixture}\n`;
 const firstCodeContent = "const first = 1;";
 const secondCodeContent = "second = 2";
 const twoCodeFixture = [
@@ -1131,6 +1132,64 @@ async function verifyCodeDocumentJumpReplacement() {
   await stopSession();
 }
 
+async function verifyCodeSelectAllEditing() {
+  const replacement = "Replacement";
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+  const selectAllFromCode = async () => {
+    await focusCodeBoundary("end");
+    await dispatchKey({ key: "a", code: "KeyA", virtualKeyCode: 65, modifiers: 4 });
+    await delay(120);
+  };
+
+  await startSession(selectAllCodeFixture, codeContent);
+  await selectAllFromCode();
+  const selectAllState = await evaluate(`(() => ({
+    activeElement: document.activeElement?.className || document.activeElement?.tagName || null,
+    domSelection: getSelection()?.toString() || "",
+    codeText: document.querySelector(".cm-content")?.textContent ?? null,
+    codeSelectionCount: document.querySelectorAll(".cm-selectionBackground").length,
+    exactMarkerText: document.querySelector(".tether-source-newline-selection")?.textContent || null
+  }))()`);
+  const cutText = await dispatchCutAndCaptureText();
+  if (cutText !== selectAllCodeFixture) {
+    throw new Error(`Code-focused Select All Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(selectAllCodeFixture)}; selection state: ${JSON.stringify(selectAllState)}`);
+  }
+  await waitFor(
+    () => evaluate(`!document.querySelector(".milkdown-code-block")`),
+    `Code-focused Select All Cut retained a code block; before: ${JSON.stringify(selectAllState)}`
+  );
+  await waitForSaveState(false);
+  await save("");
+  if (await dispatchPasteText(selectAllCodeFixture) == null) {
+    throw new Error("No focused document editor received the Select All Paste event");
+  }
+  await waitForSaveState(false);
+  await save(selectAllCodeFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save("");
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(selectAllCodeFixture);
+  await stopSession();
+
+  await startSession(selectAllCodeFixture, codeContent);
+  await selectAllFromCode();
+  await cdp.send("Input.insertText", { text: replacement });
+  await waitForSaveState(false);
+  await save(replacement);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(selectAllCodeFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(replacement);
+  await stopSession();
+}
+
 async function verifyClosingFenceReplacement() {
   const contentEnd = codeBlockSource.indexOf("\n") + 1 + codeContent.length;
   await startSession(codeFixture, codeContent);
@@ -2218,6 +2277,11 @@ async function run() {
     console.log("Verified code document-jump replacement retains exact terminal source and history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "code-select-all-editing") {
+    await verifyCodeSelectAllEditing();
+    console.log("Verified CodeMirror Select All edits the exact physical Markdown document.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-block-layout") {
     await verifyCodeBlockLayout();
     console.log("Verified compact, balanced single-line fenced-code spacing.");
@@ -2357,6 +2421,7 @@ async function run() {
   await verifyCodeBoundarySelection();
   await verifyCodeJumpNavigation();
   await verifyCodeDocumentJumpReplacement();
+  await verifyCodeSelectAllEditing();
   await verifyClosingFenceReplacement();
   await verifyCodeToProseSelection();
   await verifyCodeToProseReplacement();

@@ -10,7 +10,7 @@ import { liftListItem, splitListItem } from "@milkdown/kit/prose/schema-list";
 import { AllSelection, EditorState, Plugin, PluginKey, Selection, TextSelection } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet } from "@milkdown/kit/prose/view";
 import { $prose, $shortcut } from "@milkdown/kit/utils";
-import { documentGaps } from "./markdownDocument.js";
+import { documentGaps, normalizeEmptyMarkdownDocument } from "./markdownDocument.js";
 import { tableCellSourceOffsetAtPosition } from "./markdownTable.js";
 import {
   adjacentCodeSourceOffset,
@@ -2940,6 +2940,18 @@ export function collapsedDocumentSourceSelection(
     || typeof serializer !== "function"
   ) return null;
   const documentSource = documentSourceSegments(state, serializer);
+  if (
+    documentSource?.fullSource === ""
+    && documentSource.segments.length === 0
+    && !selection.$from.parent.content.size
+  ) {
+    return {
+      anchor: 0,
+      head: 0,
+      fullSource: "",
+      boundary: selection.head
+    };
+  }
   const directSegment = documentSource?.segments.find(({ position, node }) => (
     node === selection.$from.parent
     && selection.head > position
@@ -3021,13 +3033,13 @@ export function plainTextMarkdownSourceToken(state, direction, serializer = null
 export function activateDocumentSourceSelection(view, selection, serializer) {
   const sourceSelection = sourceSelectionFromDocumentSelection(view.state, serializer, selection);
   if (!sourceSelection) return false;
-  view.dispatch(
+  dispatchFocusedSourceSelection(
+    view,
     view.state.tr
       .setSelection(selection)
       .setMeta(markdownSyntaxKey, { action: "source-selection", sourceSelection })
       .scrollIntoView()
   );
-  view.focus();
   return true;
 }
 
@@ -3318,7 +3330,7 @@ export function replaceSourceSelectionTransaction(
   const from = Math.min(sourceSelection.anchor, sourceSelection.head);
   const to = Math.max(sourceSelection.anchor, sourceSelection.head);
   const nextSource = `${sourceSelection.fullSource.slice(0, from)}${replacement}${sourceSelection.fullSource.slice(to)}`;
-  const parsed = parser(nextSource);
+  const parsed = normalizeEmptyMarkdownDocument(parser(nextSource), nextSource);
   let transaction = state.tr.replace(
     0,
     state.doc.content.size,
@@ -5222,7 +5234,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     const currentSource = serializeMarkdownDocument(view.state.doc, serializer);
     const step = exactSourceHistoryStep(boundaryEditHistory, command, currentSource);
     if (!step?.sourceSelection || typeof step.source !== "string") return false;
-    const parsed = ctx.get(parserCtx)(step.source);
+    const parsed = normalizeEmptyMarkdownDocument(
+      ctx.get(parserCtx)(step.source),
+      step.source
+    );
     if (!parsed) return false;
     let transaction = view.state.tr.replace(
       0,

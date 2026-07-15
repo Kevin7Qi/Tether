@@ -1129,11 +1129,15 @@ export default function WysiwygSurface({
       }
       if (codeView && isEditorSelectAllShortcut(event)) {
         const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
-        if (!view) return;
+        const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+        if (!view || !serializer) return;
         event.preventDefault();
         event.stopImmediatePropagation();
-        view.dispatch(view.state.tr.setSelection(new AllSelection(view.state.doc)));
-        view.focus();
+        activateDocumentSourceSelection(
+          view,
+          new AllSelection(view.state.doc),
+          serializer
+        );
         return;
       }
       const selectionDirection = codeView

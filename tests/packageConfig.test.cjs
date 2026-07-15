@@ -324,6 +324,7 @@ test("extended CodeMirror selections continue through physical fence source", ()
   assert.match(surface, /codeContentSourcePosition\(codeBlock\.position, selection\.anchor\)/);
   assert.match(surface, /if \(!codeSelection\.empty\)[\s\S]*sourceSelectionRangeAfterMotion\(/);
   assert.match(surface, /initialSourceSelection[\s\S]*activateMarkdownSourceAt/);
+  assert.match(surface, /isEditorSelectAllShortcut\(event\)[\s\S]*activateDocumentSourceSelection\([\s\S]*new AllSelection/);
 });
 
 test("code history changes restore the same embedded editor focus", () => {
@@ -358,6 +359,8 @@ test("exact source selections capture copy and cut before DOM reconciliation", (
   assert.match(syntax, /removeEventListener\("cut", captureExactClipboard, true\)/);
   assert.match(syntax, /if \(capturedExactClipboardEvents\.has\(event\)\) return true/);
   assert.match(syntax, /queueMicrotask\(\(\) => \{[\s\S]*dispatchExactEdit\(/);
+  assert.match(syntax, /normalizeEmptyMarkdownDocument\(parser\(nextSource\), nextSource\)/);
+  assert.match(syntax, /normalizeEmptyMarkdownDocument\([\s\S]*ctx\.get\(parserCtx\)\(step\.source\),[\s\S]*step\.source/);
 });
 
 test("multi-click activation carries word and line selection into raw Markdown controls", () => {
