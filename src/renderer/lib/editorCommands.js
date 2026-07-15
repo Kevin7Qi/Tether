@@ -65,10 +65,18 @@ export function dispatchEditorHistoryCommand(
     return Boolean(documentRef.execCommand?.(command));
   }
 
-  const editorTarget = activeElement?.closest?.(".cm-editor")?.querySelector?.(".cm-content")
-    || activeElement?.closest?.(".ProseMirror")
+  const focusedCodeTarget = activeElement?.closest?.(".cm-editor")?.querySelector?.(".cm-content")
     || documentRef.querySelector?.(".cm-editor.cm-focused .cm-content")
+    || null;
+  // The ProseMirror document is the canonical history owner. Dispatching a
+  // native menu accelerator back into CodeMirror can consume an exact
+  // source-spanning edit in the rebuilt code node's unrelated local history.
+  // Route the command through the document shell, then restore the code caret.
+  const editorTarget = activeElement?.closest?.(".ProseMirror")
+    || focusedCodeTarget?.closest?.(".ProseMirror")
     || documentRef.querySelector?.(".ProseMirror-focused")
+    || documentRef.querySelector?.(".ProseMirror")
+    || focusedCodeTarget
     || activeElement;
   if (!editorTarget?.dispatchEvent) return false;
 
@@ -77,6 +85,6 @@ export function dispatchEditorHistoryCommand(
   editorTarget.focus?.({ preventScroll: true });
   const event = new KeyboardEventConstructor("keydown", shortcut);
   editorTarget.dispatchEvent(event);
-  scheduleEditorHistoryFocusRestore(documentRef, editorTarget);
+  scheduleEditorHistoryFocusRestore(documentRef, focusedCodeTarget || editorTarget);
   return event.defaultPrevented;
 }

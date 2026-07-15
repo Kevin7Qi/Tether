@@ -64,6 +64,84 @@ test("editor history commands dispatch through the active structured editor", ()
   assert.deepEqual(focusOptions, { preventScroll: true });
 });
 
+test("code-focused menu history dispatches through the canonical document shell", () => {
+  let dispatchedTarget = null;
+  class FakeKeyboardEvent {
+    constructor(type, options) {
+      this.type = type;
+      Object.assign(this, options);
+      this.defaultPrevented = false;
+    }
+
+    preventDefault() {
+      this.defaultPrevented = true;
+    }
+  }
+  const shell = {
+    closest: (selector) => selector === ".ProseMirror" ? shell : null,
+    dispatchEvent: (event) => {
+      dispatchedTarget = shell;
+      event.preventDefault();
+    },
+    focus: () => {}
+  };
+  const codeEditor = { querySelector: () => codeContent };
+  const codeContent = {
+    closest: (selector) => {
+      if (selector === ".cm-editor") return codeEditor;
+      if (selector === ".ProseMirror") return shell;
+      return null;
+    },
+    matches: () => false
+  };
+  const documentRef = {
+    activeElement: codeContent,
+    defaultView: {
+      KeyboardEvent: FakeKeyboardEvent,
+      setTimeout: () => 1
+    },
+    querySelector: () => null,
+    querySelectorAll: () => [codeEditor]
+  };
+
+  assert.equal(dispatchEditorHistoryCommand("undo", documentRef, "MacIntel"), true);
+  assert.equal(dispatchedTarget, shell);
+});
+
+test("ported code node views fall back to the document shell before local history", () => {
+  let dispatchedTarget = null;
+  class FakeKeyboardEvent {
+    constructor(type, options) {
+      Object.assign(this, { type, defaultPrevented: false }, options);
+    }
+
+    preventDefault() {
+      this.defaultPrevented = true;
+    }
+  }
+  const shell = {
+    dispatchEvent: (event) => {
+      dispatchedTarget = shell;
+      event.preventDefault();
+    },
+    focus: () => {}
+  };
+  const codeEditor = { querySelector: () => codeContent };
+  const codeContent = {
+    closest: (selector) => selector === ".cm-editor" ? codeEditor : null,
+    matches: () => false
+  };
+  const documentRef = {
+    activeElement: codeContent,
+    defaultView: { KeyboardEvent: FakeKeyboardEvent, setTimeout: () => 1 },
+    querySelector: (selector) => selector === ".ProseMirror" ? shell : null,
+    querySelectorAll: () => [codeEditor]
+  };
+
+  assert.equal(dispatchEditorHistoryCommand("undo", documentRef, "MacIntel"), true);
+  assert.equal(dispatchedTarget, shell);
+});
+
 test("plain text controls retain Chromium's native undo history", () => {
   const calls = [];
   const documentRef = {

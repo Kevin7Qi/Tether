@@ -18,6 +18,12 @@ export function isEditorHistoryShortcut(event) {
   return key === "z" || (key === "y" && !event.shiftKey);
 }
 
+export function codeOuterHistoryDirection(event) {
+  if (!isEditorHistoryShortcut(event)) return null;
+  const key = String(event.key || "").toLowerCase();
+  return key === "y" || (key === "z" && event.shiftKey) ? "redo" : "undo";
+}
+
 export function shouldRestoreEditorHistoryFocus(activeElement, editorHost) {
   const ownerDocument = editorHost?.ownerDocument;
   return !activeElement

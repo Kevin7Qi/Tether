@@ -5406,12 +5406,20 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               direction
             );
             if (exactSelection) {
-              const selection = textSelectionAcrossBoundary(
-                editorView.state,
+              // The physical source range may begin inside a custom node view
+              // and end in the adjacent document block. ProseMirror cannot
+              // represent that hidden half safely as a DOM TextSelection: on a
+              // fenced block the browser promotes it to a selection of the
+              // entire node view, including language and Copy controls. Keep a
+              // direction-biased, collapsed document caret beside the unit;
+              // the plugin metadata remains the authoritative source range.
+              const selection = markdownGapSelectionAt(
+                editorView.state.doc,
                 anchor,
                 sourceDirection
               );
-              editorView.dispatch(
+              dispatchFocusedSourceSelection(
+                editorView,
                 editorView.state.tr
                   .setSelection(selection)
                   .setMeta(markdownSyntaxKey, {
@@ -5423,7 +5431,6 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                   })
                   .scrollIntoView()
               );
-              focusProseMirrorRoot(editorView);
               return;
             }
           }

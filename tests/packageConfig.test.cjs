@@ -26,6 +26,7 @@ test("macOS menu history commands route into the focused renderer editor", () =>
   const main = fs.readFileSync(path.join(root, "src", "main", "main.cjs"), "utf8");
   const preload = fs.readFileSync(path.join(root, "src", "main", "preload.cjs"), "utf8");
   const app = fs.readFileSync(path.join(root, "src", "renderer", "App.jsx"), "utf8");
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
   assert.doesNotMatch(main, /role:\s*"editMenu"/);
   assert.match(main, /accelerator:\s*"CmdOrCtrl\+Z"/);
   assert.match(main, /accelerator:\s*"Shift\+CmdOrCtrl\+Z"/);
@@ -33,8 +34,10 @@ test("macOS menu history commands route into the focused renderer editor", () =>
   assert.match(main, /webContents\.send\("editor:command", command\)/);
   assert.match(preload, /onEditorCommand: \(callback\) => subscribe\("editor:command", callback\)/);
   assert.match(app, /remoteApi\.onEditorCommand\(\(command\) =>/);
-  assert.match(app, /window\.setTimeout\(\(\) =>[\s\S]*dispatchEditorHistoryCommand\(command\);[\s\S]*\}, 50\)/);
+  assert.match(app, /window\.setTimeout\(\(\) =>[\s\S]*runHistoryCommand\?\.\(command\)[\s\S]*dispatchEditorHistoryCommand\(command\);[\s\S]*\}, 50\)/);
   assert.match(app, /dispatchEditorHistoryCommand\(command\)/);
+  assert.match(app, /scheduleEditorHistoryFocusRestore\(document, historyTarget\)/);
+  assert.match(surface, /runHistoryCommand: \(command\) =>[\s\S]*undoProseMirror[\s\S]*redoProseMirror/);
 });
 
 test("renderer bundles real italic faces while font synthesis is disabled", () => {
@@ -364,6 +367,25 @@ test("source gap handoffs bias the hidden caret in the traversal direction", () 
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /function markdownGapSelectionAt\([\s\S]*direction === "backward" \? -1 : 1/);
   assert.match(syntax, /markdownGapSelectionAt\([\s\S]*boundaryGap\.position,[\s\S]*direction/);
+});
+
+test("source selections leaving temporary controls transfer focus before dispatch", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  const selectFromBoundary = syntax.slice(
+    syntax.indexOf("const selectFromBoundary ="),
+    syntax.indexOf("const jumpFromSource =")
+  );
+  const exactBranchStart = selectFromBoundary.indexOf("if (exactSelection) {");
+  const exactBranch = selectFromBoundary.slice(
+    exactBranchStart,
+    selectFromBoundary.indexOf("return;", exactBranchStart)
+  );
+  assert.match(
+    exactBranch,
+    /if \(exactSelection\) \{[\s\S]*markdownGapSelectionAt\([\s\S]*dispatchFocusedSourceSelection\([\s\S]*action: "source-selection"/
+  );
+  assert.doesNotMatch(exactBranch, /textSelectionAcrossBoundary\(/);
+  assert.doesNotMatch(exactBranch, /editorView\.dispatch\(/);
 });
 
 test("active blockquotes expose their source marker and use structural Backspace semantics", () => {

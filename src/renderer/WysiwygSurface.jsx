@@ -31,6 +31,7 @@ import {
   codeDragDocumentRange,
   codeLineEndSourceOffset,
   codeLineStartSourceOffset,
+  codeOuterHistoryDirection,
   codeTabEdit,
   codeSourceOnlyHistoryDirection,
   documentDragIntoCodeRange,
@@ -282,6 +283,25 @@ export default function WysiwygSurface({
         }
         hasUserChangeRef.current = true;
         return markdown;
+      },
+      runHistoryCommand: (command) => {
+        if (readOnlyRef.current || !["undo", "redo"].includes(command)) return false;
+        const host = hostRef.current;
+        const activeElement = host?.ownerDocument?.activeElement;
+        const activeCodeEditor = activeElement?.closest?.(".cm-editor");
+        // Crepe may portal a code node view beside the React host even though
+        // it belongs to this ProseMirror document. Treat that focused editor as
+        // part of the surface for canonical history routing.
+        if (!host?.contains(activeElement) && !activeCodeEditor) return false;
+        if (
+          activeElement?.matches?.("input, textarea")
+          && !activeElement.closest?.(".cm-editor")
+        ) return false;
+        const crepe = crepeRef.current;
+        if (!crepe) return false;
+        const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
+        const historyCommand = command === "undo" ? undoProseMirror : redoProseMirror;
+        return Boolean(historyCommand(view.state, view.dispatch));
       }
     };
     return () => {
@@ -760,6 +780,24 @@ export default function WysiwygSurface({
               return;
             }
           }
+        }
+      }
+      if (codeView && isEditorHistoryShortcut(event)) {
+        const direction = codeOuterHistoryDirection(event);
+        const view = direction
+          ? crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx))
+          : null;
+        const command = direction === "undo"
+          ? undoProseMirror
+          : direction === "redo" ? redoProseMirror : null;
+        // The ProseMirror document is canonical even while CodeMirror owns the
+        // focused code UI. Prefer its history whenever it has an entry; this
+        // keeps source-spanning edits reversible after they rebuild the node.
+        // If it has nothing to undo/redo, leave the shortcut to CodeMirror.
+        if (view && command?.(view.state, view.dispatch)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
         }
       }
       if (

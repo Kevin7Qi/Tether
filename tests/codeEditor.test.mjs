@@ -17,6 +17,7 @@ import {
   codeDragDocumentRange,
   codeLineEndSourceOffset,
   codeLineStartSourceOffset,
+  codeOuterHistoryDirection,
   codeSourceOnlyHistoryDirection,
   codeTabEdit,
   documentDragIntoCodeRange,
@@ -49,6 +50,13 @@ test("editor history shortcuts include undo and redo without matching unrelated 
   assert.equal(isEditorHistoryShortcut({ key: "z", metaKey: true, altKey: true }), false);
   assert.equal(isEditorHistoryShortcut({ key: "y", metaKey: true, shiftKey: true }), false);
   assert.equal(isEditorHistoryShortcut({ key: "z" }), false);
+});
+
+test("code editor history shortcuts target the canonical Markdown document first", () => {
+  assert.equal(codeOuterHistoryDirection({ key: "z", metaKey: true }), "undo");
+  assert.equal(codeOuterHistoryDirection({ key: "Z", metaKey: true, shiftKey: true }), "redo");
+  assert.equal(codeOuterHistoryDirection({ key: "y", ctrlKey: true }), "redo");
+  assert.equal(codeOuterHistoryDirection({ key: "z" }), null);
 });
 
 test("history focus restoration accepts the document shell and surviving editor descendants", () => {

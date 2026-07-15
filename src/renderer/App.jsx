@@ -77,7 +77,10 @@ import { PAGE_WIDTH_DEFAULT, clampPageWidth, hotkey } from "./lib/constants.js";
 import { EDITOR_MODE_READING, EDITOR_MODE_SOURCE, EDITOR_MODE_WYSIWYG, normalizeEditorMode } from "./lib/editorModes.js";
 import { parseOutline } from "./lib/outline.js";
 import { isConnectionLostError, connectionLostMessage } from "./lib/connection.js";
-import { dispatchEditorHistoryCommand } from "./lib/editorCommands.js";
+import {
+  dispatchEditorHistoryCommand,
+  scheduleEditorHistoryFocusRestore
+} from "./lib/editorCommands.js";
 import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, rekeyTabsForSource, selectNeighborTab } from "./lib/tabs.js";
 import { DocumentSurfaceFallback, FilesPanel, OutlinePanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
 import { ConnectionPalette, NewFileDialog, SettingsPanel, StatusBar } from "./components/dialogs.jsx";
@@ -522,7 +525,10 @@ export default function App() {
       // overwrite the restored CodeMirror caret with the webview root.
       const timer = window.setTimeout(() => {
         pendingCommands.delete(timer);
-        dispatchEditorHistoryCommand(command);
+        const historyTarget = document.activeElement;
+        const handled = editorApiRef.current?.runHistoryCommand?.(command) || false;
+        if (handled) scheduleEditorHistoryFocusRestore(document, historyTarget);
+        else dispatchEditorHistoryCommand(command);
       }, 50);
       pendingCommands.add(timer);
     });
