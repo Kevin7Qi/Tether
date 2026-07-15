@@ -14,7 +14,8 @@ import {
   headingKeymap,
   listItemKeymap,
   remarkHtmlTransformer,
-  remarkInlineLinkPlugin
+  remarkInlineLinkPlugin,
+  remarkLineBreak
 } from "@milkdown/kit/preset/commonmark";
 import { strikethroughInputRule } from "@milkdown/kit/preset/gfm";
 import { Slice } from "@milkdown/kit/prose/model";
@@ -1807,6 +1808,7 @@ export default function WysiwygSurface({
     crepe.setReadonly(readOnlyRef.current);
     void crepe.editor.remove(remarkHtmlTransformer);
     void crepe.editor.remove(remarkInlineLinkPlugin);
+    void crepe.editor.remove(remarkLineBreak);
     void crepe.editor.remove(strikethroughInputRule);
     void crepe.editor.remove(createCodeBlockInputRule);
     crepe.editor

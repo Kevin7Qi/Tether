@@ -22,9 +22,12 @@ export async function prepareBackgroundElectron(electronExecutable) {
 
   try {
     // APFS clone-copy keeps this fast and space-efficient despite Electron's
-    // bundled frameworks. LSUIElement must exist before process launch; setting
-    // an activation policy from JavaScript is too late to prevent every flash.
+    // bundled frameworks. Start as a background-only process so LaunchServices
+    // cannot briefly activate Electron before the verifier changes its policy
+    // to `accessory` and creates a hidden BrowserWindow. LSUIElement then keeps
+    // that window-bearing process out of the Dock and menu bar.
     await execFileAsync("/bin/cp", ["-cR", sourceBundle, backgroundBundle]);
+    await execFileAsync("/usr/libexec/PlistBuddy", ["-c", "Add :LSBackgroundOnly bool true", plist]);
     await execFileAsync("/usr/libexec/PlistBuddy", ["-c", "Add :LSUIElement bool true", plist]);
     await execFileAsync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", backgroundBundle]);
   } catch (error) {

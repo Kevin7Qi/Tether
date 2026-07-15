@@ -128,6 +128,24 @@ test("Milkdown retains a trailing-space hard break through an unrelated text edi
   assert.equal(serialize(crlfEdited), "alpha  \r\nrenamed\r\n");
 });
 
+test("Milkdown retains each physical soft-line ending through a text edit", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "alpha \r\nbeta\t\ngamma\r\n";
+  const doc = parse(source);
+  const breaks = [];
+  doc.descendants((node) => {
+    if (node.type.name === "hardbreak") breaks.push(node);
+  });
+  assert.deepEqual(
+    breaks.map((node) => [node.attrs.isInline, node.attrs.markdownMarker, node.attrs.markdownLineEnding]),
+    [[true, " ", "\r\n"], [true, "\t", "\n"]]
+  );
+
+  const alpha = textPosition(doc, "alpha");
+  const edited = EditorState.create({ doc }).tr.insertText("X", alpha + 2).doc;
+  assert.equal(serialize(edited), "alXpha \r\nbeta\t\ngamma\r\n");
+});
+
 test("hard-break selections include the physical marker and newline", async () => {
   const { parse, serialize } = await milkdownTransformer();
   for (const [source, token, joined] of [

@@ -2033,6 +2033,28 @@ async function verifyHardBreakCutPasteHistory() {
   }
 }
 
+async function verifySoftLineEditing() {
+  const fixture = "Alpha\r\nBeta\r\n";
+  const editedFixture = "AlXpha\r\nBeta\r\n";
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  await startSession(fixture, "Alpha");
+  await placeCaretInText("Alpha", 2);
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await save(editedFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(fixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(editedFixture);
+  await stopSession();
+}
+
 async function verifyProseToCodeReplacement() {
   const anchor = "Bef".length;
   const codeStart = codeFixture.indexOf(codeBlockSource);
@@ -2737,6 +2759,11 @@ async function run() {
     console.log("Verified rendered hard breaks retain physical markers, line endings, and history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "soft-line-editing") {
+    await verifySoftLineEditing();
+    console.log("Verified edited soft lines retain physical CRLF source and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "closing-fence-replacement") {
     await verifyClosingFenceReplacement();
     console.log("Verified real Electron closing-fence replacement history.");
@@ -2791,6 +2818,7 @@ async function run() {
   await verifyTaskCheckboxHistory();
   await verifyTableBoundaryCutPasteHistory();
   await verifyHardBreakCutPasteHistory();
+  await verifySoftLineEditing();
   await verifyProseToCodeReplacement();
   await verifyProseToCodeCutPaste();
   await verifyCodeBoundaryDeletion();
@@ -2810,14 +2838,23 @@ async function run() {
   console.log("Verified real Electron typing, saving, history, and fenced-code presentation.");
 }
 
+let exitCode = 0;
 try {
   await run();
+} catch (error) {
+  console.error(error?.stack || error);
+  exitCode = 1;
 } finally {
-  await stopSession(true);
-  await backgroundElectron.cleanup();
+  try {
+    await stopSession(true);
+    await backgroundElectron.cleanup();
+  } catch (error) {
+    console.error(error?.stack || error);
+    exitCode = 1;
+  }
 }
 
 // Multiple Node WebSocket sessions can leave an idle undici handle behind even
 // after Electron and every isolated profile have been closed. Cleanup above is
 // complete, so do not let that stale handle keep the verifier resident.
-process.exit(0);
+process.exit(exitCode);

@@ -37,6 +37,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /prepareBackgroundElectron\(electronPath\)/);
   assert.match(verifier, /async function stopSession\(force = false\)/);
   assert.match(verifier, /await stopSession\(true\)/);
+  assert.match(verifier, /process\.exit\(exitCode\)/);
   assert.match(main, /ipcMain\.on\("test:resetEditorParity"/);
   assert.match(main, /createWindow\(\{ deferLoad: true \}\)/);
   assert.match(preload, /resetEditorParity: \(fixture\) => ipcRenderer\.send\("test:resetEditorParity", fixture\)/);
@@ -51,6 +52,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
     fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8"),
     /host\.tetherGetLoadedSource = getLoadedSource/
   );
+  assert.match(backgroundElectron, /Add :LSBackgroundOnly bool true/);
   assert.match(backgroundElectron, /Add :LSUIElement bool true/);
   assert.match(backgroundElectron, /"--force", "--deep", "--sign", "-"/);
   assert.match(
@@ -233,6 +235,7 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(surface, /use\(sourceFaithfulRuleSchema\)/);
   assert.match(surface, /use\(sourceFaithfulHardBreakRemark\)/);
   assert.match(surface, /use\(sourceFaithfulHardBreakSchema\)/);
+  assert.match(surface, /remove\(remarkLineBreak\)/);
   assert.match(surface, /use\(sourceFaithfulInlineCodeRemark\)/);
   assert.match(surface, /use\(sourceFaithfulInlineCodeSchema\)/);
   assert.match(surface, /remove\(strikethroughInputRule\)/);

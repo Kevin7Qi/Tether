@@ -23,11 +23,13 @@ import {
   emphasisAttr,
   hardbreakAttr,
   paragraphAttr,
-  remarkLineBreak,
   strongAttr,
   textSchema
 } from "@milkdown/kit/preset/commonmark";
-import { sourceFaithfulHardBreakSchema } from "../src/renderer/lib/markdownBreak.js";
+import {
+  sourceFaithfulHardBreakRemark,
+  sourceFaithfulHardBreakSchema
+} from "../src/renderer/lib/markdownBreak.js";
 import {
   serializationAttentionGroupSchema,
   sourceFaithfulAttentionRemark,
@@ -87,7 +89,7 @@ async function milkdownTransformer() {
     emphasisAttr,
     strongAttr,
     hardbreakAttr,
-    remarkLineBreak,
+    sourceFaithfulHardBreakRemark,
     sourceFaithfulHardBreakSchema,
     sourceFaithfulParagraphRemark,
     sourceFaithfulParagraphSchema,
