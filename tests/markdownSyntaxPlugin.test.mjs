@@ -73,6 +73,7 @@ import {
   sourceInputSelection,
   sourceInputWordJumpDirection,
   sourceSelectionAcrossUnitBoundary,
+  softbreakMarkerBoundaryDeleteTransaction,
   sourceInitialSelectionRange,
   sourceDocumentJumpEdge,
   sourceLineJumpEdge,
@@ -2014,12 +2015,49 @@ test("hard-break navigation exposes only its hidden marker source", () => {
     blockSchema.node("paragraph", null, [blockSchema.text("a"), softbreak, blockSchema.text("b")])
   ]);
   assert.equal(markdownAtomSyntaxAt(EditorState.create({ doc: softDoc }), 2), null);
+
+  const spacedSoftbreak = blockSchema.node("hardbreak", {
+    isInline: true,
+    markdownMarker: " "
+  });
+  const spacedSoftDoc = blockSchema.node("doc", null, [
+    blockSchema.node("paragraph", null, [
+      blockSchema.text("a"),
+      spacedSoftbreak,
+      blockSchema.text("b")
+    ])
+  ]);
+  const spacedState = EditorState.create({ doc: spacedSoftDoc });
+  const spacedUnit = markdownAtomSyntaxAt(spacedState, 2);
+  assert.deepEqual(spacedUnit, {
+    from: 2,
+    to: 3,
+    kind: "inline",
+    name: "hardbreak"
+  });
+  assert.equal(continuousMarkdownSource(spacedState, spacedUnit, () => "ignored"), " ");
+  assert.deepEqual(markdownBoundarySourceTarget(EditorState.create({
+    doc: spacedSoftDoc,
+    selection: TextSelection.create(spacedSoftDoc, 2)
+  }), "forward"), {
+    position: 2,
+    atomPosition: 2,
+    explicitUnitPosition: null,
+    edge: "start"
+  });
 });
 
-test("Backspace after a hard break deletes only the source newline", () => {
-  for (const marker of ["\\", "  ", "   "]) {
+test("Backspace after a line break deletes only the source newline", () => {
+  for (const [marker, isInline] of [
+    ["\\", false],
+    ["  ", false],
+    ["   ", false],
+    [" ", true],
+    ["\t", true],
+    [null, true]
+  ]) {
     const hardbreak = blockSchema.node("hardbreak", {
-      isInline: false,
+      isInline,
       markdownMarker: marker
     });
     const paragraph = blockSchema.node("paragraph", null, [
@@ -2034,8 +2072,35 @@ test("Backspace after a hard break deletes only the source newline", () => {
       selection: TextSelection.create(doc, afterBreak)
     });
     const transaction = hardbreakBoundaryBackspaceTransaction(state);
-    assert.equal(transaction?.doc.firstChild.textContent, `alpha${marker}beta`);
-    assert.equal(transaction?.selection.from, 1 + "alpha".length + marker.length);
+    const physicalMarker = marker || "";
+    assert.equal(transaction?.doc.firstChild.textContent, `alpha${physicalMarker}beta`);
+    assert.equal(transaction?.selection.from, 1 + "alpha".length + physicalMarker.length);
+  }
+});
+
+test("Delete before a soft break removes its physical marker before its newline", () => {
+  for (const marker of [" ", "\t"]) {
+    const softbreak = blockSchema.node("hardbreak", {
+      isInline: true,
+      markdownMarker: marker
+    });
+    const paragraph = blockSchema.node("paragraph", null, [
+      blockSchema.text("alpha"),
+      softbreak,
+      blockSchema.text("beta")
+    ]);
+    const doc = blockSchema.node("doc", null, [paragraph]);
+    const beforeBreak = 1 + "alpha".length;
+    const state = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, beforeBreak)
+    });
+    const transaction = softbreakMarkerBoundaryDeleteTransaction(state);
+    const remainingBreak = transaction?.doc.nodeAt(beforeBreak);
+    assert.equal(remainingBreak?.type.name, "hardbreak");
+    assert.equal(remainingBreak?.attrs.isInline, true);
+    assert.equal(remainingBreak?.attrs.markdownMarker, null);
+    assert.equal(transaction?.selection.from, beforeBreak);
   }
 });
 

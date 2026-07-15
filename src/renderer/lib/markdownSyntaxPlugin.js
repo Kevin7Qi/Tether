@@ -906,7 +906,11 @@ export function sourceLineJumpTarget(state, edge, serializer) {
 export function markdownAtomSyntaxAt(state, position) {
   const node = state.doc.nodeAt(position);
   if (!node || !sourceAtomNames.has(node.type.name)) return null;
-  if (node.type.name === "hardbreak" && node.attrs.isInline) return null;
+  if (
+    node.type.name === "hardbreak"
+    && node.attrs.isInline
+    && !String(node.attrs.markdownMarker || "").length
+  ) return null;
 
   return {
     from: position,
@@ -957,7 +961,9 @@ export function continuousMarkdownSource(state, unit, serializer) {
   if (!unit) return "";
   if (typeof unit.source === "string") return unit.source;
   if (unit.name === "hardbreak") {
-    const marker = state.doc.nodeAt(unit.from)?.attrs.markdownMarker;
+    const node = state.doc.nodeAt(unit.from);
+    const marker = node?.attrs.markdownMarker;
+    if (node?.attrs.isInline) return String(marker || "");
     return marker === "\\" || /^ {2,}$/.test(marker || "") ? marker : "\\";
   }
   return unit.kind === "inline"
@@ -1330,6 +1336,7 @@ function replaceHardbreakSource(view, parser, serializer, unit, source, afterCom
 
   const replacement = hardbreakSourceReplacement(view.state.schema, node, source);
   let transaction = view.state.tr.replaceWith(unit.from, unit.to, replacement);
+  transaction = invalidateParagraphSource(transaction, unit.from);
   transaction = selectionAfter(transaction, unit.from + replacement.size);
   transaction.setMeta(markdownSyntaxKey, "close");
   dispatchSourceReplacement(view, transaction, afterCommit, sync);
@@ -3027,6 +3034,15 @@ export function collapsedDocumentSourceSelection(
 export function plainTextMarkdownSourceToken(state, direction, serializer = null) {
   const { selection } = state || {};
   if (!selection?.empty || !["backward", "forward"].includes(direction)) return null;
+  const adjacent = markdownBoundarySourceTarget(state, direction);
+  const adjacentNode = adjacent?.atomPosition == null
+    ? null
+    : state.doc.nodeAt(adjacent.atomPosition);
+  if (
+    adjacentNode?.type.name === "hardbreak"
+    && adjacentNode.attrs.isInline
+    && String(adjacentNode.attrs.markdownMarker || "").length
+  ) return null;
   const mapping = literalTextblockSourceMapping(state, selection, serializer);
   if (!mapping) return null;
   const { source, text, segmentSourceOffset } = mapping;
@@ -4943,13 +4959,52 @@ export function hardbreakBoundaryBackspaceTransaction(state) {
   const { selection } = state;
   if (!selection.empty) return null;
   const node = selection.$from.nodeBefore;
-  if (!node || node.type.name !== "hardbreak" || node.attrs.isInline) return null;
-  const marker = node.attrs.markdownMarker;
-  if (!(marker === "\\" || /^ {2,}$/.test(marker || ""))) return null;
+  if (!node || node.type.name !== "hardbreak") return null;
+  const marker = String(node.attrs.markdownMarker || "");
+  if (!node.attrs.isInline && !(marker === "\\" || /^ {2,}$/.test(marker))) return null;
 
   const from = selection.from - node.nodeSize;
-  let transaction = state.tr.replaceWith(from, selection.from, state.schema.text(marker));
+  let transaction = marker
+    ? state.tr.replaceWith(from, selection.from, state.schema.text(marker))
+    : state.tr.delete(from, selection.from);
   transaction = transaction.setSelection(TextSelection.create(transaction.doc, from + marker.length));
+  transaction.setMeta(markdownSyntaxKey, "close");
+  return transaction;
+}
+
+function invalidateParagraphSource(transaction, position) {
+  const bounded = Math.max(0, Math.min(position, transaction.doc.content.size));
+  const resolved = transaction.doc.resolve(bounded);
+  for (let depth = resolved.depth; depth > 0; depth -= 1) {
+    const node = resolved.node(depth);
+    if (node.type.name !== "paragraph") continue;
+    const paragraphPosition = resolved.before(depth);
+    return transaction.setNodeMarkup(paragraphPosition, undefined, {
+      ...node.attrs,
+      paragraphSource: null,
+      paragraphSourceSignature: null
+    });
+  }
+  return transaction;
+}
+
+export function softbreakMarkerBoundaryDeleteTransaction(state) {
+  const { selection } = state;
+  if (!selection.empty) return null;
+  const node = selection.$from.nodeAfter;
+  if (!node || node.type.name !== "hardbreak" || !node.attrs.isInline) return null;
+  const marker = String(node.attrs.markdownMarker || "");
+  if (!marker) return null;
+  const range = sourceCharacterDeletionRange(marker, 0, "forward");
+  const nextMarker = `${marker.slice(0, range.from)}${marker.slice(range.to)}`;
+  const from = selection.from;
+  let transaction = state.tr.replaceWith(
+    from,
+    from + node.nodeSize,
+    hardbreakSourceReplacement(state.schema, node, nextMarker)
+  );
+  transaction = invalidateParagraphSource(transaction, from);
+  transaction = transaction.setSelection(TextSelection.create(transaction.doc, from));
   transaction.setMeta(markdownSyntaxKey, "close");
   return transaction;
 }
@@ -6222,6 +6277,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             && !activeSourceControl?.element?.isConnected
           ) {
             const direction = event.key === "Backspace" ? "backward" : "forward";
+            if (direction === "forward") {
+              const transaction = softbreakMarkerBoundaryDeleteTransaction(_view.state);
+              if (transaction) {
+                event.preventDefault();
+                _view.dispatch(transaction.scrollIntoView());
+                return true;
+              }
+            }
             const literalTarget = plainTextMarkdownSourceToken(
               _view.state,
               direction,

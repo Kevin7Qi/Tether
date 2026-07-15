@@ -270,10 +270,12 @@ async function placeCaretInText(
       const start = combined.indexOf(${expected});
       if (start < 0) return false;
       const target = start + ${offset};
+      const preferFollowingBoundary = ${offset} === 0;
       let consumed = 0;
-      for (const candidate of nodes) {
+      for (let index = 0; index < nodes.length; index += 1) {
+        const candidate = nodes[index];
         const end = consumed + candidate.data.length;
-        if (target <= end) {
+        if (target < end || (target === end && (!preferFollowingBoundary || index === nodes.length - 1))) {
           root.focus({ preventScroll: true });
           const range = document.createRange();
           range.setStart(candidate, target - consumed);
@@ -2036,6 +2038,8 @@ async function verifyHardBreakCutPasteHistory() {
 async function verifySoftLineEditing() {
   const fixture = "Alpha\r\nBeta\r\n";
   const editedFixture = "AlXpha\r\nBeta\r\n";
+  const joinedFixture = "AlphaBeta\r\n";
+  const navigatedFixture = "Alpha\r\nXBeta\r\n";
   const save = async (source) => {
     await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
     await waitForCompletedSave(source);
@@ -2052,6 +2056,119 @@ async function verifySoftLineEditing() {
   await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
   await waitForSaveState(false);
   await save(editedFixture);
+  await stopSession();
+
+  await startSession(fixture, "Alpha");
+  await placeCaretInText("Alpha", "Alpha".length);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  const copied = await dispatchCopyAndCaptureText();
+  if (copied !== "\r\n") {
+    throw new Error(`Soft-line Copy emitted ${JSON.stringify(copied)} instead of "\\r\\n"`);
+  }
+  const cut = await dispatchCutAndCaptureText();
+  if (cut !== "\r\n") {
+    throw new Error(`Soft-line Cut emitted ${JSON.stringify(cut)} instead of "\\r\\n"`);
+  }
+  await waitForSaveState(false);
+  await save(joinedFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(fixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(joinedFixture);
+  await stopSession();
+
+  const spacedFixture = "Alpha \r\nBeta\r\n";
+  await startSession(spacedFixture, "Alpha");
+  await placeCaretInText("Alpha", "Alpha".length);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === " " &&
+      state.selectionStart === 0 && state.selectionEnd === 1 &&
+      state.selectionDirection === "forward",
+    "Shift+Right did not select the physical trailing space before a soft line"
+  );
+  const copiedSpace = await dispatchCopyAndCaptureText();
+  if (copiedSpace !== " ") {
+    throw new Error(`Soft-line marker Copy emitted ${JSON.stringify(copiedSpace)} instead of one space`);
+  }
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await assertSourceControlClosed(
+    "Extending through a soft line did not hand its source selection back to the document"
+  );
+  const copiedSpacedBreak = await dispatchCopyAndCaptureText();
+  if (copiedSpacedBreak !== " \r\n") {
+    throw new Error(
+      `Soft-line marker/newline Copy emitted ${JSON.stringify(copiedSpacedBreak)} instead of " \\r\\n"`
+    );
+  }
+  const cutSpacedBreak = await dispatchCutAndCaptureText();
+  if (cutSpacedBreak !== " \r\n") {
+    throw new Error(
+      `Soft-line marker/newline Cut emitted ${JSON.stringify(cutSpacedBreak)} instead of " \\r\\n"`
+    );
+  }
+  await waitForSaveState(false);
+  await save(joinedFixture);
+  await stopSession();
+
+  await startSession(spacedFixture, "Alpha");
+  await placeCaretInText("Alpha", "Alpha".length);
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  await save(fixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(spacedFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(fixture);
+  await stopSession();
+
+  await startSession(spacedFixture, "Alpha");
+  await placeCaretInText("Beta", 0);
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+  await waitForSaveState(false);
+  await save("Alpha Beta\r\n");
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(spacedFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save("Alpha Beta\r\n");
+  await stopSession();
+
+  for (const { text, offset, key, code, virtualKeyCode } of [
+    { text: "Alpha", offset: "Alpha".length, key: "Delete", code: "Delete", virtualKeyCode: 46 },
+    { text: "Beta", offset: 0, key: "Backspace", code: "Backspace", virtualKeyCode: 8 }
+  ]) {
+    await startSession(fixture, "Alpha");
+    await placeCaretInText(text, offset);
+    await dispatchKey({ key, code, virtualKeyCode });
+    await waitForSaveState(false);
+    await save(joinedFixture);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+    await waitForSaveState(false);
+    await save(fixture);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+    await waitForSaveState(false);
+    await save(joinedFixture);
+    await stopSession();
+  }
+
+  await startSession(fixture, "Alpha");
+  await placeCaretInText("Alpha", "Alpha".length);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await save(navigatedFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(fixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(navigatedFixture);
   await stopSession();
 }
 

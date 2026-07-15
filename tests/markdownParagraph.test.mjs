@@ -19,7 +19,6 @@ import {
 import { Clock, Container, Ctx } from "@milkdown/kit/ctx";
 import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import {
-  docSchema,
   emphasisAttr,
   hardbreakAttr,
   paragraphAttr,
@@ -30,6 +29,10 @@ import {
   sourceFaithfulHardBreakRemark,
   sourceFaithfulHardBreakSchema
 } from "../src/renderer/lib/markdownBreak.js";
+import {
+  sourceFaithfulDocumentRemark,
+  sourceFaithfulDocumentSchema
+} from "../src/renderer/lib/markdownDocument.js";
 import {
   serializationAttentionGroupSchema,
   sourceFaithfulAttentionRemark,
@@ -51,6 +54,7 @@ import {
   plainTextMarkdownSourceToken,
   replaceSourceSelectionTransaction,
   sourceClipboardEdit,
+  softbreakMarkerBoundaryDeleteTransaction,
   sourceSelectionText
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
@@ -83,7 +87,8 @@ async function milkdownTransformer() {
   const serializerHandler = serializer(ctx);
   ctx.inject(editorViewCtx, { state: { doc: { lastChild: null } } });
   const userHandlers = [
-    docSchema,
+    sourceFaithfulDocumentRemark,
+    sourceFaithfulDocumentSchema,
     paragraphAttr,
     textSchema,
     emphasisAttr,
@@ -209,6 +214,21 @@ test("plain paragraph edits preserve untouched escape and entity source", async 
     sourceSelectionText(plainTextMarkdownSourceSelection(entityState, serialize)),
     "&copy;"
   );
+});
+
+test("deleting soft-line whitespace invalidates only that paragraph's raw source", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "alpha \r\nbeta\r\n";
+  const doc = parse(source);
+  const position = textPosition(doc, "alpha") + "alpha".length;
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, position)
+  });
+  const transaction = softbreakMarkerBoundaryDeleteTransaction(state);
+  assert.equal(transaction.doc.firstChild.attrs.paragraphSource, null);
+  assert.equal(transaction.doc.firstChild.attrs.paragraphSourceSignature, null);
+  assert.equal(serialize(transaction.doc), "alpha\r\nbeta\r\n");
 });
 
 test("literal source remains exact beside rendered emphasis", async () => {

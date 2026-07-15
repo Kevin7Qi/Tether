@@ -33,6 +33,7 @@ import {
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   documentSourceUnitStartOffset,
+  plainTextMarkdownSourceToken,
   sourceAwareClipboardText,
   sourceClipboardEdit,
   sourceSelectionAcrossUnitBoundary,
@@ -144,6 +145,30 @@ test("Milkdown retains each physical soft-line ending through a text edit", asyn
   const alpha = textPosition(doc, "alpha");
   const edited = EditorState.create({ doc }).tr.insertText("X", alpha + 2).doc;
   assert.equal(serialize(edited), "alXpha \r\nbeta\t\ngamma\r\n");
+});
+
+test("soft-line selections copy and delete their exact physical source", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "alpha \r\nbeta\r\n";
+  const doc = parse(source);
+  const breakPosition = textPosition(doc, "alpha") + "alpha".length;
+  const softBreak = doc.nodeAt(breakPosition);
+  assert.equal(softBreak.type.name, "hardbreak");
+  assert.equal(softBreak.attrs.isInline, true);
+  assert.equal(plainTextMarkdownSourceToken(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, breakPosition)
+  }), "forward", serialize), null);
+
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, breakPosition, breakPosition + 1)
+  });
+  assert.equal(sourceSelectionText(sourceSelectionFromDocumentSelection(state, serialize)), " \r\n");
+  assert.equal(sourceAwareClipboardText(state, serialize), " \r\n");
+  const edit = sourceClipboardEdit(state, "", parse, serialize);
+  assert.equal(edit?.selectedText, " \r\n");
+  assert.equal(serialize(edit.transaction.doc), "alphabeta\r\n");
 });
 
 test("hard-break selections include the physical marker and newline", async () => {
