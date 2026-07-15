@@ -9,6 +9,7 @@ import electronPath from "electron";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const inlineFixture = "Before **bold** after.\n";
 const editedInlineFixture = "Before **boXld** after.\n";
+const deletedInlineMarkerFixture = "Before *bold** after.\n";
 const codeFixture = "Before.\n\n```js\nconst value = 1;\n```\n\nAfter.\n";
 const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n";
 let child = null;
@@ -46,6 +47,21 @@ async function waitFor(check, message, timeoutMs = 12000) {
     await delay(80);
   }
   throw new Error(`${message}${lastError ? `: ${lastError.message}` : ""}`);
+}
+
+async function waitForProcessExit(process, timeoutMs) {
+  if (!process || process.exitCode !== null || process.signalCode !== null) return true;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      process.off("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    process.once("exit", onExit);
+  });
 }
 
 class CdpSession {
@@ -194,6 +210,28 @@ async function clickElement(selector) {
   await delay(120);
 }
 
+async function sourceControlState() {
+  return evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    return control ? {
+      value: control.value,
+      selectionStart: control.selectionStart,
+      selectionEnd: control.selectionEnd,
+      active: document.activeElement === control
+    } : null;
+  })()`);
+}
+
+async function waitForSourceControl(expected, message) {
+  try {
+    return await waitFor(async () => expected(await sourceControlState()), message);
+  } catch (error) {
+    const control = await sourceControlState().catch(() => null);
+    const state = await editorState().catch(() => null);
+    throw new Error(`${error.message}\nSource control: ${JSON.stringify(control)}\nEditor state: ${JSON.stringify(state)}`);
+  }
+}
+
 async function dispatchKey({ key, code, virtualKeyCode, modifiers = 0 }) {
   const common = { key, code, modifiers, windowsVirtualKeyCode: virtualKeyCode };
   await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...common });
@@ -274,6 +312,13 @@ async function startSession(fixture, visibleText) {
   await cdp.send("Runtime.enable");
   await cdp.send("Page.enable");
   await waitFor(
+    () => evaluate(`typeof window.remoteMarkdown?.saveLocalSample === "function"`),
+    "Tether native sample API did not become ready"
+  );
+  const seeded = await evaluate(`window.remoteMarkdown.saveLocalSample(${JSON.stringify(fixture)})`);
+  if (!seeded?.ok) throw new Error(`Could not seed the isolated native sample: ${JSON.stringify(seeded)}`);
+  await cdp.send("Page.reload", { ignoreCache: true });
+  await waitFor(
     () => evaluate(`Boolean(document.querySelector(".tether-wysiwyg.is-ready .ProseMirror") && !document.querySelector(".document-loading"))`),
     "Tether editor did not become ready"
   );
@@ -285,19 +330,31 @@ async function startSession(fixture, visibleText) {
 }
 
 async function stopSession() {
-  try {
-    await cdp?.send("Browser.close");
-  } catch {
-    child?.kill("SIGTERM");
-  }
-  cdp?.close();
+  const sessionCdp = cdp;
+  const sessionChild = child;
+  const sessionProfilePath = profilePath;
   cdp = null;
-  await delay(200);
-  child?.kill("SIGTERM");
   child = null;
-  if (profilePath) await rm(profilePath, { recursive: true, force: true });
   profilePath = null;
   samplePath = null;
+
+  try {
+    await sessionCdp?.send("Browser.close");
+  } catch {
+    // The renderer can close the CDP socket before acknowledging Browser.close.
+  }
+  sessionCdp?.close();
+
+  // Electron intentionally remains resident after its last macOS window closes.
+  // Never launch the next isolated profile until this exact child has exited.
+  if (!(await waitForProcessExit(sessionChild, 1000))) {
+    sessionChild?.kill("SIGTERM");
+    if (!(await waitForProcessExit(sessionChild, 3000))) {
+      sessionChild?.kill("SIGKILL");
+      await waitForProcessExit(sessionChild, 1000);
+    }
+  }
+  if (sessionProfilePath) await rm(sessionProfilePath, { recursive: true, force: true });
 }
 
 async function verifyInlineEditing() {
@@ -331,6 +388,38 @@ async function verifyInlineEditing() {
   await waitForSaveState(false);
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(editedInlineFixture);
+}
+
+async function verifyInlineBoundaryNavigation() {
+  await startSession(inlineFixture, "Before bold after.");
+  await placeCaretInText(" after.", 0);
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "**bold**" &&
+      state.selectionStart === 7 && state.selectionEnd === 7,
+    "ArrowLeft skipped the last physical inline Markdown delimiter"
+  );
+
+  await stopSession();
+  await startSession(inlineFixture, "Before bold after.");
+  await placeCaretInText("Before ", 7);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "**bold**" &&
+      state.selectionStart === 1 && state.selectionEnd === 1,
+    "ArrowRight skipped the first physical inline Markdown delimiter"
+  );
+
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "*bold**" &&
+      state.selectionStart === 1 && state.selectionEnd === 1,
+    "Backspace did not delete exactly one physical inline Markdown delimiter"
+  );
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(deletedInlineMarkerFixture);
 }
 
 async function verifyCodeEditing() {
@@ -377,6 +466,8 @@ async function verifyCodeEditing() {
 
 async function run() {
   await verifyInlineEditing();
+  await stopSession();
+  await verifyInlineBoundaryNavigation();
   await stopSession();
   await verifyCodeEditing();
   console.log("Verified real Electron typing, saving, and history preserve inline and fenced-code Markdown source.");

@@ -1118,7 +1118,61 @@ function dispatchSourceReplacement(view, transaction, afterCommit, sync = false)
   });
 }
 
-function replaceInlineSource(view, parser, unit, source, afterCommit = null, sync = false) {
+// Inline controls edit a physical source slice. Build that exact full-document
+// draft before parsing so a transient unmatched delimiter is not normalized or
+// escaped merely because the rendered model cannot represent it byte-for-byte.
+function inlineSourceDocumentEdit(state, unit, source, serializer) {
+  if (unit?.kind !== "inline" || typeof serializer !== "function") return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const segment = documentSource?.segments.find(({ position, node }) =>
+    unit.from >= position && unit.to <= position + node.nodeSize
+  );
+  if (!segment) return null;
+
+  const segmentSource = documentSource.fullSource.slice(segment.from, segment.to);
+  const currentSource = continuousMarkdownSource(state, unit, serializer);
+  if (!currentSource) return null;
+  const blockUnit = {
+    from: segment.position,
+    to: segment.position + segment.node.nodeSize,
+    kind: "block",
+    name: segment.node.type.name
+  };
+  const caret = sourceCaretOffset(
+    state,
+    blockUnit,
+    segmentSource,
+    unit.from,
+    null,
+    serializer
+  );
+  const occurrences = [];
+  let cursor = 0;
+  while (cursor <= segmentSource.length - currentSource.length) {
+    const found = segmentSource.indexOf(currentSource, cursor);
+    if (found < 0) break;
+    occurrences.push(found);
+    cursor = found + Math.max(1, currentSource.length);
+  }
+  if (!occurrences.length) return null;
+  const sourceStart = occurrences.reduce((best, candidate) => {
+    const containsCaret = caret >= candidate && caret <= candidate + currentSource.length;
+    const bestContainsCaret = caret >= best && caret <= best + currentSource.length;
+    if (containsCaret !== bestContainsCaret) return containsCaret ? candidate : best;
+    return Math.abs(candidate - caret) < Math.abs(best - caret) ? candidate : best;
+  });
+  const nextSegmentSource = `${segmentSource.slice(0, sourceStart)}${source}${
+    segmentSource.slice(sourceStart + currentSource.length)
+  }`;
+  return {
+    fullSource: `${documentSource.fullSource.slice(0, segment.from)}${nextSegmentSource}${documentSource.fullSource.slice(segment.to)}`,
+    nextSegmentSource,
+    segment
+  };
+}
+
+function replaceInlineSource(view, parser, serializer, unit, source, afterCommit = null, sync = false) {
+  const documentEdit = inlineSourceDocumentEdit(view.state, unit, source, serializer);
   const parsed = parser(inlineSourceWithReferenceDefinitions(view.state, source));
   const firstBlock = parsed?.firstChild;
   const replacement = firstBlock?.isTextblock
@@ -1127,6 +1181,22 @@ function replaceInlineSource(view, parser, unit, source, afterCommit = null, syn
       ? Fragment.from(view.state.schema.text(source))
       : Fragment.empty;
   let transaction = view.state.tr.replaceWith(unit.from, unit.to, replacement);
+  if (documentEdit?.segment.node.type.name === "paragraph") {
+    const paragraph = parser(documentEdit.nextSegmentSource)?.firstChild;
+    const position = documentEdit.segment.position;
+    const current = transaction.doc.nodeAt(position);
+    if (paragraph?.type.name === "paragraph" && current?.type.name === "paragraph") {
+      const sourceStart = current.attrs.markdownSourceStart;
+      transaction = transaction.setNodeMarkup(position, undefined, {
+        ...current.attrs,
+        paragraphSource: documentEdit.nextSegmentSource,
+        paragraphSourceSignature: paragraph.attrs.paragraphSourceSignature,
+        markdownSourceEnd: Number.isFinite(sourceStart)
+          ? sourceStart + documentEdit.nextSegmentSource.length
+          : current.attrs.markdownSourceEnd
+      });
+    }
+  }
   transaction = selectionAfter(transaction, unit.from + replacement.size);
   transaction.setMeta(markdownSyntaxKey, "close");
   dispatchSourceReplacement(view, transaction, afterCommit, sync);
@@ -1150,10 +1220,10 @@ export function hardbreakSourceReplacement(schema, node, source) {
       ]);
 }
 
-function replaceHardbreakSource(view, parser, unit, source, afterCommit = null, sync = false) {
+function replaceHardbreakSource(view, parser, serializer, unit, source, afterCommit = null, sync = false) {
   const node = view.state.doc.nodeAt(unit.from);
   if (!node || node.type.name !== "hardbreak" || source.includes("\n")) {
-    replaceInlineSource(view, parser, unit, source, afterCommit, sync);
+    replaceInlineSource(view, parser, serializer, unit, source, afterCommit, sync);
     return;
   }
 
@@ -1179,6 +1249,10 @@ export function markdownSourceDraftMarkdown(state, parser, serializer, unit, sou
     return null;
   }
   let transaction;
+  if (unit.kind === "inline") {
+    const documentEdit = inlineSourceDocumentEdit(state, unit, source, serializer);
+    if (documentEdit) return documentEdit.fullSource;
+  }
   if (unit.name === "hardbreak") {
     const node = state.doc.nodeAt(unit.from);
     if (node?.type.name === "hardbreak" && !source.includes("\n")) {
@@ -2597,7 +2671,7 @@ export function sourceCaretBoundaries(source) {
   return boundaries;
 }
 
-function sourceOffsetAfterCharacter(source, offset, direction) {
+export function sourceOffsetAfterCharacter(source, offset, direction) {
   const bounded = Math.max(0, Math.min(source.length, offset));
   const boundaries = sourceCaretBoundaries(source);
   if (direction === "forward") {
@@ -5099,6 +5173,34 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             }
           }
           if (
+            !event.shiftKey
+            && !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
+            && ["ArrowLeft", "ArrowRight"].includes(event.key)
+            && !activeSourceControl?.element?.isConnected
+          ) {
+            // Moving from rendered prose into a formatted/atomic unit must
+            // consume one hidden source character, exactly like Source mode.
+            const direction = event.key === "ArrowLeft" ? "backward" : "forward";
+            const target = markdownBoundarySourceTarget(_view.state, direction);
+            const unit = target ? markdownDeletionSourceUnit(_view.state, target) : null;
+            if (target && unit) {
+              const source = continuousMarkdownSource(_view.state, unit, ctx.get(serializerCtx));
+              const boundary = target.edge === "end" ? source.length : 0;
+              const sourceOffset = sourceOffsetAfterCharacter(source, boundary, direction);
+              if (sourceOffset !== boundary) {
+                event.preventDefault();
+                activateMarkdownSourceAt(_view, target.position, {
+                  atomPosition: target.atomPosition,
+                  explicitUnitPosition: target.explicitUnitPosition,
+                  sourceOffset
+                });
+                return true;
+              }
+            }
+          }
+          if (
             event.shiftKey
             && !event.altKey
             && !event.ctrlKey
@@ -5189,27 +5291,6 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             if (transaction) {
               event.preventDefault();
               _view.dispatch(transaction.scrollIntoView());
-              return true;
-            }
-          }
-          if (
-            !event.altKey
-            && !event.ctrlKey
-            && !event.metaKey
-            && !event.shiftKey
-            && ["ArrowLeft", "ArrowRight"].includes(event.key)
-            && !activeSourceControl?.element?.isConnected
-          ) {
-            const direction = event.key === "ArrowLeft" ? "backward" : "forward";
-            const target = markdownBoundarySourceTarget(_view.state, direction);
-            const unit = target ? markdownDeletionSourceUnit(_view.state, target) : null;
-            if (target && unit?.name === "hardbreak") {
-              const source = continuousMarkdownSource(_view.state, unit, ctx.get(serializerCtx));
-              event.preventDefault();
-              activateMarkdownSourceAt(_view, target.position, {
-                atomPosition: target.atomPosition,
-                sourceOffset: target.edge === "end" ? source.length : 0
-              });
               return true;
             }
           }
@@ -5349,8 +5430,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (!editorView) return;
           const parser = ctx.get(parserCtx);
           if (unit.name === "hardbreak") {
-            replaceHardbreakSource(editorView, parser, unit, value, afterCommit, sync);
-          } else if (unit.kind === "inline") replaceInlineSource(editorView, parser, unit, value, afterCommit, sync);
+            replaceHardbreakSource(editorView, parser, serializer, unit, value, afterCommit, sync);
+          } else if (unit.kind === "inline") replaceInlineSource(editorView, parser, serializer, unit, value, afterCommit, sync);
           else replaceBlockSource(editorView, parser, unit, value, afterCommit, sync);
         };
         const navigateFromBoundary = (direction, mapping = null) => {

@@ -62,6 +62,7 @@ import {
   sourceControlSaveFocus,
   sourceEditCaretOffset,
   sourceLineEndingAt,
+  sourceOffsetAfterCharacter,
   sourceBoundarySelectionRange,
   sourceInputSelection,
   sourceInputWordJumpDirection,
@@ -486,6 +487,23 @@ test("sourceCaretOffset uses a serialized marker for formatted inline text", () 
   };
   assert.equal(sourceCaretOffset(state, syntax, "**marked**", syntax.from + 3, null, serializer), 5);
   assert.equal(sourceCaretOffset(state, syntax, "**marked**", syntax.to, null, serializer), 8);
+});
+
+test("an in-progress inline source edit publishes deliberately malformed Markdown byte-exactly", () => {
+  const state = stateWithMarks(["strong"]);
+  const unit = activeMarkdownSyntax(state);
+  const serializer = (doc) => {
+    let source = "";
+    doc.firstChild.forEach((node) => {
+      source += node.marks.some((mark) => mark.type.name === "strong") ? `**${node.text}**` : node.text;
+    });
+    return source;
+  };
+
+  assert.equal(
+    markdownSourceDraftMarkdown(state, () => null, serializer, unit, "*marked**"),
+    "*marked**"
+  );
 });
 
 const blockSchema = new Schema({
@@ -2515,6 +2533,13 @@ test("source boundary selections keep CRLF and Unicode code points indivisible",
     end: 3,
     direction: "backward"
   });
+});
+
+test("ordinary source-boundary arrows advance by exactly one physical character", () => {
+  assert.equal(sourceOffsetAfterCharacter("**bold**", 0, "forward"), 1);
+  assert.equal(sourceOffsetAfterCharacter("**bold**", "**bold**".length, "backward"), 7);
+  assert.equal(sourceOffsetAfterCharacter("😀bold", 0, "forward"), 2);
+  assert.equal(sourceOffsetAfterCharacter("a\r\nb", 1, "forward"), 3);
 });
 
 test("source editing uses native-like grapheme boundaries for deletion and pointer carets", () => {
