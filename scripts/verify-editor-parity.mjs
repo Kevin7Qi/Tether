@@ -26,6 +26,18 @@ const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n"
 const codeBlockSource = "```js\nconst value = 1;\n```";
 const codeContent = "const value = 1;";
 const selectAllCodeFixture = `\n${codeFixture}\n`;
+const indentedSelectAllCodeFixture = [
+  "\t",
+  "\tBefore.",
+  "\t",
+  "\t```js",
+  "\tconst value = 1;",
+  "\t```",
+  "\t",
+  "\tAfter.",
+  "\t",
+  ""
+].join("\n");
 const firstCodeContent = "const first = 1;";
 const secondCodeContent = "second = 2";
 const twoCodeFixture = [
@@ -203,6 +215,7 @@ async function editorState() {
       dirty: Boolean(document.querySelector(".dirty-dot")),
       saveDisabled: document.querySelector(".save-button")?.disabled ?? null,
       status: document.querySelector(".status-copy")?.textContent || null,
+      exactSourceSelection: root?.tetherGetActiveSourceSelection?.() || null,
       text: root?.textContent || null,
       html: root?.innerHTML || null
     };
@@ -1190,6 +1203,55 @@ async function verifyCodeSelectAllEditing() {
   await stopSession();
 }
 
+async function verifyCodeSelectAllTabHistory() {
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+  const assertExactSelection = async (source, message) => {
+    await waitFor(
+      () => evaluate(`(() => {
+        const selection = document.querySelector(".ProseMirror")?.tetherGetActiveSourceSelection?.();
+        return selection?.fullSource === ${JSON.stringify(source)}
+          && selection.anchor !== selection.head;
+      })()`),
+      message,
+      3000
+    );
+  };
+
+  await startSession(selectAllCodeFixture, codeContent);
+  await focusCodeBoundary("end");
+  await dispatchKey({ key: "a", code: "KeyA", virtualKeyCode: 65, modifiers: 4 });
+  await dispatchKey({ key: "Tab", code: "Tab", virtualKeyCode: 9 });
+  await waitForSaveState(false);
+  await assertExactSelection(indentedSelectAllCodeFixture, "Tab did not retain the indented physical source selection");
+  await save(indentedSelectAllCodeFixture);
+  await assertExactSelection(indentedSelectAllCodeFixture, "Save dropped the indented physical source selection");
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await assertExactSelection(selectAllCodeFixture, "Undo did not restore the original physical source selection");
+  await save(selectAllCodeFixture);
+  await assertExactSelection(selectAllCodeFixture, "Save after Undo dropped the physical source selection");
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await assertExactSelection(indentedSelectAllCodeFixture, "Redo did not restore the indented physical source selection");
+  await save(indentedSelectAllCodeFixture);
+  await assertExactSelection(indentedSelectAllCodeFixture, "Save after Redo dropped the physical source selection");
+
+  await dispatchKey({ key: "Tab", code: "Tab", virtualKeyCode: 9, modifiers: 8 });
+  await waitForSaveState(false);
+  await save(selectAllCodeFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(indentedSelectAllCodeFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(selectAllCodeFixture);
+  await stopSession();
+}
+
 async function verifyClosingFenceReplacement() {
   const contentEnd = codeBlockSource.indexOf("\n") + 1 + codeContent.length;
   await startSession(codeFixture, codeContent);
@@ -1581,11 +1643,25 @@ async function verifyListItemCutPaste() {
   };
 
   await startSession(listFixture, "Alpha");
-  await placeCaretInText("Alpha", visibleOffset);
-  await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 8 });
+  const start = await textBoundaryPoint("Alpha", visibleOffset, ".ProseMirror");
+  const end = await textBoundaryPoint("Beta", visibleOffset, ".ProseMirror");
+  await dragBetweenTextBoundaries(start, end);
+  await waitFor(
+    () => evaluate(`(() => {
+      const root = document.querySelector(".ProseMirror");
+      const exact = root?.tetherGetActiveSourceSelection?.();
+      const rendered = getSelection();
+      return Boolean(
+        (exact && exact.anchor !== exact.head)
+        || (rendered && !rendered.isCollapsed)
+      );
+    })()`),
+    "pointer drag did not establish the cross-item list selection"
+  );
+  const beforeCut = await editorState();
   const cutText = await dispatchCutAndCaptureText();
   if (cutText !== selectedText) {
-    throw new Error(`List Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(selectedText)}`);
+    throw new Error(`List Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(selectedText)}; selection state: ${JSON.stringify(beforeCut)}`);
   }
   await waitForSaveState(false);
   await save(cutSource);
@@ -2282,6 +2358,11 @@ async function run() {
     console.log("Verified CodeMirror Select All edits the exact physical Markdown document.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "code-select-all-tab-history") {
+    await verifyCodeSelectAllTabHistory();
+    console.log("Verified CodeMirror Select All Tab and Shift-Tab preserve every physical line and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-block-layout") {
     await verifyCodeBlockLayout();
     console.log("Verified compact, balanced single-line fenced-code spacing.");
@@ -2422,6 +2503,7 @@ async function run() {
   await verifyCodeJumpNavigation();
   await verifyCodeDocumentJumpReplacement();
   await verifyCodeSelectAllEditing();
+  await verifyCodeSelectAllTabHistory();
   await verifyClosingFenceReplacement();
   await verifyCodeToProseSelection();
   await verifyCodeToProseReplacement();

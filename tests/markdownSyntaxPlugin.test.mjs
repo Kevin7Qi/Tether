@@ -3,6 +3,7 @@ import test from "node:test";
 import { Schema } from "@milkdown/kit/prose/model";
 import { AllSelection, EditorState, NodeSelection, TextSelection } from "@milkdown/kit/prose/state";
 import {
+  activeDocumentSourceSelection,
   activeMarkdownAtomSyntax,
   activeMarkdownBlockSyntax,
   activeMarkdownSyntax,
@@ -144,6 +145,10 @@ const emptyDocumentSchema = new Schema({
     },
     text: {}
   }
+});
+
+test("an unavailable editor state has no active document source selection", () => {
+  assert.equal(activeDocumentSourceSelection(null), null);
 });
 
 test("a synthetic empty document exposes physical source offset zero for paste", () => {
@@ -2801,6 +2806,34 @@ test("exact source handoffs focus the root before dispatch and synchronize after
   assert.deepEqual(calls, ["blur", "root-focus", "dispatch", "prosemirror-focus"]);
 });
 
+test("non-collapsed exact source handoffs keep keyboard ownership at the root", () => {
+  const calls = [];
+  const embedded = { blur: () => calls.push("blur") };
+  const dom = {
+    ownerDocument: { activeElement: embedded },
+    isConnected: true,
+    contains: (element) => element === embedded,
+    focus: () => calls.push("root-focus")
+  };
+  const transaction = {
+    getMeta: () => ({ sourceSelection: { anchor: 0, head: 2 } })
+  };
+  const state = EditorState.create({
+    schema,
+    doc: schema.node("doc", null, [schema.node("paragraph", null, schema.text("text"))])
+  });
+  const view = {
+    dom,
+    state: { ...state, selection: new AllSelection(state.doc) },
+    dispatch: (value) => calls.push(value === transaction ? "dispatch" : "wrong-transaction"),
+    focus: () => calls.push("prosemirror-focus")
+  };
+
+  dispatchFocusedSourceSelection(view, transaction);
+
+  assert.deepEqual(calls, ["blur", "root-focus", "dispatch", "root-focus"]);
+});
+
 test("unchanged source handoffs install their destination before fallback closure", () => {
   const calls = [];
   const editor = { isConnected: true };
@@ -2956,6 +2989,11 @@ test("block source Tab inserts at a collapsed caret and indents selected physica
     value: "\tone\n\ttwo\nthree",
     selectionStart: 1,
     selectionEnd: 10
+  });
+  assert.deepEqual(sourceTabEdit("\nalpha\n", 0, 7), {
+    value: "\t\n\talpha\n",
+    selectionStart: 1,
+    selectionEnd: 9
   });
 });
 

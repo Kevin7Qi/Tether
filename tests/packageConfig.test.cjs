@@ -335,7 +335,8 @@ test("code history changes restore the same embedded editor focus", () => {
   assert.match(surface, /removeEventListener\("focusin", rememberCodeFocus, true\)/);
   assert.match(surface, /listener\.markdownUpdated\([\s\S]*scheduleCodeFocusRestore\(lastFocusedCodeTarget\)/);
   assert.match(surface, /tetherRunBoundaryHistory\?\.\(direction\)[\s\S]*settleCodeHistoryFocus\(view, false\)/);
-  assert.match(surface, /if \(lastFocusedCodeTarget && !historyCommandPending\)/);
+  assert.match(surface, /lastFocusedCodeTarget[\s\S]*!historyCommandPending[\s\S]*!activeDocumentSourceSelection\(currentView\?\.state\)/);
+  assert.match(surface, /activeDocumentSourceSelection\(view\.state\)[\s\S]*lastFocusedCodeTarget = null;[\s\S]*view\.dom\.focus\(\)/);
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /const deleteExactSource = \(view, direction\) =>[\s\S]*\{ isolatedHistory: true \}/);
   assert.match(syntax, /addEventListener\("keydown", captureExactDeletion, true\)/);

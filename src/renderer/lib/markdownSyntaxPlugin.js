@@ -7,7 +7,7 @@ import {
   undo as undoProseMirror
 } from "@milkdown/kit/prose/history";
 import { liftListItem, splitListItem } from "@milkdown/kit/prose/schema-list";
-import { AllSelection, EditorState, Plugin, PluginKey, Selection, TextSelection } from "@milkdown/kit/prose/state";
+import { AllSelection, EditorState, NodeSelection, Plugin, PluginKey, Selection, TextSelection } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet } from "@milkdown/kit/prose/view";
 import { $prose, $shortcut } from "@milkdown/kit/utils";
 import { documentGaps, normalizeEmptyMarkdownDocument } from "./markdownDocument.js";
@@ -27,6 +27,10 @@ export { sourceTabEdit } from "./sourceEditing.js";
 const markdownSyntaxKey = new PluginKey("TETHER_MARKDOWN_SYNTAX");
 export const externalMarkdownTransactionMeta = "tetherExternalMarkdown";
 export const markdownSourceDraftEvent = "tether-markdown-source-draft";
+
+export function activeDocumentSourceSelection(state) {
+  return state ? markdownSyntaxKey.getState(state)?.sourceSelection || null : null;
+}
 
 export function publishMarkdownSourceDraft(view, markdown) {
   const EventType = view?.dom?.ownerDocument?.defaultView?.CustomEvent;
@@ -191,6 +195,34 @@ export function markdownSourceSelectionAt(doc, position, atomPosition = null) {
   return Selection.near(resolved);
 }
 
+function documentSourceSelectionCarrier(state, sourceSelection, serializer) {
+  const boundary = Math.max(
+    0,
+    Math.min(Number(sourceSelection?.boundary) || 0, state.doc.content.size)
+  );
+  if (
+    sourceSelection
+    && sourceSelection.anchor !== sourceSelection.head
+    && typeof serializer === "function"
+  ) {
+    if (sourceSelectionSpansDocumentUnits(state, sourceSelection, serializer)) {
+      return new AllSelection(state.doc);
+    }
+    const target = documentSourceTarget(
+      state,
+      sourceSelection.head,
+      serializer,
+      "forward"
+    );
+    if (
+      target?.kind === "block"
+      && target.node.type.name === "code_block"
+      && NodeSelection.isSelectable(target.node)
+    ) return NodeSelection.create(state.doc, target.position);
+  }
+  return markdownSourceSelectionAt(state.doc, boundary);
+}
+
 export function markdownGapSelectionAt(doc, position, direction) {
   const bounded = Math.max(0, Math.min(position, doc.content.size));
   return Selection.near(
@@ -225,7 +257,23 @@ export function dispatchFocusedSourceSelection(view, transaction) {
   // browser range to that new selection.
   view.dom.focus();
   view.dispatch(transaction);
-  view.focus();
+  const sourceSelection = transaction?.getMeta?.(markdownSyntaxKey)?.sourceSelection;
+  const carrier = view.state?.selection;
+  const rootOwnedCarrier = carrier instanceof AllSelection
+    || (carrier instanceof NodeSelection && carrier.node?.type.name === "code_block");
+  if (
+    sourceSelection
+    && sourceSelection.anchor !== sourceSelection.head
+    && rootOwnedCarrier
+  ) {
+    // A non-collapsed physical range can use a node/caret only as an internal
+    // carrier. Calling view.focus() asks an embedded node view to own that
+    // carrier and can redirect keyboard input into CodeMirror. The root is the
+    // actual editor for this source range, and exact handlers own its input.
+    view.dom.focus();
+  } else {
+    view.focus();
+  }
 }
 
 function pruneStaleCodeBlockDom(view) {
@@ -5150,6 +5198,27 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     // rendered change listener does not report. Publish the authoritative
     // serialization immediately so dirty state and Save track the transaction.
     publishMarkdownSourceDraft(view, afterSource);
+    if (afterSelection && afterSelection.anchor !== afterSelection.head) {
+      // Tab/Shift-Tab and similar source-native transforms retain a range.
+      // Mapping only its moving head back into the rendered document would
+      // collapse the selection (and can hand focus to a rebuilt CodeMirror),
+      // unlike a normal source editor. Reinstall the complete physical range.
+      dispatchFocusedSourceSelection(
+        view,
+        view.state.tr
+          .setSelection(documentSourceSelectionCarrier(
+            view.state,
+            afterSelection,
+            serializer
+          ))
+          .setMeta(markdownSyntaxKey, {
+            action: "source-selection",
+            sourceSelection: afterSelection
+          })
+          .scrollIntoView()
+      );
+      return;
+    }
     if (
       preserveSourcePosition
       && afterSelection
@@ -5251,24 +5320,23 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       ...step.sourceSelection,
       fullSource: step.source
     };
-    const boundary = Math.max(
-      0,
-      Math.min(Number(sourceSelection.boundary) || 0, transaction.doc.content.size)
-    );
     transaction = transaction
-      .setSelection(markdownSourceSelectionAt(transaction.doc, boundary))
+      .setSelection(documentSourceSelectionCarrier(
+        { doc: transaction.doc, selection: transaction.selection },
+        sourceSelection,
+        serializer
+      ))
       .setMeta("addToHistory", false)
       .setMeta(markdownSyntaxKey, { action: "source-selection", sourceSelection });
     protectedExactSource = step.source;
     exactSourceDispatchDepth += 1;
     try {
-      view.dispatch(transaction.scrollIntoView());
+      dispatchFocusedSourceSelection(view, transaction.scrollIntoView());
     } finally {
       exactSourceDispatchDepth -= 1;
     }
     step.entry.state = command === "undo" ? "undone" : "applied";
     publishMarkdownSourceDraft(view, step.source);
-    view.focus();
     return true;
   };
 
@@ -5491,6 +5559,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       view.dom.tetherRunBoundaryHistory = runBoundaryHistory;
       view.dom.tetherRunSourceControlHistory = runSourceControlHistory;
       view.dom.tetherReplaceExactSourceSelection = replaceExactSourceSelection;
+      const getActiveSourceSelection = () => activeDocumentSourceSelection(
+        (editorView || view).state
+      );
+      view.dom.tetherGetActiveSourceSelection = getActiveSourceSelection;
       const captureExactClipboard = (event) => {
         if (!event.clipboardData || !["copy", "cut"].includes(event.type)) return;
         const currentView = editorView || view;
@@ -5582,6 +5654,9 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           }
           if (view.dom.tetherReplaceExactSourceSelection === replaceExactSourceSelection) {
             delete view.dom.tetherReplaceExactSourceSelection;
+          }
+          if (view.dom.tetherGetActiveSourceSelection === getActiveSourceSelection) {
+            delete view.dom.tetherGetActiveSourceSelection;
           }
           editorView = null;
         }

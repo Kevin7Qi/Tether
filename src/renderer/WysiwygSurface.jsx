@@ -111,6 +111,7 @@ import {
   sourceFaithfulUpperTaskInputRule
 } from "./lib/markdownList.js";
 import {
+  activeDocumentSourceSelection,
   applyDocumentSourceJump,
   activateDocumentSourceSelection,
   activateMarkdownBlockSourceAt,
@@ -1309,6 +1310,15 @@ export default function WysiwygSurface({
           }
           const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
           if (!view) return;
+          // A source-spanning edit can rebuild the entire document as one code
+          // block (for example Select All + Tab). The outgoing CodeMirror may
+          // still have a delayed focus restore queued, but the exact physical
+          // source selection must continue to own focus across that rebuild.
+          if (activeDocumentSourceSelection(view.state)) {
+            lastFocusedCodeTarget = null;
+            view.dom.focus();
+            return;
+          }
           const active = host.ownerDocument.activeElement;
           if (!shouldRestoreEditorHistoryFocus(active, host)) return;
           const activeCodeView = tetherCodeViewForElement(
@@ -1785,9 +1795,11 @@ export default function WysiwygSurface({
 
     crepe.on((listener) => {
       listener.markdownUpdated((ctx, rawMarkdown) => {
+        let currentView = null;
         let currentDoc = null;
         try {
-          currentDoc = ctx.get(editorViewCtx).state.doc;
+          currentView = ctx.get(editorViewCtx);
+          currentDoc = currentView.state.doc;
         } catch {
           // The view may be between replacement and teardown. The loaded
           // source still supplies the correct terminal-newline convention.
@@ -1798,7 +1810,11 @@ export default function WysiwygSurface({
           baselineSourceRef.current
         );
         lastMarkdownRef.current = markdown;
-        if (lastFocusedCodeTarget && !historyCommandPending) {
+        if (
+          lastFocusedCodeTarget
+          && !historyCommandPending
+          && !activeDocumentSourceSelection(currentView?.state)
+        ) {
           scheduleCodeFocusRestore(lastFocusedCodeTarget);
         }
         if (applyingExternalRef.current) return;

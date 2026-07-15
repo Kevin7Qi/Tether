@@ -49,7 +49,12 @@ export function sourceTabEdit(value, selectionStart, selectionEnd, outdent = fal
     };
   }
 
-  const firstLineStart = source.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+  // Search strictly before the selection. Clamping `start - 1` to zero makes
+  // a document-leading newline look like the preceding line break, which
+  // skips the first (empty) physical line for a Select All Tab edit.
+  const firstLineStart = start === 0
+    ? 0
+    : source.lastIndexOf("\n", start - 1) + 1;
   const selectedEnd = end > start && source[end - 1] === "\n" ? end - 1 : end;
   const lineStarts = [firstLineStart];
   for (let offset = firstLineStart; offset < selectedEnd;) {
