@@ -41,7 +41,12 @@ import {
   sourceFaithfulParagraphSchema
 } from "../src/renderer/lib/markdownParagraph.js";
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
-import { activeMarkdownBlockSyntax } from "../src/renderer/lib/markdownSyntaxPlugin.js";
+import {
+  activeMarkdownBlockSyntax,
+  plainTextMarkdownSourceSelection,
+  replaceSourceSelectionTransaction,
+  sourceSelectionText
+} from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
 const milkdownTimerEvents = new EventTarget();
 globalThis.addEventListener ??= milkdownTimerEvents.addEventListener.bind(milkdownTimerEvents);
@@ -162,6 +167,36 @@ test("the paragraph being edited intentionally falls back to safe Markdown", asy
   const markdown = serialize(edited);
   assert.match(markdown, /^changed \\?\* b \\?\* c ©\n$/);
   assert.notEqual(markdown, "changed * b * c &copy;\n");
+});
+
+test("plain paragraph edits preserve untouched escape and entity source", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "Before \\*literal\\* and &copy; after.\n";
+  const doc = parse(source);
+  const insertion = textPosition(doc, "*literal*") + 2;
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, insertion)
+  });
+  const sourceSelection = plainTextMarkdownSourceSelection(state, serialize);
+  assert.equal(sourceSelection?.head, source.indexOf("literal") + 1);
+  const transaction = replaceSourceSelectionTransaction(
+    state,
+    sourceSelection,
+    "X",
+    parse
+  );
+  assert.equal(serialize(transaction.doc), "Before \\*lXiteral\\* and &copy; after.\n");
+
+  const entity = textPosition(doc, "©");
+  const entityState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, entity, entity + 1)
+  });
+  assert.equal(
+    sourceSelectionText(plainTextMarkdownSourceSelection(entityState, serialize)),
+    "&copy;"
+  );
 });
 
 test("ordinary paragraph carets stay in rendered editing instead of opening block source", async () => {

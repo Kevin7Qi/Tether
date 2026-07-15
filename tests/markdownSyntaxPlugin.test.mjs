@@ -53,6 +53,7 @@ import {
   markdownTableSyntaxAt,
   mappedPosition,
   moveSourceSelectionHead,
+  plainTextMarkdownSourceToken,
   rootBoundarySourceSelection,
   sourceCaretOffset,
   sourceTabEdit,
@@ -115,6 +116,17 @@ const schema = new Schema({
     inlineCode: {},
     strike_through: {},
     link: { attrs: { href: {}, title: { default: null } } }
+  }
+});
+
+const literalSchema = new Schema({
+  nodes: {
+    doc: { content: "paragraph+" },
+    paragraph: {
+      content: "text*",
+      attrs: { paragraphSource: { default: null } }
+    },
+    text: {}
   }
 });
 
@@ -353,6 +365,49 @@ test("escaped inline delimiters stay literal until an unescaped source pair is t
   // An escaped backslash leaves the following delimiter active in Markdown.
   assert.equal(completedInlineMarkdownSource("Write \\\\*italic*")?.[0], "*italic*");
   assert.equal(completedInlineMarkdownSource("Use \\\\`code`")?.[0], "`code`");
+});
+
+test("plain rendered escapes and entities expose one exact source token", () => {
+  const source = "Before \\*literal\\* and &copy; after.";
+  const text = "Before *literal* and © after.";
+  const doc = literalSchema.node("doc", null, [
+    literalSchema.node("paragraph", { paragraphSource: source }, [literalSchema.text(text)])
+  ]);
+  const escapeStart = 1 + "Before ".length;
+  const escapeForward = plainTextMarkdownSourceToken(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, escapeStart)
+  }), "forward");
+  assert.deepEqual(escapeForward, {
+    unit: {
+      from: escapeStart,
+      to: escapeStart + 1,
+      kind: "inline",
+      name: "literal_source",
+      source: "\\*",
+      segmentSourceOffset: "Before ".length
+    },
+    boundaryOffset: 0,
+    sourceOffset: 1,
+    direction: "forward"
+  });
+  assert.equal(
+    plainTextMarkdownSourceToken(EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, escapeStart + 1)
+    }), "backward")?.sourceOffset,
+    1
+  );
+
+  const entityStart = 1 + text.indexOf("©");
+  const entity = plainTextMarkdownSourceToken(EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, entityStart)
+  }), "forward");
+  assert.equal(entity?.unit.source, "&copy;");
+  assert.equal(entity?.unit.from, entityStart);
+  assert.equal(entity?.unit.to, entityStart + 1);
+  assert.equal(entity?.sourceOffset, 1);
 });
 
 test("prose that merely resembles Markdown stays literal while typing", () => {

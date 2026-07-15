@@ -14,7 +14,7 @@ import {
   isEditorHistoryShortcut,
   tetherCodeViewForElement
 } from "./codeEditor.js";
-import { sourceTabEdit } from "./sourceEditing.js";
+import { decodedMarkdownSourceOffset, sourceTabEdit } from "./sourceEditing.js";
 
 export { sourceTabEdit } from "./sourceEditing.js";
 
@@ -121,6 +121,7 @@ const sourceDeletionBlockNames = new Set();
 const inactivePluginState = () => ({
   active: false,
   atomPosition: null,
+  literalSourceUnit: null,
   clickPosition: null,
   sourceOffset: null,
   explicitUnitPosition: null,
@@ -135,6 +136,7 @@ const inactivePluginState = () => ({
 export function activateMarkdownSourceAt(view, position, options = {}) {
   const {
     atomPosition = null,
+    literalSourceUnit = null,
     explicitUnitPosition = null,
     sourceOffset = null,
     initialDeleteDirection = null,
@@ -151,6 +153,7 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
       .setMeta(markdownSyntaxKey, {
         action: "activate",
         atomPosition,
+        literalSourceUnit,
         explicitUnitPosition,
         clickPosition: selection.from,
         sourceOffset,
@@ -881,6 +884,7 @@ export function inlineSourceWithReferenceDefinitions(state, source) {
 
 export function continuousMarkdownSource(state, unit, serializer) {
   if (!unit) return "";
+  if (typeof unit.source === "string") return unit.source;
   if (unit.name === "hardbreak") {
     const marker = state.doc.nodeAt(unit.from)?.attrs.markdownMarker;
     return marker === "\\" || /^ {2,}$/.test(marker || "") ? marker : "\\";
@@ -1164,8 +1168,16 @@ function inlineSourceDocumentEdit(state, unit, source, serializer) {
     occurrences.push(found);
     cursor = found + Math.max(1, currentSource.length);
   }
-  if (!occurrences.length) return null;
-  const sourceStart = occurrences.reduce((best, candidate) => {
+  const explicitSourceStart = Number.isFinite(unit.segmentSourceOffset)
+    && unit.segmentSourceOffset >= 0
+    && segmentSource.slice(
+      unit.segmentSourceOffset,
+      unit.segmentSourceOffset + currentSource.length
+    ) === currentSource
+    ? unit.segmentSourceOffset
+    : null;
+  if (!occurrences.length && explicitSourceStart == null) return null;
+  const sourceStart = explicitSourceStart ?? occurrences.reduce((best, candidate) => {
     const containsCaret = caret >= candidate && caret <= candidate + currentSource.length;
     const bestContainsCaret = caret >= best && caret <= best + currentSource.length;
     if (containsCaret !== bestContainsCaret) return containsCaret ? candidate : best;
@@ -2519,6 +2531,20 @@ export function documentSourceOffsetFromPointerTarget(state, target, serializer)
 
 export function documentSourceUnitBoundaryOffset(state, unit, direction, serializer) {
   if (!unit || !["backward", "forward"].includes(direction)) return null;
+  if (Number.isFinite(unit.segmentSourceOffset)) {
+    const documentSource = documentSourceSegments(state, serializer);
+    const segment = documentSource?.segments.find(({ position, node }) => (
+      unit.from >= position && unit.to <= position + node.nodeSize
+    ));
+    const source = continuousMarkdownSource(state, unit, serializer);
+    const exactStart = segment
+      ? segment.from + Math.max(0, unit.segmentSourceOffset)
+      : null;
+    if (
+      Number.isFinite(exactStart)
+      && documentSource.fullSource.slice(exactStart, exactStart + source.length) === source
+    ) return direction === "backward" ? exactStart : exactStart + source.length;
+  }
   const start = documentSourceUnitStartOffset(state, unit, serializer);
   if (!Number.isFinite(start)) return null;
   if (direction === "backward") return start;
@@ -2656,6 +2682,90 @@ export function sourceSelectionFromDocumentSelection(
     head: forward ? to : from,
     fullSource: documentSource.fullSource,
     boundary: crossedBoundary ?? selection.from
+  };
+}
+
+function plainTextParagraphSourceMapping(state, selection = state?.selection) {
+  if (
+    !selection
+    || !selection.$from.sameParent(selection.$to)
+    || selection.$from.depth !== 1
+    || selection.$from.parent.type.name !== "paragraph"
+  ) return null;
+  const paragraph = selection.$from.parent;
+  const textNode = paragraph.childCount === 1 ? paragraph.firstChild : null;
+  const source = paragraph.attrs.paragraphSource;
+  const text = textNode?.isText && !textNode.marks.length ? textNode.text : null;
+  if (typeof source !== "string" || typeof text !== "string") return null;
+  if (source === text) return null;
+  if (decodedMarkdownSourceOffset(source, text, text.length) !== source.length) return null;
+  return { paragraph, source, text };
+}
+
+export function plainTextMarkdownSourceSelection(
+  state,
+  serializer,
+  selection = state?.selection
+) {
+  const mapping = plainTextParagraphSourceMapping(state, selection);
+  if (!mapping || typeof serializer !== "function") return null;
+  const { source, text } = mapping;
+  const start = selection.$from.start();
+  const visibleFrom = selection.from - start;
+  const visibleTo = selection.to - start;
+  const sourceFrom = decodedMarkdownSourceOffset(source, text, visibleFrom);
+  const sourceTo = decodedMarkdownSourceOffset(source, text, visibleTo);
+  if (!Number.isFinite(sourceFrom) || !Number.isFinite(sourceTo)) return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const segment = documentSource?.segments[selection.$from.index(0)];
+  if (!segment || segment.node !== mapping.paragraph) return null;
+  const forward = selection.anchor <= selection.head;
+  return {
+    anchor: segment.from + (forward ? sourceFrom : sourceTo),
+    head: segment.from + (forward ? sourceTo : sourceFrom),
+    fullSource: documentSource.fullSource,
+    boundary: selection.head
+  };
+}
+
+export function plainTextMarkdownSourceToken(state, direction) {
+  const { selection } = state || {};
+  if (!selection?.empty || !["backward", "forward"].includes(direction)) return null;
+  const mapping = plainTextParagraphSourceMapping(state, selection);
+  if (!mapping) return null;
+  const { source, text } = mapping;
+
+  const caret = selection.$from.parentOffset;
+  const boundaries = sourceCaretBoundaries(text);
+  const visibleFrom = direction === "forward"
+    ? caret
+    : boundaries.findLast((boundary) => boundary < caret);
+  const visibleTo = direction === "forward"
+    ? boundaries.find((boundary) => boundary > caret)
+    : caret;
+  if (!Number.isFinite(visibleFrom) || !Number.isFinite(visibleTo)) return null;
+  const sourceFrom = decodedMarkdownSourceOffset(source, text, visibleFrom);
+  const sourceTo = decodedMarkdownSourceOffset(source, text, visibleTo);
+  if (!Number.isFinite(sourceFrom) || !Number.isFinite(sourceTo) || sourceFrom >= sourceTo) {
+    return null;
+  }
+  const tokenSource = source.slice(sourceFrom, sourceTo);
+  const visibleToken = text.slice(visibleFrom, visibleTo);
+  if (tokenSource === visibleToken) return null;
+
+  const boundaryOffset = direction === "forward" ? 0 : tokenSource.length;
+  return {
+    unit: {
+      from: selection.$from.start() + visibleFrom,
+      to: selection.$from.start() + visibleTo,
+      kind: "inline",
+      name: "literal_source",
+      source: tokenSource,
+      segmentSourceOffset: sourceFrom
+    },
+    boundaryOffset,
+    sourceOffset: sourceOffsetAfterCharacter(tokenSource, boundaryOffset, direction),
+    direction
   };
 }
 
@@ -4794,7 +4904,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     const documentSelection = sourceSelection
       ? null
       : sourceSelectionFromDocumentSelection(view.state, ctx.get(serializerCtx));
-    const exactSelection = sourceSelection || documentSelection;
+    const plainSelection = sourceSelection || documentSelection
+      ? null
+      : plainTextMarkdownSourceSelection(view.state, ctx.get(serializerCtx));
+    const exactSelection = sourceSelection || documentSelection || plainSelection;
     if (!exactSelection) return false;
     const transaction = replaceSourceSelectionTransaction(
       view.state,
@@ -4857,6 +4970,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return {
             active: true,
             atomPosition: meta.atomPosition ?? null,
+            literalSourceUnit: meta.literalSourceUnit ?? null,
             explicitUnitPosition: meta.explicitUnitPosition ?? null,
             clickPosition: meta.clickPosition ?? transaction.selection.from,
             sourceOffset: meta.sourceOffset ?? null,
@@ -4882,6 +4996,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return {
             active: true,
             atomPosition: null,
+            literalSourceUnit: null,
             explicitUnitPosition: null,
             clickPosition: transaction.selection.from,
             sourceOffset: null,
@@ -4900,6 +5015,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return {
             active: true,
             atomPosition: null,
+            literalSourceUnit: null,
             explicitUnitPosition: null,
             clickPosition: transaction.selection.from,
             sourceOffset: null,
@@ -4977,7 +5093,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const documentSelection = sourceSelection
           ? null
           : sourceSelectionFromDocumentSelection(view.state, ctx.get(serializerCtx));
-        const exactSelection = sourceSelection || documentSelection;
+        const plainSelection = sourceSelection || documentSelection
+          ? null
+          : plainTextMarkdownSourceSelection(
+              view.state,
+              ctx.get(serializerCtx),
+              TextSelection.create(view.state.doc, _from, _to)
+            );
+        const exactSelection = sourceSelection || documentSelection || plainSelection;
         const transaction = exactSelection
           ? replaceSourceSelectionTransaction(
               view.state,
@@ -4996,7 +5119,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         return true;
       },
       handlePaste(view, event) {
-        const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+        const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection
+          || plainTextMarkdownSourceSelection(view.state, ctx.get(serializerCtx));
         const text = event.clipboardData?.getData("text/plain");
         if (text == null) return false;
         const edit = sourceClipboardEdit(
@@ -5026,7 +5150,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         },
         copy(view, event) {
           const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
-          const text = sourceSelectionText(sourceSelection)
+          const plainSelection = sourceSelection
+            ? null
+            : plainTextMarkdownSourceSelection(view.state, ctx.get(serializerCtx));
+          const text = sourceSelectionText(sourceSelection || plainSelection)
             ?? sourceNewlineClipboardText(view.state)
             ?? sourceAwareClipboardText(view.state, ctx.get(serializerCtx));
           if (text == null || text === "" || !event.clipboardData) return false;
@@ -5037,7 +5164,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         },
         cut(view, event) {
           if (!view.editable || !event.clipboardData) return false;
-          const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+          const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection
+            || plainTextMarkdownSourceSelection(view.state, ctx.get(serializerCtx));
           const edit = sourceClipboardEdit(
             view.state,
             "",
@@ -5310,7 +5438,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 _view.state,
                 ctx.get(serializerCtx)
               );
-          const exactSelection = sourceSelection || documentSelection;
+          const plainSelection = sourceSelection || documentSelection
+            ? null
+            : plainTextMarkdownSourceSelection(_view.state, ctx.get(serializerCtx));
+          const exactSelection = sourceSelection || documentSelection || plainSelection;
           if (
             (exactSelection || sourceNewlineSelectionInfo(_view.state))
             && !event.altKey
@@ -5368,6 +5499,19 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             && ["ArrowLeft", "ArrowRight"].includes(event.key)
             && !activeSourceControl?.element?.isConnected
           ) {
+            const direction = event.key === "ArrowLeft" ? "backward" : "forward";
+            const literalTarget = plainTextMarkdownSourceToken(_view.state, direction);
+            if (literalTarget) {
+              event.preventDefault();
+              activateMarkdownSourceAt(_view, _view.state.selection.from, {
+                literalSourceUnit: literalTarget.unit,
+                sourceOffset: event.shiftKey
+                  ? literalTarget.boundaryOffset
+                  : literalTarget.sourceOffset,
+                initialSelectionDirection: event.shiftKey ? direction : null
+              });
+              return true;
+            }
             const target = structuralBoundarySourceTarget(_view.state, event.key);
             if (target) {
               const serializer = ctx.get(serializerCtx);
@@ -5526,6 +5670,16 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             && !activeSourceControl?.element?.isConnected
           ) {
             const direction = event.key === "Backspace" ? "backward" : "forward";
+            const literalTarget = plainTextMarkdownSourceToken(_view.state, direction);
+            if (literalTarget) {
+              event.preventDefault();
+              activateMarkdownSourceAt(_view, _view.state.selection.from, {
+                literalSourceUnit: literalTarget.unit,
+                sourceOffset: literalTarget.boundaryOffset,
+                initialDeleteDirection: direction
+              });
+              return true;
+            }
             const target = markdownDeletionTarget(_view.state, direction);
             if (target) {
               const unit = markdownDeletionSourceUnit(_view.state, target);
@@ -5613,7 +5767,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           ? null
           : markdownTableSyntaxAt(state, pluginState.explicitUnitPosition)
             || blockSyntaxAtPosition(state, pluginState.explicitUnitPosition, explicitSourceBlockNames);
-        const unit = (pluginState.atomPosition == null
+        const unit = pluginState.literalSourceUnit
+          || (pluginState.atomPosition == null
           ? null
           : markdownAtomSyntaxAt(state, pluginState.atomPosition))
           || explicitUnit

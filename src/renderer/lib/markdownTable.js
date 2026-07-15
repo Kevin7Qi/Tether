@@ -1,7 +1,7 @@
 import { tableSchema } from "@milkdown/kit/preset/gfm";
 import { $remark } from "@milkdown/kit/utils";
 import { gfmTableToMarkdown } from "mdast-util-gfm-table";
-import { decodeString } from "micromark-util-decode-string";
+import { decodedMarkdownSourceOffset } from "./sourceEditing.js";
 
 const tableSemanticKeys = new Set([
   "alt",
@@ -14,25 +14,6 @@ const tableSemanticKeys = new Set([
   "url",
   "value"
 ]);
-
-const markdownEscapeOrReference = /^(?:\\[!-/:-@[-`{-~]|&(?:#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});)/i;
-
-function decodedSourceOffset(raw, text, targetOffset) {
-  if (targetOffset === 0) return 0;
-  let rawOffset = 0;
-  let visibleOffset = 0;
-  while (rawOffset < raw.length && visibleOffset < targetOffset) {
-    const token = raw.slice(rawOffset).match(markdownEscapeOrReference)?.[0] || raw[rawOffset];
-    const decoded = decodeString(token);
-    const sourceToken = decoded === token && token.length > 1 ? token[0] : token;
-    const visibleToken = sourceToken === token ? decoded : sourceToken;
-    if (text.slice(visibleOffset, visibleOffset + visibleToken.length) !== visibleToken) return null;
-    if (targetOffset < visibleOffset + visibleToken.length) return null;
-    rawOffset += sourceToken.length;
-    visibleOffset += visibleToken.length;
-  }
-  return visibleOffset === targetOffset ? rawOffset : null;
-}
 
 function sourceText(file) {
   return typeof file?.value === "string" ? file.value : String(file?.value || "");
@@ -275,7 +256,7 @@ export function tableCellSourceOffsetAtPosition(
   }
   const raw = tableSource.slice(segment.contentStart, segment.contentEnd);
   if (raw === segment.text) return segment.contentStart + relative;
-  const rawOffset = decodedSourceOffset(raw, segment.text, relative);
+  const rawOffset = decodedMarkdownSourceOffset(raw, segment.text, relative);
   return rawOffset == null ? null : segment.contentStart + rawOffset;
 }
 

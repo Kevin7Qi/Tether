@@ -10,6 +10,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const inlineFixture = "Before **bold** after.\n";
 const editedInlineFixture = "Before **boXld** after.\n";
 const deletedInlineMarkerFixture = "Before *bold** after.\n";
+const literalSourceFixture = "Before \\*literal\\* and &copy; after.\n";
 const codeFixture = "Before.\n\n```js\nconst value = 1;\n```\n\nAfter.\n";
 const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n";
 const codeBlockSource = "```js\nconst value = 1;\n```";
@@ -502,6 +503,62 @@ async function verifyInlineBoundaryExitNavigation() {
   );
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(backwardExpected);
+  await stopSession();
+}
+
+async function verifyLiteralSourceTokens() {
+  const editedEscapeFixture = "Before \\*lXiteral\\* and &copy; after.\n";
+  await startSession(literalSourceFixture, "Before *literal* and © after.");
+  await placeCaretInText("Before ", "Before ".length);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "\\*" &&
+      state.selectionStart === 1 && state.selectionEnd === 1,
+    "ArrowRight skipped the hidden escape character"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await assertSourceControlClosed("ArrowRight did not leave the escaped source token");
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitFor(
+    () => evaluate(`document.querySelector(".ProseMirror")?.textContent.includes("*lXiteral*")`),
+    "escaped-token handoff did not consume the next physical character"
+  );
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedEscapeFixture);
+  await stopSession();
+
+  const editedEntityFixture = "Before \\*literal\\* and C after.\n";
+  await startSession(literalSourceFixture, "©");
+  await placeCaretInText("©", 0);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "&copy;" &&
+      state.selectionStart === 1 && state.selectionEnd === 1,
+    "ArrowRight skipped the hidden entity source"
+  );
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(0, control.value.length);
+    return Boolean(control);
+  })()`);
+  await cdp.send("Input.insertText", { text: "C" });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedEntityFixture);
+  await stopSession();
+
+  const deletedEscapeFixture = "Before *literal\\* and &copy; after.\n";
+  await startSession(literalSourceFixture, "Before *literal* and © after.");
+  await placeCaretInText("Before ", "Before ".length);
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(true);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(deletedEscapeFixture);
   await stopSession();
 }
 
@@ -1077,10 +1134,17 @@ async function run() {
     console.log("Verified inline source exits consume the next physical character.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "literal-source-tokens") {
+    await verifyLiteralSourceTokens();
+    console.log("Verified escaped characters and entities retain physical source navigation.");
+    return;
+  }
   await verifyInlineEditing();
   await stopSession();
   await verifyInlineBoundaryNavigation();
   await verifyInlineBoundaryExitNavigation();
+  await stopSession();
+  await verifyLiteralSourceTokens();
   await stopSession();
   await verifyInlineConstructBoundaries();
   await verifyInlineConstructDeletion();
@@ -1102,3 +1166,8 @@ try {
 } finally {
   await stopSession();
 }
+
+// Multiple Node WebSocket sessions can leave an idle undici handle behind even
+// after Electron and every isolated profile have been closed. Cleanup above is
+// complete, so do not let that stale handle keep the verifier resident.
+process.exit(0);

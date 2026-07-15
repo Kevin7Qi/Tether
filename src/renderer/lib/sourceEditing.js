@@ -1,3 +1,24 @@
+import { decodeString } from "micromark-util-decode-string";
+
+const markdownEscapeOrReference = /^(?:\\[!-/:-@[-`{-~]|&(?:#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});)/i;
+
+export function decodedMarkdownSourceOffset(raw, text, targetOffset) {
+  if (targetOffset === 0) return 0;
+  let rawOffset = 0;
+  let visibleOffset = 0;
+  while (rawOffset < raw.length && visibleOffset < targetOffset) {
+    const token = raw.slice(rawOffset).match(markdownEscapeOrReference)?.[0] || raw[rawOffset];
+    const decoded = decodeString(token);
+    const sourceToken = decoded === token && token.length > 1 ? token[0] : token;
+    const visibleToken = sourceToken === token ? decoded : sourceToken;
+    if (text.slice(visibleOffset, visibleOffset + visibleToken.length) !== visibleToken) return null;
+    if (targetOffset < visibleOffset + visibleToken.length) return null;
+    rawOffset += sourceToken.length;
+    visibleOffset += visibleToken.length;
+  }
+  return visibleOffset === targetOffset ? rawOffset : null;
+}
+
 export function sourceTabEdit(value, selectionStart, selectionEnd, outdent = false) {
   const source = String(value ?? "");
   const start = Math.max(0, Math.min(source.length, Number(selectionStart) || 0));
