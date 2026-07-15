@@ -31,6 +31,9 @@ import {
   inlineSourceBoundarySelectionDirection,
   inlineSourceContentOffset,
   inlineSourceVerticalDirection,
+  exactSourceProtectionDecision,
+  isUnmarkedCodeBlockBoundaryMutation,
+  isUnmarkedCodeBlockDeletion,
   isUnmarkedFullDocumentReplacement,
   isSourceInputComposing,
   hardbreakBoundaryBackspaceTransaction,
@@ -167,6 +170,119 @@ test("exact-source protection rejects only a conflicting stale root replacement"
     ),
     false
   );
+});
+
+test("stale DOM reconciliation is recognized when it deletes one complete fenced node", () => {
+  const codeSchema = new Schema({
+    nodes: {
+      doc: { content: "block+" },
+      paragraph: { content: "inline*", group: "block" },
+      code_block: { content: "text*", group: "block", code: true },
+      text: { group: "inline" }
+    }
+  });
+  const before = codeSchema.node("doc", null, [
+    codeSchema.node("paragraph", null, [codeSchema.text("before")]),
+    codeSchema.node("code_block", null, [codeSchema.text("alpha")]),
+    codeSchema.node("paragraph", null, [codeSchema.text("after")])
+  ]);
+  const state = EditorState.create({ doc: before });
+  const codePosition = before.child(0).nodeSize;
+  const codeNode = before.nodeAt(codePosition);
+  const staleDeletion = state.tr.delete(codePosition, codePosition + codeNode.nodeSize);
+
+  assert.equal(isUnmarkedCodeBlockDeletion(staleDeletion, state), true);
+  assert.equal(
+    isUnmarkedCodeBlockDeletion(staleDeletion.setMeta("tetherExternalMarkdown", true), state),
+    false
+  );
+  assert.equal(isUnmarkedCodeBlockDeletion(state.tr.delete(codePosition + 1, codePosition + 2), state), false);
+  assert.equal(
+    isUnmarkedCodeBlockBoundaryMutation(
+      state.tr.delete(codePosition + codeNode.nodeSize - 1, codePosition + codeNode.nodeSize + 1),
+      state
+    ),
+    true
+  );
+  assert.equal(
+    isUnmarkedCodeBlockBoundaryMutation(state.tr.delete(codePosition + 1, codePosition + 2), state),
+    false
+  );
+});
+
+test("selection handoff keeps exact-source protection until the stale fenced deletion arrives", () => {
+  const codeSchema = new Schema({
+    nodes: {
+      doc: { content: "block+" },
+      paragraph: { content: "inline*", group: "block" },
+      code_block: { content: "text*", group: "block", code: true },
+      text: { group: "inline" }
+    }
+  });
+  const before = codeSchema.node("doc", null, [
+    codeSchema.node("paragraph", null, [codeSchema.text("before")]),
+    codeSchema.node("code_block", null, [codeSchema.text("alpha")]),
+    codeSchema.node("paragraph", null, [codeSchema.text("after")])
+  ]);
+  const state = EditorState.create({ doc: before });
+  const codePosition = before.child(0).nodeSize;
+  const codeNode = before.nodeAt(codePosition);
+  const protectedSource = "before\n```\nalpha\n```\nafter";
+  const serializer = (doc) => doc.eq(before) ? protectedSource : "before\nafter";
+  const handoff = state.tr.setSelection(TextSelection.create(before, before.content.size - 1));
+  const afterHandoff = exactSourceProtectionDecision(
+    handoff,
+    state,
+    protectedSource,
+    serializer
+  );
+
+  assert.deepEqual(afterHandoff, { reject: false, protectedSource });
+
+  const staleDeletion = state.tr.delete(codePosition, codePosition + codeNode.nodeSize);
+  const firstRejection = exactSourceProtectionDecision(
+    staleDeletion,
+    state,
+    afterHandoff.protectedSource,
+    serializer
+  );
+  assert.deepEqual(firstRejection, { reject: true, protectedSource });
+  assert.deepEqual(
+    exactSourceProtectionDecision(
+      staleDeletion,
+      state,
+      firstRejection.protectedSource,
+      serializer
+    ),
+    { reject: true, protectedSource }
+  );
+});
+
+test("source activation arms protection before a stale fenced reconciliation", () => {
+  const code = blockSchema.node("code_block", null, [blockSchema.text("alpha")]);
+  const after = blockSchema.node("paragraph", null, [blockSchema.text("After code.")]);
+  const doc = blockSchema.node("doc", null, [code, after]);
+  const state = docState(doc);
+  const serializer = (value) => JSON.stringify(value.toJSON());
+  const activation = exactSourceProtectionDecision(
+    state.tr.setSelection(TextSelection.create(doc, 1 + code.content.size)),
+    state,
+    null,
+    serializer,
+    true
+  );
+
+  assert.equal(activation.reject, false);
+  assert.equal(activation.protectedSource, serializer(doc));
+
+  const stale = exactSourceProtectionDecision(
+    state.tr.delete(0, code.nodeSize),
+    state,
+    activation.protectedSource,
+    serializer
+  );
+  assert.equal(stale.reject, true);
+  assert.equal(stale.protectedSource, serializer(doc));
 });
 
 test("source activation enters textblocks instead of selecting the whole paragraph", () => {

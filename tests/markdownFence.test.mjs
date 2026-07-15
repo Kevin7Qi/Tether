@@ -39,6 +39,7 @@ import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   continuousMarkdownSource,
   documentGapSourceSelection,
+  documentPositionAtSourceOffset,
   documentSourceSegments,
   documentSourceTarget,
   documentSourceUnitBoundaryGapTarget,
@@ -613,6 +614,10 @@ test("typing after traversing a closing fence preserves the fenced block", async
   );
   assert.equal(selection.anchor, source.indexOf("\n\nAfter") + 1);
   assert.equal(selection.anchor, selection.head);
+  assert.equal(
+    documentPositionAtSourceOffset(state, source.indexOf("After"), serialize),
+    codePosition + codeNode.nodeSize + 1
+  );
   assert.equal(
     serialize(transaction.doc),
     `${source.slice(0, selection.anchor)}X${source.slice(selection.anchor)}`

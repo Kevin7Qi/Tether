@@ -31,6 +31,48 @@ export function isUnmarkedFullDocumentReplacement(transaction, state) {
   return step?.from === 0 && step?.to === state.doc.content.size;
 }
 
+export function isUnmarkedCodeBlockDeletion(transaction, state) {
+  if (
+    !transaction?.docChanged
+    || transaction.getMeta(externalMarkdownTransactionMeta)
+    || Object.keys(transaction.meta || {}).length
+    || transaction.steps.length !== 1
+  ) return false;
+  const [step] = transaction.steps;
+  const node = Number.isFinite(step?.from) ? state.doc.nodeAt(step.from) : null;
+  return node?.type.name === "code_block"
+    && step.to === step.from + node.nodeSize
+    && step.slice?.size === 0;
+}
+
+export function isUnmarkedCodeBlockBoundaryMutation(transaction, state) {
+  if (
+    !transaction?.docChanged
+    || transaction.getMeta(externalMarkdownTransactionMeta)
+    || transaction.getMeta(markdownSyntaxKey)
+  ) return false;
+  const codeBlocks = [];
+  state.doc.descendants((node, position) => {
+    if (node.type.name === "code_block") codeBlocks.push({ position, node });
+    return true;
+  });
+  if (!codeBlocks.length) return false;
+  let nextCodeBlockCount = 0;
+  transaction.doc.descendants((node) => {
+    if (node.type.name === "code_block") nextCodeBlockCount += 1;
+    return true;
+  });
+  if (nextCodeBlockCount < codeBlocks.length) return true;
+  return transaction.steps.some((step) => {
+    if (!Number.isFinite(step?.from) || !Number.isFinite(step?.to)) return false;
+    return codeBlocks.some(({ position, node }) => {
+      const end = position + node.nodeSize;
+      return (step.from <= position && step.to > position)
+        || (step.from < end && step.to >= end);
+    });
+  });
+}
+
 export function shouldRejectStaleExactSourceReplacement(
   transaction,
   state,
@@ -39,7 +81,10 @@ export function shouldRejectStaleExactSourceReplacement(
 ) {
   if (protectedSource == null || typeof serializer !== "function") return false;
   return serializer(transaction.doc) !== protectedSource
-    && isUnmarkedFullDocumentReplacement(transaction, state);
+    && (
+      isUnmarkedFullDocumentReplacement(transaction, state)
+      || isUnmarkedCodeBlockBoundaryMutation(transaction, state)
+    );
 }
 
 const supportedMarks = ["inlineCode", "link", "strike_through", "strong", "emphasis", "html_inline"];
@@ -261,6 +306,26 @@ function activateDocumentSourceOffset(
         );
         return true;
       }
+    }
+    // Once a hidden marker or root gap has been traversed, return to the
+    // rendered caret as soon as this physical source offset corresponds to a
+    // visible text position. Opening a raw paragraph control here makes the
+    // next arrow jump across the paragraph instead of advancing one source
+    // character, and can leave the browser reconciling against the old fence.
+    const renderedPosition = documentPositionAtSourceOffset(
+      view.state,
+      sourceOffset,
+      serializer
+    );
+    if (renderedPosition != null) {
+      view.dispatch(
+        view.state.tr
+          .setSelection(TextSelection.create(view.state.doc, renderedPosition))
+          .setMeta(markdownSyntaxKey, "close")
+          .scrollIntoView()
+      );
+      focusExactEditSelection(view);
+      return true;
     }
     const options = sourceAtomNames.has(target.node.type.name)
       ? { atomPosition: target.position, sourceOffset: target.sourceOffset }
@@ -1262,6 +1327,46 @@ export function sourceWordSelectionAcrossUnitBoundary(
     direction,
     extend
   );
+}
+
+export function exactSourceProtectionDecision(
+  transaction,
+  state,
+  protectedSource,
+  serializer,
+  armProtection = false
+) {
+  if (!transaction?.docChanged) {
+    return {
+      reject: false,
+      protectedSource: armProtection
+        && protectedSource == null
+        && typeof serializer === "function"
+        ? serializer(state.doc)
+        : protectedSource
+    };
+  }
+  const candidateSource = serializer(transaction.doc);
+  if (shouldRejectStaleExactSourceReplacement(
+    transaction,
+    state,
+    protectedSource,
+    serializer
+  )) {
+    // Chromium can retry the same reconciliation after ProseMirror rejects it.
+    // Keep the authoritative source until an explicit pointer/destructive-key
+    // interaction clears it or a legitimate edit advances it below.
+    return { reject: true, protectedSource };
+  }
+  const meta = transaction.getMeta(markdownSyntaxKey);
+  return {
+    reject: false,
+    protectedSource: protectedSource != null
+      && meta?.action !== "exact-source-edit"
+      && candidateSource !== protectedSource
+      ? candidateSource
+      : protectedSource
+  };
 }
 
 export function sourcePointerDragSelection(
@@ -4159,10 +4264,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       preserveSourcePosition ? afterSelection : null
     );
     transaction.setMeta(markdownSyntaxKey, { action: "exact-source-edit" });
-    // The browser can report one stale whole-root DOM reconciliation after a
-    // virtual gap edit moves focus out of an embedded CodeMirror. Remember the
-    // source installed by this exact transaction so that reconciliation cannot
-    // replace the newly edited document with the rendered DOM snapshot.
+    // The browser can report a stale DOM reconciliation after a virtual gap
+    // edit moves focus out of an embedded CodeMirror. Remember the source
+    // installed by this exact transaction so that reconciliation cannot delete
+    // the adjacent fenced node or replace the document from stale rendered DOM.
     protectedExactSource = afterSource;
     exactSourceDispatchDepth += 1;
     try {
@@ -4234,27 +4339,17 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
   return new Plugin({
     key: markdownSyntaxKey,
     filterTransaction(transaction, state) {
-      const meta = transaction.getMeta(markdownSyntaxKey);
-      if (!transaction.docChanged) {
-        if (transaction.selectionSet && meta?.action !== "source-selection") {
-          protectedExactSource = null;
-        }
-        return true;
-      }
-
       const serializer = ctx.get(serializerCtx);
-      const candidateSource = serializer(transaction.doc);
-      if (shouldRejectStaleExactSourceReplacement(
+      const meta = transaction.getMeta(markdownSyntaxKey);
+      const decision = exactSourceProtectionDecision(
         transaction,
         state,
         protectedExactSource,
-        serializer
-      )) return false;
-
-      if (meta?.action !== "exact-source-edit" && candidateSource !== protectedExactSource) {
-        protectedExactSource = null;
-      }
-      return true;
+        serializer,
+        meta?.action === "activate" || meta?.action === "source-selection"
+      );
+      protectedExactSource = decision.protectedSource;
+      return !decision.reject;
     },
     state: {
       // Milkdown starts with a selection in the first block. Source mode only
@@ -4357,6 +4452,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       editorView = view;
       const captureSourceHandoff = (event) => {
         if (!view.editable) return;
+        protectedExactSource = null;
         const targetElement = event.target instanceof Element ? event.target : null;
         if (targetElement?.closest(".tether-continuous-source")) return;
         const sourceToFinish = activeSourceControl?.element?.isConnected ? activeSourceControl : null;
@@ -4472,6 +4568,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         },
         mousedown(view, event) {
           if (!view.editable) return false;
+          protectedExactSource = null;
           if (event.target instanceof Element && event.target.closest(".tether-continuous-source")) return false;
           if (markdownSyntaxKey.getState(view.state)?.sourceSelection) {
             pendingActivation = false;
@@ -4497,7 +4594,9 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         keydown(_view, event) {
           if (!_view.editable) return false;
           if (isSourceInputComposing(event)) return false;
+          if (["Backspace", "Delete"].includes(event.key)) protectedExactSource = null;
           if (isEditorHistoryShortcut(event)) {
+            protectedExactSource = null;
             restoreExactSelectionAfterHistory(_view);
             return false;
           }
