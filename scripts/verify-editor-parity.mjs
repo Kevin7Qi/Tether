@@ -648,6 +648,100 @@ async function verifyCodeBoundaryNavigation() {
   await stopSession();
 }
 
+async function verifyCodeBoundarySelection() {
+  const contentStart = codeBlockSource.indexOf("\n") + 1;
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("start");
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource &&
+      state.selectionStart === contentStart - 1 && state.selectionEnd === contentStart &&
+      state.selectionDirection === "backward",
+    "Shift-ArrowLeft did not select the physical opening-fence newline"
+  );
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === contentStart - 2 &&
+      state.selectionEnd === contentStart && state.selectionDirection === "backward",
+    "Shift-ArrowLeft did not continue into the opening fence info string"
+  );
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+  const backwardDeletedSource = `${codeBlockSource.slice(0, contentStart - 2)}${
+    codeBlockSource.slice(contentStart)
+  }`;
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(codeFixture.replace(codeBlockSource, backwardDeletedSource));
+  await stopSession();
+
+  const contentEnd = contentStart + codeContent.length;
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("end");
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource &&
+      state.selectionStart === contentEnd && state.selectionEnd === contentEnd + 1 &&
+      state.selectionDirection === "forward",
+    "Shift-ArrowRight did not select the physical closing-fence newline"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === contentEnd &&
+      state.selectionEnd === contentEnd + 2 && state.selectionDirection === "forward",
+    "Shift-ArrowRight did not continue into the closing fence marker"
+  );
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  const forwardDeletedSource = `${codeBlockSource.slice(0, contentEnd)}${
+    codeBlockSource.slice(contentEnd + 2)
+  }`;
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(codeFixture.replace(codeBlockSource, forwardDeletedSource));
+  await stopSession();
+}
+
+async function verifyCodeToProseSelection() {
+  const contentStart = codeBlockSource.indexOf("\n") + 1;
+  const contentEnd = contentStart + codeContent.length;
+  const codeStart = codeFixture.indexOf(codeBlockSource);
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("end");
+  for (let step = 1; step <= 4; step += 1) {
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === codeBlockSource &&
+        state.selectionStart === contentEnd && state.selectionEnd === contentEnd + step &&
+        state.selectionDirection === "forward",
+      `Shift-ArrowRight did not extend ${step} source character${step === 1 ? "" : "s"} past the code content`
+    );
+  }
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await waitFor(
+    async () => !(await sourceControlState()),
+    "code selection did not cross from the closing fence into the root separator"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  const selectionStart = codeStart + contentEnd;
+  const selectedLength = 7;
+  const expected = `${codeFixture.slice(0, selectionStart)}${
+    codeFixture.slice(selectionStart + selectedLength)
+  }`;
+  await waitForSaveState(false);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(true);
+  await waitFor(
+    () => evaluate(`document.querySelector(".cm-content")?.textContent === ${JSON.stringify(codeContent)} && document.querySelector(".ProseMirror")?.textContent.includes("After.")`),
+    "undo did not restore the fenced block and following prose"
+  );
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(expected);
+  await stopSession();
+}
+
 async function verifyCodeBoundaryDeletion() {
   const contentStart = codeBlockSource.indexOf("\n") + 1;
   const openingNewlineDeleted = `${codeBlockSource.slice(0, contentStart - 1)}${
@@ -706,6 +800,21 @@ async function verifyEmptyCodeEditing() {
   await waitForSaveState(false);
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(expandedFixture);
+  await stopSession();
+
+  const combinedFixture = expandedFixture.replace("Before.", "Before.X");
+  await startSession(emptyCodeFixture, "Before.");
+  await focusCodeBoundary("start");
+  await dispatchKey({ key: "Enter", code: "Enter", virtualKeyCode: 13 });
+  await waitForSaveState(false);
+  await placeCaretInText("Before.", "Before.".length);
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitFor(
+    () => evaluate(`document.querySelector(".ProseMirror")?.textContent.includes("Before.X")`),
+    "rendered prose edit after an empty-fence source edit did not appear"
+  );
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(combinedFixture);
   await stopSession();
 
   const typedSource = "```js\nx```";
@@ -780,6 +889,11 @@ async function verifyCodeEditing() {
 }
 
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "code-to-prose") {
+    await verifyCodeToProseSelection();
+    console.log("Verified real Electron code-to-prose source selection and history.");
+    return;
+  }
   await verifyInlineEditing();
   await stopSession();
   await verifyInlineBoundaryNavigation();
@@ -788,6 +902,8 @@ async function run() {
   await verifyInlineConstructDeletion();
   await verifyInlineCrossBoundarySelection();
   await verifyCodeBoundaryNavigation();
+  await verifyCodeBoundarySelection();
+  await verifyCodeToProseSelection();
   await verifyCodeBoundaryDeletion();
   await verifyEmptyCodeEditing();
   await verifyCodeEditing();

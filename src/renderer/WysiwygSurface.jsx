@@ -397,14 +397,19 @@ export default function WysiwygSurface({
         // activeElement to BODY before native menu callbacks, so mountedness is
         // the stable ownership signal for document history.
         if (!host?.isConnected) return false;
+        const activeSourceControl = activeElement?.matches?.(".tether-continuous-source");
         if (
           activeElement?.matches?.("input, textarea")
           && !activeElement.closest?.(".cm-editor")
+          && !activeSourceControl
         ) return false;
         const crepe = crepeRef.current;
         if (!crepe) return false;
         const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
         if (view.dom.tetherRunBoundaryHistory?.(command)) return true;
+        // If this temporary source control has no isolated document-history
+        // step, leave its own in-progress text history to Chromium.
+        if (activeSourceControl) return false;
         const historyCommand = command === "undo" ? undoProseMirror : redoProseMirror;
         const handled = Boolean(historyCommand(view.state, view.dispatch));
         if (handled) view.dom.tetherProtectCurrentSource?.();

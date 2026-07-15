@@ -10,6 +10,7 @@ import { tableCellSourceOffsetAtPosition } from "./markdownTable.js";
 import {
   adjacentCodeSourceOffset,
   codeContentOffsetAtSourceOffset,
+  codeOuterHistoryDirection,
   isEditorHistoryShortcut,
   tetherCodeViewForElement
 } from "./codeEditor.js";
@@ -4585,6 +4586,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       exactSourceDispatchDepth -= 1;
     }
     step.entry.state = command === "undo" ? "undone" : "applied";
+    publishMarkdownSourceDraft(view, step.source);
     view.focus();
     return true;
   };
@@ -4918,6 +4920,11 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (["Backspace", "Delete"].includes(event.key)) protectedExactSource = null;
           if (isEditorHistoryShortcut(event)) {
             protectedExactSource = null;
+            const command = codeOuterHistoryDirection(event);
+            if (runBoundaryHistory(command)) {
+              event.preventDefault();
+              return true;
+            }
             restoreExactSelectionAfterHistory(_view);
             return false;
           }
