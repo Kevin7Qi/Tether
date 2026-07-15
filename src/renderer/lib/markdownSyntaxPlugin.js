@@ -21,7 +21,7 @@ const markdownSyntaxKey = new PluginKey("TETHER_MARKDOWN_SYNTAX");
 export const externalMarkdownTransactionMeta = "tetherExternalMarkdown";
 export const markdownSourceDraftEvent = "tether-markdown-source-draft";
 
-function publishMarkdownSourceDraft(view, markdown) {
+export function publishMarkdownSourceDraft(view, markdown) {
   const EventType = view?.dom?.ownerDocument?.defaultView?.CustomEvent;
   if (typeof markdown !== "string" || !EventType || !view.dom.isConnected) return;
   view.dom.dispatchEvent(new EventType(markdownSourceDraftEvent, {

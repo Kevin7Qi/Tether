@@ -123,6 +123,7 @@ import {
   flushActiveMarkdownSource,
   externalMarkdownTransactionMeta,
   markdownSourceDraftEvent,
+  publishMarkdownSourceDraft,
   markdownSourceTargetFromPointer,
   markdownSyntaxPlugin,
   isSourceInputComposing,
@@ -166,6 +167,10 @@ function normalizeInitialEmptyMarkdown(crepe, markdown) {
       .setMeta("addToHistory", false)
   );
   return view.state.doc;
+}
+
+function replaceMarkdownSourceRange(source, from, to, replacement) {
+  return `${source.slice(0, from)}${replacement}${source.slice(to)}`;
 }
 
 const copyIcon = `
@@ -253,6 +258,10 @@ export default function WysiwygSurface({
   const readOnlyRef = useRef(readOnly);
   const lastMarkdownRef = useRef(content);
   const baselineMarkdownRef = useRef(content);
+  // Some source-faithful edits (for example adding a blank line inside an
+  // otherwise empty fenced block) do not change the semantic editor model.
+  // Keep their exact bytes separately so save cannot normalize them away.
+  const pendingSourceDraftRef = useRef(null);
   // The source text the current baseline serialization corresponds to, so a
   // document that returns to its loaded state (e.g. via undo) can report the
   // original file text and clear the unsaved marker.
@@ -313,10 +322,14 @@ export default function WysiwygSurface({
           settledDoc,
           baselineSourceRef.current
         );
+        const pendingSourceDraft = pendingSourceDraftRef.current;
         lastMarkdownRef.current = markdown;
         if (markdown === baselineMarkdownRef.current) {
-          return hasUserChangeRef.current ? baselineSourceRef.current : null;
+          return hasUserChangeRef.current
+            ? pendingSourceDraft ?? baselineSourceRef.current
+            : null;
         }
+        pendingSourceDraftRef.current = null;
         hasUserChangeRef.current = true;
         return markdown;
       },
@@ -332,6 +345,7 @@ export default function WysiwygSurface({
         baselineSourceRef.current = markdown;
         baselineDocRef.current = doc;
         lastMarkdownRef.current = markdown;
+        pendingSourceDraftRef.current = null;
         hasUserChangeRef.current = false;
 
         const savedFocus = pendingSaveFocusRef.current;
@@ -456,11 +470,13 @@ export default function WysiwygSurface({
       );
       lastMarkdownRef.current = markdown;
       if (applyingExternalRef.current) return;
-      if (markdown === baselineMarkdownRef.current) {
+      if (markdown === baselineSourceRef.current) {
+        pendingSourceDraftRef.current = null;
         hasUserChangeRef.current = false;
         onChangeRef.current?.(baselineSourceRef.current);
         return;
       }
+      pendingSourceDraftRef.current = markdown;
       hasUserChangeRef.current = true;
       onChangeRef.current?.(markdown);
     };
@@ -808,10 +824,17 @@ export default function WysiwygSurface({
         parser
       );
       if (!transaction) return false;
+      const draftMarkdown = replaceMarkdownSourceRange(
+        documentSource.fullSource,
+        sourceOffset,
+        sourceOffset,
+        replacement
+      );
 
       event.preventDefault();
       event.stopImmediatePropagation();
       view.dispatch(transaction.scrollIntoView());
+      publishMarkdownSourceDraft(view, draftMarkdown);
       const afterSelection = view.state.selection;
       const afterCodeBlock = enclosingCodeBlock(view.state.doc, afterSelection.head);
       if (afterCodeBlock) {
@@ -897,10 +920,34 @@ export default function WysiwygSurface({
             const command = direction === "undo"
               ? undoProseMirror
               : direction === "redo" ? redoProseMirror : null;
+            const nextSource = direction === "undo"
+              ? codeSourceOnlyHistory.beforeSource
+              : direction === "redo" ? codeSourceOnlyHistory.afterSource : null;
+            const documentSource = nextSource == null
+              ? null
+              : documentSourceSegments(view.state, serializer);
+            const unit = {
+              from: codeBlock.position,
+              to: codeBlock.position + codeBlock.node.nodeSize,
+              kind: "block",
+              name: "code_block"
+            };
+            const unitStart = documentSource
+              ? documentSourceUnitStartOffset(view.state, unit, serializer)
+              : null;
+            const draftMarkdown = Number.isFinite(unitStart)
+              ? replaceMarkdownSourceRange(
+                  documentSource.fullSource,
+                  unitStart,
+                  unitStart + source.length,
+                  nextSource
+                )
+              : null;
             if (command?.(view.state, view.dispatch)) {
               event.preventDefault();
               event.stopImmediatePropagation();
               codeSourceOnlyHistory.state = direction === "undo" ? "undone" : "applied";
+              publishMarkdownSourceDraft(view, draftMarkdown);
               view.dom.tetherProtectCurrentSource?.();
               settleCodeHistoryFocus(view);
               return;
@@ -959,6 +1006,18 @@ export default function WysiwygSurface({
             const source = continuousMarkdownSource(view.state, unit, serializer);
             const nextSource = emptyCodeEnterSource(source);
             if (nextSource) {
+              const documentSource = documentSourceSegments(view.state, serializer);
+              const unitStart = documentSource
+                ? documentSourceUnitStartOffset(view.state, unit, serializer)
+                : null;
+              const draftMarkdown = Number.isFinite(unitStart)
+                ? replaceMarkdownSourceRange(
+                    documentSource.fullSource,
+                    unitStart,
+                    unitStart + source.length,
+                    nextSource
+                  )
+                : null;
               event.preventDefault();
               event.stopImmediatePropagation();
               const { node, position } = codeBlock;
@@ -978,6 +1037,7 @@ export default function WysiwygSurface({
                   meta: node.attrs.meta
                 })
               }).scrollIntoView());
+              publishMarkdownSourceDraft(view, draftMarkdown);
               return;
             }
           }
@@ -1777,6 +1837,7 @@ export default function WysiwygSurface({
         );
         baselineSourceRef.current = nextMarkdown;
         baselineDocRef.current = nextDoc;
+        pendingSourceDraftRef.current = null;
         hasUserChangeRef.current = false;
         applyingExternalRef.current = false;
       });

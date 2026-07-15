@@ -14,6 +14,8 @@ const codeFixture = "Before.\n\n```js\nconst value = 1;\n```\n\nAfter.\n";
 const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n";
 const codeBlockSource = "```js\nconst value = 1;\n```";
 const codeContent = "const value = 1;";
+const emptyCodeBlockSource = "```js\n```";
+const emptyCodeFixture = `Before.\n\n${emptyCodeBlockSource}\n\nAfter.\n`;
 const inlineBoundaryFixtures = [
   { name: "emphasis", source: "*italic*" },
   { name: "inline code", source: "`code`" },
@@ -682,6 +684,59 @@ async function verifyCodeBoundaryDeletion() {
   await stopSession();
 }
 
+async function verifyEmptyCodeEditing() {
+  const expandedSource = "```js\n\n```";
+  const expandedFixture = emptyCodeFixture.replace(emptyCodeBlockSource, expandedSource);
+  await startSession(emptyCodeFixture, "Before.");
+  await focusCodeBoundary("start");
+  await dispatchKey({ key: "Enter", code: "Enter", virtualKeyCode: 13 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(expandedFixture);
+  await waitFor(
+    () => evaluate(`document.activeElement?.matches?.(".cm-content")`),
+    "saving an empty-fence Enter edit did not restore CodeMirror focus"
+  );
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(emptyCodeFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(expandedFixture);
+  await stopSession();
+
+  const typedSource = "```js\nx```";
+  const typedFixture = emptyCodeFixture.replace(emptyCodeBlockSource, typedSource);
+  await startSession(emptyCodeFixture, "Before.");
+  await waitFor(
+    () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .cm-content"))`),
+    "empty rendered code editor did not become ready"
+  );
+  await clickElement(".milkdown-code-block .cm-content");
+  await waitFor(
+    () => evaluate(`document.activeElement?.matches?.(".cm-content")`),
+    "pointer activation did not focus the empty rendered code editor"
+  );
+  await cdp.send("Input.insertText", { text: "x" });
+  try {
+    await waitFor(
+      () => evaluate(`document.querySelector(".cm-content")?.textContent.startsWith("x\`\`\`")`),
+      "typing at an immediate closing fence did not expose its backticks as literal code"
+    );
+  } catch (error) {
+    const state = await sourceControlState();
+    const code = await evaluate(`Array.from(document.querySelectorAll(".cm-content"), (node) => node.textContent)`);
+    throw new Error(`${error.message}\nCodeMirror contents: ${JSON.stringify(code)}\nEditor state: ${JSON.stringify(state)}`);
+  }
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(typedFixture);
+  await stopSession();
+}
+
 async function verifyCodeEditing() {
   await startSession(codeFixture, "const value = 1;");
   await waitFor(
@@ -734,6 +789,7 @@ async function run() {
   await verifyInlineCrossBoundarySelection();
   await verifyCodeBoundaryNavigation();
   await verifyCodeBoundaryDeletion();
+  await verifyEmptyCodeEditing();
   await verifyCodeEditing();
   console.log("Verified real Electron typing, saving, and history preserve inline and fenced-code Markdown source.");
 }
