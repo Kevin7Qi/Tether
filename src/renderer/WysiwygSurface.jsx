@@ -122,6 +122,7 @@ import {
   enclosingCodeBlock,
   flushActiveMarkdownSource,
   externalMarkdownTransactionMeta,
+  markdownSourceDraftEvent,
   markdownSourceTargetFromPointer,
   markdownSyntaxPlugin,
   isSourceInputComposing,
@@ -332,6 +333,7 @@ export default function WysiwygSurface({
     let copyFeedbackTimer = 0;
     let settleFrame = 0;
     let secondSettleFrame = 0;
+    let draftEventTarget = null;
     let codeSourceOnlyHistory = null;
     const ensureSyntheticTrailing = (event = null) => {
       // Composition owns the editor until it commits. Even a history-free
@@ -365,6 +367,24 @@ export default function WysiwygSurface({
           if (!disposed && host.isConnected) ensureSyntheticTrailing();
         });
       });
+    };
+    const handleMarkdownSourceDraft = (event) => {
+      const rawMarkdown = event.detail?.markdown;
+      if (typeof rawMarkdown !== "string") return;
+      const markdown = normalizeSerializedMarkdown(
+        rawMarkdown,
+        null,
+        baselineSourceRef.current
+      );
+      lastMarkdownRef.current = markdown;
+      if (applyingExternalRef.current) return;
+      if (markdown === baselineMarkdownRef.current) {
+        hasUserChangeRef.current = false;
+        onChangeRef.current?.(baselineSourceRef.current);
+        return;
+      }
+      hasUserChangeRef.current = true;
+      onChangeRef.current?.(markdown);
     };
     const blockTransientImage = (event) => {
       const transfer = event.clipboardData || event.dataTransfer;
@@ -1502,6 +1522,8 @@ export default function WysiwygSurface({
         }
 
         crepeRef.current = crepe;
+        draftEventTarget = crepe.editor.action((ctx) => ctx.get(editorViewCtx).dom);
+        draftEventTarget.addEventListener(markdownSourceDraftEvent, handleMarkdownSourceDraft);
         const editor = host.querySelector(".ProseMirror");
         editor?.setAttribute("aria-label", readOnlyRef.current ? "Markdown reading view" : "Markdown document editor");
         editor?.setAttribute("lang", "en");
@@ -1542,6 +1564,7 @@ export default function WysiwygSurface({
       host.removeEventListener("keydown", restoreFocusAfterHistory, true);
       host.removeEventListener("focusin", rememberCodeFocus, true);
       host.removeEventListener("beforeinput", handleCodeSourceOnlyBeforeInput, true);
+      draftEventTarget?.removeEventListener(markdownSourceDraftEvent, handleMarkdownSourceDraft);
       host.removeEventListener("paste", handleCodeSourceOnlyTransfer, true);
       host.removeEventListener("drop", handleCodeSourceOnlyTransfer, true);
       host.removeEventListener("beforeinput", ensureSyntheticTrailing, true);

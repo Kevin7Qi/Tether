@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FilePlus, FileText, FolderOpen } from "lucide-react";
+import { FilePlus, FileText, FolderInput, FolderOpen, Trash2 } from "lucide-react";
 import { applyConnectionTarget, formatConnectionTarget } from "../lib/format.js";
 import { useDialogFocus } from "../lib/useDialogFocus.js";
 import { PAGE_WIDTH_MAX, PAGE_WIDTH_MIN, PAGE_WIDTH_STEP, clampPageWidth, hotkey } from "../lib/constants.js";
@@ -490,6 +490,10 @@ export function NewFileDialog({ busy, directory, open, onClose, onCreate }) {
 
   if (!open) return null;
 
+  const enteredName = name.trim();
+  const displayName = enteredName && /\.[A-Za-z0-9]+$/.test(enteredName) ? enteredName : enteredName ? `${enteredName}.md` : "";
+  const fullPath = joinDisplayPath(directory, displayName);
+
   async function submit(event) {
     event.preventDefault();
     if (!name.trim() || busy) return;
@@ -516,9 +520,9 @@ export function NewFileDialog({ busy, directory, open, onClose, onCreate }) {
           </button>
         </div>
 
-        <div className="new-file-target" title={directory || ""}>
-          <span>folder</span>
-          <strong>{directory || "current folder"}</strong>
+        <div className="new-file-target">
+          <span>{displayName ? "full path" : "folder"}</span>
+          <strong title={fullPath || directory || ""}>{fullPath || directory || "current folder"}</strong>
         </div>
 
         <label className="field">
@@ -544,6 +548,121 @@ export function NewFileDialog({ busy, directory, open, onClose, onCreate }) {
       </form>
     </div>
   );
+}
+
+export function MoveFileDialog({ busy, entry, open, onClose, onMove }) {
+  const dialogRef = useRef(null);
+  const [directory, setDirectory] = useState("");
+  useDialogFocus(open, dialogRef);
+
+  useEffect(() => {
+    if (open) setDirectory(entry?.directory || "");
+  }, [entry, open]);
+
+  if (!open || !entry) return null;
+  const destinationPath = joinDisplayPath(directory.trim(), entry.name);
+
+  async function submit(event) {
+    event.preventDefault();
+    if (!directory.trim() || busy) return;
+    await onMove(directory.trim());
+  }
+
+  return (
+    <div className="palette-backdrop" role="presentation" onClick={onClose}>
+      <form
+        className="new-file-dialog file-operation-dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="move-file-title"
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+        onSubmit={submit}
+      >
+        <div className="palette-header">
+          <span id="move-file-title">move file</span>
+          <button className="esc-chip" type="button" onClick={onClose}>esc</button>
+        </div>
+
+        <PathDisplay label="source" path={entry.path} />
+        <label className="field">
+          <span>destination folder</span>
+          <input
+            autoFocus
+            value={directory}
+            onChange={(event) => setDirectory(event.target.value)}
+            placeholder="/path/to/folder"
+            spellCheck="false"
+          />
+        </label>
+        <PathDisplay label="result" path={destinationPath} />
+
+        <div className="new-file-actions">
+          <button type="button" className="quiet-button" onClick={onClose}>cancel</button>
+          <button type="submit" className="save-button" disabled={busy || !directory.trim()}>
+            <FolderInput size={13} />
+            <span>move</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+export function DeleteFileDialog({ busy, entry, open, onClose, onDelete }) {
+  const dialogRef = useRef(null);
+  useDialogFocus(open, dialogRef);
+  if (!open || !entry) return null;
+
+  return (
+    <div className="palette-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="new-file-dialog file-operation-dialog"
+        ref={dialogRef}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="delete-file-title"
+        aria-describedby="delete-file-description"
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="palette-header">
+          <span id="delete-file-title">delete file</span>
+          <button className="esc-chip" type="button" onClick={onClose}>esc</button>
+        </div>
+        <p className="file-operation-warning" id="delete-file-description">
+          This permanently removes the file. This action cannot be undone.
+        </p>
+        <PathDisplay label="file" path={entry.path} />
+        <div className="new-file-actions">
+          <button type="button" className="quiet-button" onClick={onClose}>cancel</button>
+          <button type="button" className="danger-button" disabled={busy} onClick={onDelete}>
+            <Trash2 size={13} />
+            <span>delete</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PathDisplay({ label, path }) {
+  return (
+    <div className="new-file-target file-operation-path">
+      <span>{label}</span>
+      <strong title={path || ""}>{path || "—"}</strong>
+    </div>
+  );
+}
+
+function joinDisplayPath(directory, fileName) {
+  const rawDirectory = String(directory || "").trim();
+  if (!fileName) return rawDirectory;
+  const separator = rawDirectory.includes("\\") && !rawDirectory.includes("/") ? "\\" : "/";
+  const base = rawDirectory.replace(/[\\/]+$/, "");
+  if (!base || base === ".") return fileName;
+  return `${base}${separator}${fileName}`;
 }
 
 export function StatusBar({ detached, lineCount, statusLabel, syncLabel, tone, wordCount }) {

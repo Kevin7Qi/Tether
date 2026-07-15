@@ -308,6 +308,24 @@ class RemoteFileProvider extends EventEmitter {
     await this.client.delete(remotePath);
   }
 
+  async moveFile(remotePath, destinationPath) {
+    this.ensureConnected();
+    validateRemotePath(remotePath);
+    validateRemotePath(destinationPath);
+
+    try {
+      await this.client.stat(destinationPath);
+      throw userError("REMOTE_FILE_EXISTS", "A remote file already exists at the destination path.");
+    } catch (error) {
+      if (error?.code === "REMOTE_FILE_EXISTS") throw error;
+      if (!isMissingRemoteFileError(error)) throw error;
+    }
+
+    await this.client.rename(remotePath, destinationPath);
+    if (this.watchPath === remotePath) this.watchPath = destinationPath;
+    return destinationPath;
+  }
+
   startWatching(remotePath, intervalMs) {
     this.ensureConnected();
     validateRemotePath(remotePath);

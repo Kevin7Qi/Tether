@@ -11,6 +11,36 @@ test("macOS packaging includes shared main-process runtime files", () => {
   assert.match(packageJson.scripts["package:mac"], /verify-mac-package\.cjs/);
 });
 
+test("file move and delete operations are bridged through guarded main-process APIs", () => {
+  const main = fs.readFileSync(path.join(root, "src", "main", "main.cjs"), "utf8");
+  const preload = fs.readFileSync(path.join(root, "src", "main", "preload.cjs"), "utf8");
+  const app = fs.readFileSync(path.join(root, "src", "renderer", "App.jsx"), "utf8");
+  assert.match(main, /ipcMain\.handle\("local:moveFile"/);
+  assert.match(main, /ipcMain\.handle\("local:deleteFile"/);
+  assert.match(main, /assertLocalPathGranted\(payload\.path, \{ markdownFile: true \}\)/);
+  assert.match(main, /ipcMain\.handle\("remote:moveFile"/);
+  assert.match(main, /ipcMain\.handle\("remote:deleteFile"/);
+  assert.match(preload, /moveLocalFile: \(payload\) => ipcRenderer\.invoke\("local:moveFile", payload\)/);
+  assert.match(preload, /deleteLocalFile: \(filePath\) => ipcRenderer\.invoke\("local:deleteFile", filePath\)/);
+  assert.match(preload, /moveRemoteFile: \(payload\) => ipcRenderer\.invoke\("remote:moveFile", payload\)/);
+  assert.match(preload, /deleteRemoteFile: \(remotePath\) => ipcRenderer\.invoke\("remote:deleteFile", remotePath\)/);
+  assert.match(app, /label: "Move…"/);
+  assert.match(app, /label: "Delete…"/);
+  assert.match(app, /FILE_HAS_UNSAVED_EDITS/);
+  assert.match(app, /session\.kind === "local-file"[\s\S]*title: movedPath[\s\S]*rootPath: localDirname\(movedPath\)/);
+  assert.match(app, /if \(session\.kind === "local-file"\) return \[\]/);
+});
+
+test("file dialogs show full wrapping paths instead of truncating them", () => {
+  const dialogs = fs.readFileSync(path.join(root, "src", "renderer", "components", "dialogs.jsx"), "utf8");
+  const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
+  assert.match(dialogs, /displayName \? "full path" : "folder"/);
+  assert.match(dialogs, /export function MoveFileDialog/);
+  assert.match(dialogs, /export function DeleteFileDialog/);
+  assert.match(styles, /\.new-file-target strong\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*white-space:\s*normal/s);
+  assert.doesNotMatch(styles, /\.new-file-target strong\s*\{[^}]*text-overflow:\s*ellipsis/s);
+});
+
 test("Windows portable packaging includes shared main-process runtime files", () => {
   const source = fs.readFileSync(path.join(root, "scripts", "package-win-portable.cjs"), "utf8");
   assert.match(source, /path\.join\(root, "src", "shared"\)/);
@@ -96,6 +126,8 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(surface, /codeBoundaryNavigationSourceOffset/);
   assert.match(surface, /continuousMarkdownSource/);
   assert.match(surface, /control\.setAttribute\("aria-disabled", "true"\)/);
+  assert.match(surface, /draftEventTarget\.addEventListener\(markdownSourceDraftEvent, handleMarkdownSourceDraft\)/);
+  assert.match(surface, /onChangeRef\.current\?\.\(markdown\)/);
   assert.doesNotMatch(surface, /feature\/block-edit/);
   assert.doesNotMatch(surface, /addFeature\(blockEdit/);
   assert.match(styles, /textarea\.tether-continuous-source\.is-code_block/);

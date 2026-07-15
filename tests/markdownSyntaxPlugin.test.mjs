@@ -46,6 +46,7 @@ import {
   markdownDeletionSourceUnit,
   markdownDeletionTarget,
   markdownGapSelectionAt,
+  markdownSourceDraftMarkdown,
   markdownSourceSelectionAt,
   markdownTableSyntaxAt,
   mappedPosition,
@@ -588,6 +589,44 @@ test("activeMarkdownBlockSyntax exposes a fenced code block as one block", () =>
     selection: textSelection(doc, "answer")
   }));
   assert.deepEqual(syntax, { from: 0, to: doc.firstChild.nodeSize, kind: "block", name: "code_block" });
+});
+
+test("an in-progress fenced source edit publishes the complete draft without mutating the editor", () => {
+  const before = blockSchema.node("paragraph", null, [blockSchema.text("Before")]);
+  const code = blockSchema.node("code_block", { language: "js" }, [blockSchema.text("alpha();")]);
+  const after = blockSchema.node("paragraph", null, [blockSchema.text("After")]);
+  const doc = blockSchema.node("doc", null, [before, code, after]);
+  const state = EditorState.create({ doc });
+  const unit = {
+    from: before.nodeSize,
+    to: before.nodeSize + code.nodeSize,
+    kind: "block",
+    name: "code_block"
+  };
+  const parser = (source) => {
+    const match = source.match(/^```([^\n]*)\n([\s\S]*?)\n```$/);
+    return match
+      ? blockSchema.node("doc", null, [
+          blockSchema.node("code_block", { language: match[1] }, [blockSchema.text(match[2])])
+        ])
+      : null;
+  };
+  const serializer = (value) => {
+    const blocks = [];
+    value.forEach((node) => {
+      blocks.push(node.type.name === "code_block"
+        ? `\`\`\`${node.attrs.language}\n${node.textContent}\n\`\`\``
+        : node.textContent);
+    });
+    return blocks.join("\n\n");
+  };
+
+  assert.equal(
+    markdownSourceDraftMarkdown(state, parser, serializer, unit, "```jsx\nalpha();\n```"),
+    "Before\n\n```jsx\nalpha();\n```\n\nAfter"
+  );
+  assert.equal(state.doc, doc);
+  assert.equal(state.doc.child(1).attrs.language, "js");
 });
 
 test("sourceCaretOffset maps the clicked code character past the fence prefix", () => {

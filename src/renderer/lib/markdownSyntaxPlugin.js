@@ -19,6 +19,7 @@ export { sourceTabEdit } from "./sourceEditing.js";
 
 const markdownSyntaxKey = new PluginKey("TETHER_MARKDOWN_SYNTAX");
 export const externalMarkdownTransactionMeta = "tetherExternalMarkdown";
+export const markdownSourceDraftEvent = "tether-markdown-source-draft";
 
 export function isUnmarkedFullDocumentReplacement(transaction, state) {
   if (
@@ -1171,6 +1172,40 @@ function replaceBlockSource(view, parser, unit, source, afterCommit = null, sync
   transaction = selectionAfter(transaction, unit.from + replacement.size);
   transaction.setMeta(markdownSyntaxKey, "close");
   dispatchSourceReplacement(view, transaction, afterCommit, sync);
+}
+
+export function markdownSourceDraftMarkdown(state, parser, serializer, unit, source) {
+  if (!state?.doc || typeof parser !== "function" || typeof serializer !== "function" || !unit) {
+    return null;
+  }
+  let transaction;
+  if (unit.name === "hardbreak") {
+    const node = state.doc.nodeAt(unit.from);
+    if (node?.type.name === "hardbreak" && !source.includes("\n")) {
+      transaction = state.tr.replaceWith(
+        unit.from,
+        unit.to,
+        hardbreakSourceReplacement(state.schema, node, source)
+      );
+    }
+  }
+  if (!transaction && unit.kind === "inline") {
+    const parsed = parser(inlineSourceWithReferenceDefinitions(state, source));
+    const firstBlock = parsed?.firstChild;
+    const replacement = firstBlock?.isTextblock
+      ? firstBlock.content
+      : source
+        ? Fragment.from(state.schema.text(source))
+        : Fragment.empty;
+    transaction = state.tr.replaceWith(unit.from, unit.to, replacement);
+  }
+  if (!transaction) {
+    const parsed = parser(source);
+    const fallback = state.schema.nodes.paragraph.create();
+    const replacement = parsed?.content?.size ? parsed.content : Fragment.from(fallback);
+    transaction = state.tr.replace(unit.from, unit.to, new Slice(replacement, 0, 0));
+  }
+  return serializer(transaction.doc);
 }
 
 export function inlineSourceBoundaryDirection(
@@ -2983,6 +3018,7 @@ function continuousSourceEditor(
   onWordJump,
   onDocumentJump,
   onInlineEnter,
+  onDraftChange,
   shouldFocus,
   setActiveControl
 ) {
@@ -3183,6 +3219,7 @@ function continuousSourceEditor(
 
   editor.addEventListener("input", (event) => {
     resize();
+    onDraftChange?.(editor.value);
     if (!initialDeletionHistory) return;
     if (event.inputType === "historyUndo") {
       const snapshot = initialDeletionHistory.pendingNativeUndoSnapshot;
@@ -5637,6 +5674,22 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           splitBlock(editorView.state, editorView.dispatch, editorView);
           editorView.focus();
         };
+        const publishDraft = (value) => {
+          if (!editorView?.dom.isConnected) return;
+          const markdown = markdownSourceDraftMarkdown(
+            editorView.state,
+            ctx.get(parserCtx),
+            serializer,
+            unit,
+            value
+          );
+          const EventType = editorView.dom.ownerDocument?.defaultView?.CustomEvent;
+          if (markdown == null || !EventType) return;
+          editorView.dom.dispatchEvent(new EventType(markdownSourceDraftEvent, {
+            bubbles: true,
+            detail: { markdown }
+          }));
+        };
         const editorDecoration = Decoration.widget(unit.from, () => continuousSourceEditor(
           source,
           unit.kind,
@@ -5657,6 +5710,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           wordJumpFromSource,
           jumpFromSource,
           splitFromInlineSource,
+          publishDraft,
           () => true,
           (control) => {
             activeSourceControl = control;

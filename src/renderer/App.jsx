@@ -13,6 +13,7 @@ import {
   List,
   Maximize2,
   MoreHorizontal,
+  Move,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
@@ -23,6 +24,7 @@ import {
   Settings,
   Sun,
   SunMoon,
+  Trash2,
   X
 } from "lucide-react";
 import "@fontsource/ibm-plex-mono/latin-400.css";
@@ -83,7 +85,14 @@ import {
 } from "./lib/editorCommands.js";
 import { tabId, makeTab, tabsForSource, upsertTab, patchTab, removeTab, rekeyTabsForSource, selectNeighborTab } from "./lib/tabs.js";
 import { DocumentSurfaceFallback, FilesPanel, OutlinePanel, SourcesPanel, TetherGlyph } from "./components/panels.jsx";
-import { ConnectionPalette, NewFileDialog, SettingsPanel, StatusBar } from "./components/dialogs.jsx";
+import {
+  ConnectionPalette,
+  DeleteFileDialog,
+  MoveFileDialog,
+  NewFileDialog,
+  SettingsPanel,
+  StatusBar
+} from "./components/dialogs.jsx";
 
 const LazyDocumentSurface = React.lazy(() => import("./DocumentSurface.jsx"));
 const BOOT_PREFERENCES_KEY = "remoteMarkdownPreview.preferences";
@@ -232,6 +241,14 @@ const fallbackRemoteApi = {
       message: "Remote file creation is available in the Electron app."
     }
   }),
+  moveRemoteFile: async () => ({
+    ok: false,
+    error: { code: "BROWSER_PREVIEW", message: "Remote file moves are available in the Electron app." }
+  }),
+  deleteRemoteFile: async () => ({
+    ok: false,
+    error: { code: "BROWSER_PREVIEW", message: "Remote file deletion is available in the Electron app." }
+  }),
   downloadRemoteFile: async () => ({
     ok: false,
     error: {
@@ -279,6 +296,23 @@ const fallbackRemoteApi = {
         }
       ]
     };
+  },
+  moveLocalFile: async ({ path, directory }) => {
+    const content = window.localStorage.getItem(`remoteMarkdownPreview.localFile:${path}`);
+    if (content === null) {
+      return { ok: false, error: { code: "BROWSER_PREVIEW", message: "The preview file is no longer available." } };
+    }
+    const destinationPath = joinBrowserPath(directory || ".", basename(path));
+    if (window.localStorage.getItem(`remoteMarkdownPreview.localFile:${destinationPath}`) !== null) {
+      return { ok: false, error: { code: "LOCAL_FILE_EXISTS", message: "A file already exists at the destination path." } };
+    }
+    window.localStorage.setItem(`remoteMarkdownPreview.localFile:${destinationPath}`, content);
+    window.localStorage.removeItem(`remoteMarkdownPreview.localFile:${path}`);
+    return { ok: true, path: destinationPath, directory, entries: [], sourceDirectory: dirname(path), sourceEntries: [] };
+  },
+  deleteLocalFile: async (filePath) => {
+    window.localStorage.removeItem(`remoteMarkdownPreview.localFile:${filePath}`);
+    return { ok: true, path: filePath, directory: dirname(filePath), entries: [] };
   },
   openLocalDirectory: async () => ({
     ok: false,
@@ -352,6 +386,8 @@ export default function App() {
   const [findActiveIndex, setFindActiveIndex] = useState(0);
   const [contextMenu, setContextMenu] = useState(null);
   const [newFileDialog, setNewFileDialog] = useState({ open: false, directory: "" });
+  const [moveFileDialog, setMoveFileDialog] = useState({ open: false, entry: null });
+  const [deleteFileDialog, setDeleteFileDialog] = useState({ open: false, entry: null });
   const [tetherPing, setTetherPing] = useState(null);
   const [sourceSessions, setSourceSessions] = useState(initialSourceSessions);
   const [activeSessionId, setActiveSessionId] = useState(null);
@@ -701,6 +737,18 @@ export default function App() {
       }
 
       if (event.key === "Escape") {
+        if (deleteFileDialog.open) {
+          setDeleteFileDialog({ open: false, entry: null });
+          return;
+        }
+        if (moveFileDialog.open) {
+          setMoveFileDialog({ open: false, entry: null });
+          return;
+        }
+        if (newFileDialog.open) {
+          setNewFileDialog({ open: false, directory: "" });
+          return;
+        }
         if (editorModeMenuOpen) {
           setEditorModeMenuOpen(false);
           return;
@@ -745,7 +793,18 @@ export default function App() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [connectionPaletteOpen, contextMenu, editorModeMenuOpen, findOpen, settingsPanelOpen, sidebarPeeking, zenMode]);
+  }, [
+    connectionPaletteOpen,
+    contextMenu,
+    deleteFileDialog.open,
+    editorModeMenuOpen,
+    findOpen,
+    moveFileDialog.open,
+    newFileDialog.open,
+    settingsPanelOpen,
+    sidebarPeeking,
+    zenMode
+  ]);
 
   useEffect(() => {
     if (!resizingSidebar) return undefined;
@@ -1743,6 +1802,211 @@ export default function App() {
     }
   }
 
+  function openMoveFileDialog(entry, kind) {
+    setContextMenu(null);
+    setMoveFileDialog({
+      open: true,
+      entry: {
+        ...entry,
+        kind,
+        directory: kind === "remote" ? dirname(entry.path) : localDirname(entry.path)
+      }
+    });
+  }
+
+  function openDeleteFileDialog(entry, kind) {
+    setContextMenu(null);
+    setDeleteFileDialog({ open: true, entry: { ...entry, kind } });
+  }
+
+  function fileOperationTab(entry) {
+    return tabs.find((tab) => {
+      if (tab.kind !== entry.kind) return false;
+      return entry.kind === "local" ? pathsReferToSameLocalFile(tab.path, entry.path) : tab.path === entry.path;
+    });
+  }
+
+  function fileOperationHasDirtyTab(entry) {
+    const tab = fileOperationTab(entry);
+    return Boolean(tab && (tab.id === activeTabId ? dirty : tab.doc?.dirty));
+  }
+
+  function applyFileOperationTree(response, kind) {
+    const samePath = (left, right) =>
+      kind === "local" ? pathsReferToSameLocalFile(left, right) : left === right;
+    if (response.entries && samePath(currentDirectory, response.directory)) setFileEntries(response.entries);
+    if (response.sourceEntries && samePath(currentDirectory, response.sourceDirectory)) {
+      setFileEntries(response.sourceEntries);
+    }
+    setChildrenByDir((current) => {
+      const next = { ...current };
+      if (response.entries && current[response.directory]) next[response.directory] = response.entries;
+      if (response.sourceEntries && current[response.sourceDirectory]) next[response.sourceDirectory] = response.sourceEntries;
+      return next;
+    });
+  }
+
+  async function moveFileTo(directory) {
+    const entry = moveFileDialog.entry;
+    if (!entry || !directory) return false;
+    if (fileOperationHasDirtyTab(entry)) {
+      const nextError = { code: "FILE_HAS_UNSAVED_EDITS", message: "Save or discard this file's edits before moving it." };
+      setError(nextError);
+      setStatus((current) => ({ ...current, state: "error", message: nextError.message }));
+      return false;
+    }
+
+    const openTab = fileOperationTab(entry);
+    const wasWatching = Boolean(watching && openTab?.id === activeTabId);
+    setBusy(true);
+    setError(null);
+    try {
+      if (wasWatching) {
+        await remoteApi.stopWatching();
+        setWatching(false);
+      }
+      const response = entry.kind === "remote"
+        ? await remoteApi.moveRemoteFile({ path: entry.path, directory })
+        : await remoteApi.moveLocalFile({ path: entry.path, directory });
+      if (!response?.ok) {
+        if (wasWatching && entry.kind === "remote" && !isConnectionLostError(response?.error)) {
+          const watchResponse = await remoteApi.startWatching({ remotePath: entry.path, intervalMs: connection.intervalMs });
+          setWatching(Boolean(watchResponse?.ok));
+        }
+        if (entry.kind === "remote" && isConnectionLostError(response?.error)) {
+          handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        } else {
+          const nextError = response?.error || { message: "Unable to move the file." };
+          setError(nextError);
+          setStatus((current) => ({ ...current, state: "error", message: nextError.message }));
+        }
+        return false;
+      }
+
+      const movedPath = response.path;
+      applyFileOperationTree(response, entry.kind);
+      if (openTab) {
+        const movedTab = { ...openTab, id: tabId(openTab.sourceKey, movedPath), path: movedPath, label: basename(movedPath) };
+        setTabs((current) => current.map((tab) => (tab.id === openTab.id ? movedTab : tab)));
+        if (openTab.id === activeTabId) {
+          setActiveTabId(movedTab.id);
+          setSelectedPath(movedPath);
+          if (entry.kind === "remote") setConnection((current) => ({ ...current, remotePath: movedPath }));
+          else setLocalFile({ path: movedPath });
+        }
+      }
+      setSourceSessions((current) =>
+        current.map((session) =>
+          session.selectedPath === entry.path
+            ? session.kind === "local-file"
+              ? {
+                  ...session,
+                  label: basename(movedPath),
+                  detail: formatSourcePathDetail(localDirname(movedPath)),
+                  title: movedPath,
+                  rootPath: localDirname(movedPath),
+                  directory: localDirname(movedPath),
+                  selectedPath: movedPath
+                }
+              : {
+                  ...session,
+                  selectedPath: movedPath,
+                  connection: session.connection ? { ...session.connection, remotePath: movedPath } : session.connection,
+                  detail: basename(movedPath)
+                }
+            : session
+        )
+      );
+      if (wasWatching && entry.kind === "remote") {
+        const watchResponse = await remoteApi.startWatching({ remotePath: movedPath, intervalMs: connection.intervalMs });
+        setWatching(Boolean(watchResponse?.ok));
+      }
+      setMoveFileDialog({ open: false, entry: null });
+      setStatus((current) => ({ ...current, state: entry.kind === "remote" ? "connected" : "idle", message: `Moved ${entry.name}` }));
+      return true;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteFile() {
+    const entry = deleteFileDialog.entry;
+    if (!entry) return false;
+    if (fileOperationHasDirtyTab(entry)) {
+      const nextError = { code: "FILE_HAS_UNSAVED_EDITS", message: "Save or discard this file's edits before deleting it." };
+      setError(nextError);
+      setStatus((current) => ({ ...current, state: "error", message: nextError.message }));
+      return false;
+    }
+
+    const openTab = fileOperationTab(entry);
+    const wasWatching = Boolean(watching && openTab?.id === activeTabId);
+    setBusy(true);
+    setError(null);
+    try {
+      if (watching && openTab?.id === activeTabId) {
+        await remoteApi.stopWatching();
+        setWatching(false);
+      }
+      const response = entry.kind === "remote"
+        ? await remoteApi.deleteRemoteFile(entry.path)
+        : await remoteApi.deleteLocalFile(entry.path);
+      if (!response?.ok) {
+        if (wasWatching && entry.kind === "remote" && !isConnectionLostError(response?.error)) {
+          const watchResponse = await remoteApi.startWatching({ remotePath: entry.path, intervalMs: connection.intervalMs });
+          setWatching(Boolean(watchResponse?.ok));
+        }
+        if (entry.kind === "remote" && isConnectionLostError(response?.error)) {
+          handleRemoteConnectionLoss(connectionLostMessage(connection.host));
+        } else {
+          const nextError = response?.error || { message: "Unable to delete the file." };
+          setError(nextError);
+          setStatus((current) => ({ ...current, state: "error", message: nextError.message }));
+        }
+        return false;
+      }
+
+      applyFileOperationTree(response, entry.kind);
+      if (openTab) {
+        const wasActive = openTab.id === activeTabId;
+        const nextId = wasActive ? selectNeighborTab(tabs, openTab.sourceKey, openTab.id) : null;
+        setTabs((current) => removeTab(current, openTab.id));
+        if (wasActive && nextId) {
+          restoreTab(tabs.find((tab) => tab.id === nextId));
+        } else if (wasActive) {
+          setActiveTabId(null);
+          setSelectedPath("");
+          if (entry.kind === "remote") setConnection((current) => ({ ...current, remotePath: "" }));
+          else setLocalFile(null);
+          dispatchDocument({ type: "SET_TEXT", text: entry.kind === "remote" ? chooseRemoteFileMarkdown : chooseLocalFileMarkdown });
+          setFileMetadata(null);
+          setLastRefresh(null);
+        }
+      }
+      const deletedStandaloneSession = sourceSessions.find(
+        (session) => session.kind === "local-file" && session.selectedPath === entry.path
+      );
+      setSourceSessions((current) =>
+        current.flatMap((session) => {
+          if (session.selectedPath !== entry.path) return [session];
+          if (session.kind === "local-file") return [];
+          return [{
+            ...session,
+            selectedPath: "",
+            connection: session.connection ? { ...session.connection, remotePath: "" } : session.connection,
+            detail: formatSourcePathDetail(session.directory || session.rootPath || "")
+          }];
+        })
+      );
+      if (deletedStandaloneSession?.id === activeSessionId) setActiveSessionId(null);
+      setDeleteFileDialog({ open: false, entry: null });
+      setStatus((current) => ({ ...current, state: entry.kind === "remote" ? "connected" : "idle", message: `Deleted ${entry.name}` }));
+      return true;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function downloadRemoteEntry(entry) {
     if (!entry || entry.type === "directory") return false;
     setBusy(true);
@@ -1908,6 +2172,20 @@ export default function App() {
           icon: Download,
           disabled: busy || !entry.isMarkdown,
           onSelect: () => downloadRemoteEntry(entry)
+        },
+      !isDir &&
+        (isRemoteTree || isLocalTree) && {
+          label: "Move…",
+          icon: Move,
+          disabled: busy || !entry.isMarkdown,
+          onSelect: () => openMoveFileDialog(entry, isRemoteTree ? "remote" : "local")
+        },
+      !isDir &&
+        (isRemoteTree || isLocalTree) && {
+          label: "Delete…",
+          icon: Trash2,
+          disabled: busy || !entry.isMarkdown,
+          onSelect: () => openDeleteFileDialog(entry, isRemoteTree ? "remote" : "local")
         },
       {
         label: "Copy path",
@@ -3093,6 +3371,20 @@ export default function App() {
         open={newFileDialog.open}
         onClose={() => setNewFileDialog({ open: false, directory: "" })}
         onCreate={createBlankFile}
+      />
+      <MoveFileDialog
+        busy={busy}
+        entry={moveFileDialog.entry}
+        open={moveFileDialog.open}
+        onClose={() => setMoveFileDialog({ open: false, entry: null })}
+        onMove={moveFileTo}
+      />
+      <DeleteFileDialog
+        busy={busy}
+        entry={deleteFileDialog.entry}
+        open={deleteFileDialog.open}
+        onClose={() => setDeleteFileDialog({ open: false, entry: null })}
+        onDelete={deleteFile}
       />
       <ContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
     </div>

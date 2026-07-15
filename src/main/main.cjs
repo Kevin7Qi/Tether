@@ -743,6 +743,48 @@ ipcMain.handle("remote:createFile", async (_event, payload) => {
   }
 });
 
+ipcMain.handle("remote:moveFile", async (_event, payload) => {
+  try {
+    assertObject(payload, "Move file");
+    assertString(payload.path, "Remote file path");
+    assertString(payload.directory, "Destination directory");
+    const requestedDirectory = payload.directory.trim().replace(/\\/g, "/") || ".";
+    const directory = requestedDirectory === "." ? "." : path.posix.normalize(requestedDirectory);
+    const remotePath = payload.path.trim();
+    if (!isRemoteMarkdownPath(remotePath)) {
+      throw userError("REMOTE_FILE_TYPE", "Only Markdown and text files can be moved.");
+    }
+    const destinationPath = directory === "."
+      ? path.posix.basename(remotePath)
+      : path.posix.join(directory, path.posix.basename(remotePath));
+    if (destinationPath === remotePath) {
+      throw userError("REMOTE_MOVE_SAME_PATH", "Choose a different destination folder.");
+    }
+    await provider.moveFile(remotePath, destinationPath);
+    const sourceDirectory = path.posix.dirname(remotePath) || ".";
+    const entries = await provider.listDirectory(directory);
+    const sourceEntries = sourceDirectory === directory ? entries : await provider.listDirectory(sourceDirectory);
+    return { ok: true, path: destinationPath, directory, entries, sourceDirectory, sourceEntries };
+  } catch (error) {
+    return { ok: false, error: toRendererError(error) };
+  }
+});
+
+ipcMain.handle("remote:deleteFile", async (_event, remotePath) => {
+  try {
+    assertString(remotePath, "Remote file path");
+    if (!isRemoteMarkdownPath(remotePath)) {
+      throw userError("REMOTE_FILE_TYPE", "Only Markdown and text files can be deleted.");
+    }
+    await provider.deleteFile(remotePath);
+    const directory = path.posix.dirname(remotePath) || ".";
+    const entries = await provider.listDirectory(directory);
+    return { ok: true, path: remotePath, directory, entries };
+  } catch (error) {
+    return { ok: false, error: toRendererError(error) };
+  }
+});
+
 ipcMain.handle("local:readSample", async () => {
   try {
     const samplePath = await ensureUserSamplePath();
@@ -879,6 +921,47 @@ ipcMain.handle("local:createFile", async (_event, payload) => {
         error: toRendererError(userError("LOCAL_FILE_EXISTS", "A local file already exists at that path."))
       };
     }
+    return { ok: false, error: toRendererError(error) };
+  }
+});
+
+ipcMain.handle("local:moveFile", async (_event, payload) => {
+  try {
+    assertObject(payload, "Move file");
+    assertString(payload.path, "File path");
+    assertString(payload.directory, "Destination folder");
+    const sourcePath = assertLocalPathGranted(payload.path, { markdownFile: true });
+    const directory = assertLocalPathGranted(payload.directory);
+    const destinationPath = path.join(directory, path.basename(sourcePath));
+    if (normalizeLocalPathForGrant(sourcePath) === normalizeLocalPathForGrant(destinationPath)) {
+      throw userError("LOCAL_MOVE_SAME_PATH", "Choose a different destination folder.");
+    }
+    try {
+      await fs.stat(destinationPath);
+      throw userError("LOCAL_FILE_EXISTS", "A local file already exists at the destination path.");
+    } catch (error) {
+      if (error?.code === "LOCAL_FILE_EXISTS") throw error;
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await fs.rename(sourcePath, destinationPath);
+    const sourceDirectory = path.dirname(sourcePath);
+    const entries = await listLocalDirectoryEntries(directory);
+    const sourceEntries = sourceDirectory === directory ? entries : await listLocalDirectoryEntries(sourceDirectory);
+    return { ok: true, path: destinationPath, directory, entries, sourceDirectory, sourceEntries };
+  } catch (error) {
+    return { ok: false, error: toRendererError(error) };
+  }
+});
+
+ipcMain.handle("local:deleteFile", async (_event, filePath) => {
+  try {
+    assertString(filePath, "File path");
+    const grantedPath = assertLocalPathGranted(filePath, { markdownFile: true });
+    await fs.unlink(grantedPath);
+    const directory = path.dirname(grantedPath);
+    const entries = await listLocalDirectoryEntries(directory);
+    return { ok: true, path: grantedPath, directory, entries };
+  } catch (error) {
     return { ok: false, error: toRendererError(error) };
   }
 });

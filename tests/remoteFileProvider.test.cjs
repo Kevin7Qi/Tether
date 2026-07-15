@@ -120,6 +120,53 @@ test("remote Markdown file matching aligns with local Markdown extensions", () =
   assert.equal(isRemoteMarkdownPath("archive.zip"), false);
 });
 
+test("moveFile refuses collisions and renames a missing destination", async () => {
+  const provider = connectedProvider();
+  const calls = [];
+  provider.client = {
+    on() {},
+    async stat(remotePath) {
+      calls.push(["stat", remotePath]);
+      const error = new Error("No such file");
+      error.code = "ENOENT";
+      throw error;
+    },
+    async rename(sourcePath, destinationPath) {
+      calls.push(["rename", sourcePath, destinationPath]);
+    }
+  };
+
+  const destination = await provider.moveFile("/srv/docs/readme.md", "/srv/archive/readme.md");
+  assert.equal(destination, "/srv/archive/readme.md");
+  assert.equal(provider.watchPath, "/srv/archive/readme.md");
+  assert.deepEqual(calls, [
+    ["stat", "/srv/archive/readme.md"],
+    ["rename", "/srv/docs/readme.md", "/srv/archive/readme.md"]
+  ]);
+  clearInterval(provider.watchTimer);
+});
+
+test("moveFile does not overwrite an existing remote file", async () => {
+  const provider = connectedProvider();
+  let renamed = false;
+  provider.client = {
+    on() {},
+    async stat() {
+      return { type: "-" };
+    },
+    async rename() {
+      renamed = true;
+    }
+  };
+
+  await assert.rejects(
+    () => provider.moveFile("/srv/docs/readme.md", "/srv/archive/readme.md"),
+    (error) => error.code === "REMOTE_FILE_EXISTS"
+  );
+  assert.equal(renamed, false);
+  clearInterval(provider.watchTimer);
+});
+
 test("handleUnexpectedDisconnect tears down the session and notifies the renderer", () => {
   const provider = connectedProvider();
   const events = [];
