@@ -2885,6 +2885,14 @@ textarea:focus-visible,
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
+/* The language menu is an absolutely positioned child that is intentionally
+   taller than the code block. Let it escape only while open so it remains
+   visible and interactive without giving up rounded clipping during editing. */
+.tether-wysiwyg .milkdown-code-block:has(.language-picker:not(.hidden)) {
+  z-index: 20;
+  overflow: visible;
+}
+
 .tether-wysiwyg .milkdown-code-block .tools {
   min-height: 28px;
   padding: 0 7px 3px 13px;

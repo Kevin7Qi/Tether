@@ -132,6 +132,7 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(styles, /milkdown-code-block \.cm-content\s*\{[^}]*min-height:\s*1\.62em/s);
   assert.match(styles, /cm-editor\.cm-focused \.cm-activeLine/);
   assert.match(styles, /\.tools button\.copy-button\s*\{[^}]*opacity:\s*0/s);
+  assert.match(styles, /language-picker:not\(\.hidden\)\)\s*\{[^}]*overflow:\s*visible/s);
   assert.match(styles, /is-reading \.milkdown-code-block \.language-button svg\s*\{[^}]*display:\s*none/s);
   assert.match(codeEditor, /&\.cm-focused \.cm-activeLine/);
   assert.match(codeEditor, /indentUnit\.of\("\\t"\)/);

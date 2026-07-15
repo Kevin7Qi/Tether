@@ -137,6 +137,32 @@ async function evaluate(expression) {
   return response.result.value;
 }
 
+async function captureElementsScreenshot(selectors, outputPath) {
+  const rect = await evaluate(`(() => {
+    const bounds = ${JSON.stringify(selectors)}
+      .map((selector) => document.querySelector(selector)?.getBoundingClientRect())
+      .filter(Boolean);
+    if (!bounds.length) return null;
+    const left = Math.min(...bounds.map(({ left }) => left));
+    const top = Math.min(...bounds.map(({ top }) => top));
+    const right = Math.max(...bounds.map(({ right }) => right));
+    const bottom = Math.max(...bounds.map(({ bottom }) => bottom));
+    return {
+      x: Math.max(0, left - 8),
+      y: Math.max(0, top - 8),
+      width: right - left + 16,
+      height: bottom - top + 16
+    };
+  })()`);
+  if (!rect) throw new Error(`Could not capture missing elements ${selectors.join(", ")}`);
+  const screenshot = await cdp.send("Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: true,
+    clip: { ...rect, scale: 1 }
+  });
+  await writeFile(outputPath, Buffer.from(screenshot.data, "base64"));
+}
+
 async function editorState() {
   return evaluate(`(() => {
     const root = document.querySelector(".ProseMirror");
@@ -1327,7 +1353,50 @@ async function verifyFenceVariantEditing() {
   await stopSession();
 }
 
+async function verifyCodeLanguagePickerPresentation() {
+  await startSession(codeFixture, "const value = 1;");
+  await evaluate(`document.querySelector(".milkdown-code-block .language-button")?.click()`);
+  await waitFor(
+    () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .language-picker:not(.hidden)"))`),
+    "code language picker did not open"
+  );
+  const presentation = await evaluate(`(() => {
+    const block = document.querySelector(".milkdown-code-block");
+    const picker = block?.querySelector(".language-picker:not(.hidden)");
+    const blockRect = block?.getBoundingClientRect();
+    const pickerRect = picker?.getBoundingClientRect();
+    if (!block || !picker || !blockRect || !pickerRect) return null;
+    const sampleX = Math.min(pickerRect.right - 4, pickerRect.left + 24);
+    const sampleY = Math.min(innerHeight - 4, pickerRect.bottom - 4, blockRect.bottom + 24);
+    const hit = document.elementFromPoint(sampleX, sampleY);
+    return {
+      overflow: getComputedStyle(block).overflow,
+      pickerExtendsPastBlock: pickerRect.bottom > blockRect.bottom + 100,
+      overflowAreaIsInteractive: Boolean(hit?.closest(".language-picker") === picker)
+    };
+  })()`);
+  if (
+    presentation?.overflow !== "visible"
+    || !presentation.pickerExtendsPastBlock
+    || !presentation.overflowAreaIsInteractive
+  ) {
+    throw new Error(`code language picker is clipped or non-interactive: ${JSON.stringify(presentation)}`);
+  }
+  if (process.env.TETHER_PARITY_SCREENSHOT) {
+    await captureElementsScreenshot(
+      [".milkdown-code-block", ".milkdown-code-block .language-picker:not(.hidden)"],
+      process.env.TETHER_PARITY_SCREENSHOT
+    );
+  }
+  await stopSession();
+}
+
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "code-language-picker") {
+    await verifyCodeLanguagePickerPresentation();
+    console.log("Verified the code language picker escapes the block and remains interactive.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "prose-to-code-replacement") {
     await verifyProseToCodeReplacement();
     console.log("Verified real Electron prose-to-code source replacement history.");
@@ -1419,7 +1488,8 @@ async function run() {
   await verifyCodeEditing();
   await stopSession();
   await verifyFenceVariantEditing();
-  console.log("Verified real Electron typing, saving, and history preserve inline and fenced-code Markdown source.");
+  await verifyCodeLanguagePickerPresentation();
+  console.log("Verified real Electron typing, saving, history, and fenced-code presentation.");
 }
 
 try {
