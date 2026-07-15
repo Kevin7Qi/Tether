@@ -58,10 +58,14 @@ import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   activeMarkdownBlockSyntax,
   continuousMarkdownSource,
+  documentSourceSegments,
+  plainTextMarkdownSourceSelection,
+  plainTextMarkdownSourceToken,
   sourceCaretOffset,
   sourceLineJumpTarget,
   sourceAwareClipboardText,
   sourceSelectionFromDocumentSelection,
+  sourceSelectionText,
   sourceFaithfulListMarkerBackspaceTransaction,
   replaceSourceSelectionTransaction,
   splitOrderedListItemWithSourceNumber,
@@ -302,6 +306,77 @@ test("partial cross-block replacement follows literal source coordinates", async
   assert.ok(deletion);
   assert.equal(serialize(deletion.doc), "+ alter\n");
   assert.equal(deletion.selection.$from.parentOffset, 2);
+});
+
+test("rendered list literals retain exact escape and entity coordinates", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "+ Before \\*literal\\* and &copy; after.\n";
+  const doc = parse(source);
+  const rendered = "Before *literal* and © after.";
+  const textStart = textPosition(doc, rendered);
+  const escape = textStart + rendered.indexOf("*literal*");
+  const tokenState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, escape)
+  });
+  const token = plainTextMarkdownSourceToken(tokenState, "forward", serialize);
+  assert.equal(token?.unit.source, "\\*");
+  assert.equal(token?.unit.segmentSourceOffset, source.indexOf("\\*"));
+  assert.equal(token?.sourceOffset, 1);
+
+  const entity = textStart + rendered.indexOf("©");
+  const entityState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, entity, entity + 1)
+  });
+  const entitySelection = plainTextMarkdownSourceSelection(entityState, serialize);
+  assert.equal(sourceSelectionText(entitySelection), "&copy;");
+
+  const insertion = textStart + rendered.indexOf("literal") + 1;
+  const insertionState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, insertion)
+  });
+  const insertionSelection = plainTextMarkdownSourceSelection(insertionState, serialize);
+  const transaction = replaceSourceSelectionTransaction(
+    insertionState,
+    insertionSelection,
+    "X",
+    parse
+  );
+  assert.equal(serialize(transaction.doc), "+ Before \\*lXiteral\\* and &copy; after.\n");
+});
+
+test("nested literal coordinates remain exact after a preceding structural block", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = [
+    "+ Before \\*literal\\* and &copy; after.",
+    "",
+    "> Quoted \\*literal\\* and &copy; after.",
+    ""
+  ].join("\n");
+  const parsed = parse(source);
+  const synthetic = parsed.type.schema.nodes.paragraph.create({ tetherSyntheticTrailing: true });
+  const doc = parsed.type.create(parsed.attrs, [parsed.child(0), parsed.child(1), synthetic]);
+  const rendered = "Quoted *literal* and © after.";
+  const textStart = textPosition(doc, rendered);
+  const entity = textStart + rendered.indexOf("©");
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, entity)
+  });
+  const segments = documentSourceSegments(state, serialize)?.segments;
+  assert.deepEqual(segments?.map(({ from, to, node }) => ({
+    from,
+    to,
+    type: node.type.name
+  })), [
+    { from: 0, to: 38, type: "bullet_list" },
+    { from: 40, to: 78, type: "blockquote" }
+  ]);
+  const token = plainTextMarkdownSourceToken(state, "forward", serialize);
+  assert.equal(token?.unit.source, "&copy;");
+  assert.equal(token?.unit.segmentSourceOffset, source.lastIndexOf("&copy;") - source.indexOf(">"));
 });
 
 test("ordered lists retain dot and parenthesis delimiters at every nesting level", () => {

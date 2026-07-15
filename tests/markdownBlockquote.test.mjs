@@ -34,7 +34,10 @@ import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   activeMarkdownBlockSyntax,
   continuousMarkdownSource,
-  sourceCaretOffset
+  plainTextMarkdownSourceSelection,
+  plainTextMarkdownSourceToken,
+  sourceCaretOffset,
+  sourceSelectionText
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
 const milkdownTimerEvents = new EventTarget();
@@ -181,5 +184,31 @@ test("a lazy blockquote maps a later paragraph caret through its exact physical 
   assert.equal(
     sourceCaretOffset(state, unit, source, position, null, serialize),
     source.indexOf("target")
+  );
+});
+
+test("rendered blockquote literals retain exact escape and entity coordinates", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "> Before \\*literal\\* and &copy; after.\n";
+  const doc = parse(source);
+  const rendered = "Before *literal* and © after.";
+  const textStart = textPosition(doc, rendered);
+  const escape = textStart + rendered.indexOf("*literal*");
+  const tokenState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, escape)
+  });
+  const token = plainTextMarkdownSourceToken(tokenState, "forward", serialize);
+  assert.equal(token?.unit.source, "\\*");
+  assert.equal(token?.unit.segmentSourceOffset, source.indexOf("\\*"));
+
+  const entity = textStart + rendered.indexOf("©");
+  const entityState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, entity, entity + 1)
+  });
+  assert.equal(
+    sourceSelectionText(plainTextMarkdownSourceSelection(entityState, serialize)),
+    "&copy;"
   );
 });

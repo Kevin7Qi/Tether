@@ -560,6 +560,47 @@ async function verifyLiteralSourceTokens() {
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(deletedEscapeFixture);
   await stopSession();
+
+  const nestedFixture = [
+    "+ Before \\*literal\\* and &copy; after.",
+    "",
+    "> Quoted \\*literal\\* and &copy; after.",
+    ""
+  ].join("\n");
+  const editedNestedEscapeFixture = nestedFixture.replace("\\*literal", "\\*lXiteral");
+  const listText = "Before *literal* and © after.";
+  await startSession(nestedFixture, listText);
+  await placeCaretInText(listText, listText.indexOf("*literal*"));
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "\\*" && state.selectionStart === 1,
+    "list ArrowRight skipped the hidden escape character"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await cdp.send("Input.insertText", { text: "X" });
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedNestedEscapeFixture);
+  await stopSession();
+
+  const quoteText = "Quoted *literal* and © after.";
+  const editedNestedEntityFixture = nestedFixture.replace("> Quoted \\*literal\\* and &copy;", "> Quoted \\*literal\\* and C");
+  await startSession(nestedFixture, quoteText);
+  await placeCaretInText(quoteText, quoteText.indexOf("©"));
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "&copy;" && state.selectionStart === 1,
+    "blockquote ArrowRight skipped the hidden entity source"
+  );
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(0, control.value.length);
+    return Boolean(control);
+  })()`);
+  await cdp.send("Input.insertText", { text: "C" });
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedNestedEntityFixture);
+  await stopSession();
 }
 
 async function verifyInlineConstructBoundaries() {
