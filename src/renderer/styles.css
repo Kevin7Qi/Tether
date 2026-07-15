@@ -3034,6 +3034,10 @@ textarea:focus-visible,
   font-size: 11.5px;
 }
 
+.tether-wysiwyg .milkdown-code-block .cm-foldGutter {
+  display: none !important;
+}
+
 .tether-wysiwyg .milkdown-code-block .cm-lineNumbers .cm-gutterElement {
   min-width: 42px;
   padding: 0 9px 0 10px;

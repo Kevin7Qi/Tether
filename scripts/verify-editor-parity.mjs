@@ -14,6 +14,7 @@ const editedInlineFixture = "Before **boXld** after.\n";
 const deletedInlineMarkerFixture = "Before *bold** after.\n";
 const literalSourceFixture = "Before \\*literal\\* and &copy; after.\n";
 const codeFixture = "Before.\n\n```js\nconst value = 1;\n```\n\nAfter.\n";
+const listFixture = "Before.\n\n- Alpha\n- Beta\n\nAfter.\n";
 const editedCodeFixture = "Before.\n\n```js\nconst value = 12;\n```\n\nAfter.\n";
 const codeBlockSource = "```js\nconst value = 1;\n```";
 const codeContent = "const value = 1;";
@@ -1093,6 +1094,30 @@ async function selectCodeEndIntoFollowingProse() {
   return { selectionStart: codeStart + contentEnd, selectedLength: 7 };
 }
 
+async function selectCodeStartIntoPreviousProse() {
+  const contentStart = codeBlockSource.indexOf("\n") + 1;
+  const codeStart = codeFixture.indexOf(codeBlockSource);
+  await focusCodeBoundary("start");
+  for (let step = 1; step <= contentStart; step += 1) {
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 8 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === codeBlockSource
+        && state.selectionStart === contentStart - step
+        && state.selectionEnd === contentStart
+        && state.selectionDirection === "backward",
+      `Shift-ArrowLeft did not extend ${step} source character${step === 1 ? "" : "s"} before the code content`
+    );
+  }
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 8 });
+  await waitFor(
+    async () => !(await sourceControlState()),
+    "backward code selection did not cross from the opening fence into the root separator"
+  );
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 8 });
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 8 });
+  return { selectionStart: codeStart - 3, selectedLength: contentStart + 3 };
+}
+
 async function verifyCodeToProseSelection() {
   await startSession(codeFixture, codeContent);
   const { selectionStart, selectedLength } = await selectCodeEndIntoFollowingProse();
@@ -1182,6 +1207,74 @@ async function verifyCodeToProseCutPaste() {
   await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
   await waitForSaveState(false);
   await save(codePasteFixture);
+  await stopSession();
+}
+
+async function verifyBackwardCodeToProseCutPaste() {
+  await startSession(codeFixture, codeContent);
+  const { selectionStart, selectedLength } = await selectCodeStartIntoPreviousProse();
+  const selectedText = codeFixture.slice(selectionStart, selectionStart + selectedLength);
+  const cutSource = `${codeFixture.slice(0, selectionStart)}${
+    codeFixture.slice(selectionStart + selectedLength)
+  }`;
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  const cutText = await dispatchCutAndCaptureText();
+  if (cutText !== selectedText) {
+    throw new Error(`Backward Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(selectedText)}`);
+  }
+  await waitForSaveState(false);
+  await save(cutSource);
+
+  if (await dispatchPasteText(selectedText) == null) {
+    throw new Error("No focused element received the backward code-to-prose Paste event");
+  }
+  await waitForSaveState(false);
+  await save(codeFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(cutSource);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(codeFixture);
+  await stopSession();
+}
+
+async function verifyListItemCutPaste() {
+  const visibleOffset = 2;
+  const selectionStart = listFixture.indexOf("Alpha") + visibleOffset;
+  const selectionEnd = listFixture.indexOf("Beta") + visibleOffset;
+  const selectedText = listFixture.slice(selectionStart, selectionEnd);
+  const cutSource = `${listFixture.slice(0, selectionStart)}${listFixture.slice(selectionEnd)}`;
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  await startSession(listFixture, "Alpha");
+  await placeCaretInText("Alpha", visibleOffset);
+  await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 8 });
+  const cutText = await dispatchCutAndCaptureText();
+  if (cutText !== selectedText) {
+    throw new Error(`List Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(selectedText)}`);
+  }
+  await waitForSaveState(false);
+  await save(cutSource);
+
+  if (await dispatchPasteText(selectedText) == null) {
+    throw new Error("No focused list editor received the structural Paste event");
+  }
+  await waitForSaveState(false);
+  await save(listFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(cutSource);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(listFixture);
   await stopSession();
 }
 
@@ -1581,19 +1674,34 @@ async function verifyFenceVariantEditing() {
 
 async function verifyCodeBlockLayout() {
   await startSession(codeFixture, "const value = 1;");
+  await waitFor(
+    () => evaluate(`Boolean(
+      document.querySelector(".milkdown-code-block .language-button")?.textContent?.trim().startsWith("JavaScript")
+      && Array.from(document.querySelectorAll(".cm-lineNumbers .cm-gutterElement"))
+        .some((node) => node.textContent === "1" && getComputedStyle(node).visibility !== "hidden")
+    )`),
+    "code language and line-number controls did not finish rendering"
+  );
   const geometry = await evaluate(`(() => {
     const block = document.querySelector(".milkdown-code-block");
     const tools = block?.querySelector(".tools");
+    const gutters = block?.querySelector(".cm-gutters");
+    const foldGutter = block?.querySelector(".cm-foldGutter");
     const line = block?.querySelector(".cm-line");
     const blockRect = block?.getBoundingClientRect();
     const toolsRect = tools?.getBoundingClientRect();
+    const guttersRect = gutters?.getBoundingClientRect();
+    const foldGutterRect = foldGutter?.getBoundingClientRect();
     const lineRect = line?.getBoundingClientRect();
-    if (!blockRect || !toolsRect || !lineRect) return null;
+    if (!blockRect || !toolsRect || !guttersRect || !foldGutterRect || !lineRect) return null;
     return {
       blockHeight: blockRect.height,
       toolsHeight: toolsRect.height,
       topToText: lineRect.top - blockRect.top,
-      textToBottom: blockRect.bottom - lineRect.bottom
+      textToBottom: blockRect.bottom - lineRect.bottom,
+      guttersWidth: guttersRect.width,
+      foldGutterWidth: foldGutterRect.width,
+      gutterToText: lineRect.left - guttersRect.right
     };
   })()`);
   const compact = geometry
@@ -1603,9 +1711,15 @@ async function verifyCodeBlockLayout() {
     && geometry.topToText >= 28
     && geometry.topToText <= 31
     && geometry.textToBottom >= 12
-    && geometry.textToBottom <= 15;
+    && geometry.textToBottom <= 15
+    && geometry.guttersWidth >= 41.5
+    && geometry.guttersWidth <= 42.5
+    && geometry.foldGutterWidth === 0
+    && geometry.gutterToText >= 7.5
+    && geometry.gutterToText <= 8.5;
   if (!compact) throw new Error(`single-line code block spacing is imbalanced: ${JSON.stringify(geometry)}`);
   if (process.env.TETHER_PARITY_SCREENSHOT) {
+    await delay(300);
     await captureElementsScreenshot([".milkdown-code-block"], process.env.TETHER_PARITY_SCREENSHOT);
   }
   await stopSession();
@@ -1763,6 +1877,16 @@ async function run() {
     console.log("Verified code-to-prose Cut/Paste retains physical Markdown source and history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "backward-code-to-prose-cut-paste") {
+    await verifyBackwardCodeToProseCutPaste();
+    console.log("Verified backward code-to-prose Cut/Paste retains physical Markdown source and history.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "list-item-cut-paste") {
+    await verifyListItemCutPaste();
+    console.log("Verified list-item Cut/Paste retains physical markers and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "closing-fence-replacement") {
     await verifyClosingFenceReplacement();
     console.log("Verified real Electron closing-fence replacement history.");
@@ -1806,6 +1930,8 @@ async function run() {
   await verifyCodeToProseSelection();
   await verifyCodeToProseReplacement();
   await verifyCodeToProseCutPaste();
+  await verifyBackwardCodeToProseCutPaste();
+  await verifyListItemCutPaste();
   await verifyProseToCodeReplacement();
   await verifyProseToCodeCutPaste();
   await verifyCodeBoundaryDeletion();

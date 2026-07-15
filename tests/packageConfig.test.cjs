@@ -140,6 +140,7 @@ test("fenced code blocks keep readable source typography and focused-only line f
 
   assert.match(styles, /milkdown-code-block \.cm-scroller\s*\{[^}]*font-size:\s*13px[^}]*font-weight:\s*400/s);
   assert.match(styles, /milkdown-code-block \.cm-content\s*\{[^}]*min-height:\s*1\.62em/s);
+  assert.match(styles, /milkdown-code-block \.cm-foldGutter\s*\{[^}]*display:\s*none !important/s);
   assert.match(styles, /milkdown-code-block\s*\{[^}]*padding:\s*4px 0 10px/s);
   assert.match(styles, /milkdown-code-block \.tools\s*\{[^}]*min-height:\s*24px/s);
   assert.match(styles, /cm-editor\.cm-focused \.cm-activeLine/);
