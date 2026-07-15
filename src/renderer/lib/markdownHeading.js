@@ -1,15 +1,34 @@
 import { Fragment } from "@milkdown/kit/prose/model";
 import { headingSchema } from "@milkdown/kit/preset/commonmark";
 import { $remark } from "@milkdown/kit/utils";
+import { paragraphSemanticSignature } from "./markdownParagraph.js";
 
 function sourceText(file) {
   return typeof file?.value === "string" ? file.value : String(file?.value || "");
 }
 
 export function annotateHeadingMarkers(tree, file) {
-  const lines = sourceText(file).split(/\r?\n/);
-  const visit = (node) => {
+  const source = sourceText(file);
+  const lines = source.split(/\r?\n/);
+  const visit = (node, parent = null) => {
     if (node?.type === "heading") {
+      const sourceStart = node.position?.start?.offset;
+      const sourceEnd = node.position?.end?.offset;
+      const contentStart = node.children?.[0]?.position?.start?.offset;
+      const contentEnd = node.children?.at(-1)?.position?.end?.offset;
+      if (Number.isFinite(contentStart) && Number.isFinite(contentEnd)) {
+        node.headingContentStart = contentStart;
+        node.headingContentEnd = contentEnd;
+      }
+      if (
+        parent?.type === "root"
+        && Number.isFinite(sourceStart)
+        && Number.isFinite(sourceEnd)
+      ) {
+        node.headingSource = source.slice(sourceStart, sourceEnd);
+        node.headingSourceSignature = headingSemanticSignature(node);
+        node.headingSourceStart = sourceStart;
+      }
       const startLine = node.position?.start?.line;
       const startColumn = node.position?.start?.column;
       const endLine = node.position?.end?.line;
@@ -31,10 +50,17 @@ export function annotateHeadingMarkers(tree, file) {
         }
       }
     }
-    (node?.children || []).forEach(visit);
+    (node?.children || []).forEach((child) => visit(child, node));
   };
   visit(tree);
   return tree;
+}
+
+export function headingSemanticSignature(node) {
+  return JSON.stringify({
+    depth: Number(node?.depth) || 1,
+    content: paragraphSemanticSignature(node)
+  });
 }
 
 export const sourceFaithfulHeadingRemark = $remark(
@@ -63,8 +89,34 @@ export const sourceFaithfulHeadingSchema = headingSchema.extendSchema((previous)
       markdownStyle: { default: "atx", validate: "string" },
       setextMarker: { default: "=", validate: "string" },
       setextLength: { default: 3, validate: "number" },
-      atxClosingLength: { default: 0, validate: "number" }
+      atxClosingLength: { default: 0, validate: "number" },
+      headingSource: { default: null, validate: "string|null" },
+      headingSourceSignature: { default: null, validate: "string|null" },
+      headingSourceStart: { default: null, validate: "number|null" },
+      headingContentStart: { default: null, validate: "number|null" },
+      headingContentEnd: { default: null, validate: "number|null" }
     },
+    parseDOM: (spec.parseDOM || []).map((rule) => ({
+      ...rule,
+      getAttrs: (dom) => {
+        const attrs = rule.getAttrs ? rule.getAttrs(dom) : {};
+        if (attrs === false) return false;
+        return {
+          ...(attrs || {}),
+          headingSource: dom.getAttribute?.("data-md-heading-source") ?? null,
+          headingSourceSignature: dom.getAttribute?.("data-md-heading-signature") ?? null,
+          headingSourceStart: dom.hasAttribute?.("data-md-heading-source-start")
+            ? Number(dom.getAttribute("data-md-heading-source-start"))
+            : null,
+          headingContentStart: dom.hasAttribute?.("data-md-heading-content-start")
+            ? Number(dom.getAttribute("data-md-heading-content-start"))
+            : null,
+          headingContentEnd: dom.hasAttribute?.("data-md-heading-content-end")
+            ? Number(dom.getAttribute("data-md-heading-content-end"))
+            : null
+        };
+      }
+    })),
     toDOM: (node) => {
       const dom = spec.toDOM(node);
       const marker = node.attrs.markdownStyle === "setext"
@@ -77,7 +129,22 @@ export const sourceFaithfulHeadingSchema = headingSchema.extendSchema((previous)
         {
           ...dom[1],
           "data-md-heading-style": node.attrs.markdownStyle,
-          ...(marker ? { "data-md-heading-marker": marker } : {})
+          ...(marker ? { "data-md-heading-marker": marker } : {}),
+          ...(node.attrs.headingSource == null
+            ? {}
+            : { "data-md-heading-source": node.attrs.headingSource }),
+          ...(node.attrs.headingSourceSignature == null
+            ? {}
+            : { "data-md-heading-signature": node.attrs.headingSourceSignature }),
+          ...(node.attrs.headingSourceStart == null
+            ? {}
+            : { "data-md-heading-source-start": node.attrs.headingSourceStart }),
+          ...(node.attrs.headingContentStart == null
+            ? {}
+            : { "data-md-heading-content-start": node.attrs.headingContentStart }),
+          ...(node.attrs.headingContentEnd == null
+            ? {}
+            : { "data-md-heading-content-end": node.attrs.headingContentEnd })
         },
         dom[2]
       ];
@@ -90,7 +157,12 @@ export const sourceFaithfulHeadingSchema = headingSchema.extendSchema((previous)
           markdownStyle: node.markdownStyle || "atx",
           setextMarker: node.setextMarker || (node.depth === 1 ? "=" : "-"),
           setextLength: node.setextLength || 3,
-          atxClosingLength: node.atxClosingLength || 0
+          atxClosingLength: node.atxClosingLength || 0,
+          headingSource: node.headingSource ?? null,
+          headingSourceSignature: node.headingSourceSignature ?? null,
+          headingSourceStart: node.headingSourceStart ?? null,
+          headingContentStart: node.headingContentStart ?? null,
+          headingContentEnd: node.headingContentEnd ?? null
         });
         state.next(node.children);
         state.closeNode();
@@ -104,7 +176,12 @@ export const sourceFaithfulHeadingSchema = headingSchema.extendSchema((previous)
           markdownStyle: node.attrs.markdownStyle,
           setextMarker: node.attrs.setextMarker,
           setextLength: node.attrs.setextLength,
-          atxClosingLength: node.attrs.atxClosingLength
+          atxClosingLength: node.attrs.atxClosingLength,
+          headingSource: node.attrs.headingSource,
+          headingSourceSignature: node.attrs.headingSourceSignature,
+          headingSourceStart: node.attrs.headingSourceStart,
+          headingContentStart: node.attrs.headingContentStart,
+          headingContentEnd: node.attrs.headingContentEnd
         });
         serializeHeadingChildren(state, node);
         state.closeNode();
@@ -125,6 +202,11 @@ function encodeLeadingWhitespace(value) {
 }
 
 export function sourceFaithfulHeadingHandler(node, _parent, state, info) {
+  if (
+    node.headingSource != null
+    && node.headingSourceSignature != null
+    && headingSemanticSignature(node) === node.headingSourceSignature
+  ) return node.headingSource;
   const rank = Math.max(Math.min(6, node.depth || 1), 1);
   const tracker = state.createTracker(info);
   const useSetext = node.markdownStyle === "setext"

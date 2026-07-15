@@ -601,6 +601,23 @@ async function verifyLiteralSourceTokens() {
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(editedNestedEntityFixture);
   await stopSession();
+
+  const headingFixture = "## Head &copy; and \\*literal\\* ##\n";
+  const editedHeadingFixture = "## Head &copy; and \\*lXiteral\\* ##\n";
+  const headingText = "Head © and *literal*";
+  await startSession(headingFixture, headingText);
+  await placeCaretInText(headingText, headingText.indexOf("*literal*"));
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "\\*" && state.selectionStart === 1,
+    "heading ArrowRight skipped the hidden escape character"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await cdp.send("Input.insertText", { text: "X" });
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedHeadingFixture);
+  await stopSession();
 }
 
 async function verifyInlineConstructBoundaries() {

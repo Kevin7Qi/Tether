@@ -1940,18 +1940,8 @@ export function serializedDocumentGaps(state, serializer) {
 
   for (let index = 0; index < childCount; index += 1) {
     const child = state.doc.child(index);
-    const single = state.doc.type.create(
-      { ...state.doc.attrs, markdownBlockGaps: null },
-      child
-    );
-    const serialized = serializer(single);
-    // A root serializer contributes one terminal line break. That line break
-    // is document spacing, not part of the block's own source segment.
-    const blockSource = serialized.endsWith("\r\n")
-      ? serialized.slice(0, -2)
-      : serialized.endsWith("\n")
-        ? serialized.slice(0, -1)
-        : serialized;
+    const blockSource = serializedDocumentBlockSource(state, child, serializer);
+    if (typeof blockSource !== "string") return null;
     const start = fullSource.indexOf(blockSource, cursor);
     if (start < cursor) return null;
     gaps.push(fullSource.slice(cursor, start));
@@ -1959,6 +1949,26 @@ export function serializedDocumentGaps(state, serializer) {
   }
   gaps.push(fullSource.slice(cursor));
   return gaps.length === childCount + 1 ? gaps : null;
+}
+
+function serializedDocumentBlockSource(state, child, serializer) {
+  let serialized;
+  try {
+    const single = state.doc.type.create(
+      { ...state.doc.attrs, markdownBlockGaps: null },
+      child
+    );
+    serialized = serializer(single);
+  } catch {
+    return null;
+  }
+  // A root serializer contributes one terminal line break. That line break is
+  // document spacing, not part of the block's own physical source segment.
+  return serialized.endsWith("\r\n")
+    ? serialized.slice(0, -2)
+    : serialized.endsWith("\n")
+      ? serialized.slice(0, -1)
+      : serialized;
 }
 
 function documentGapsForState(state, serializer) {
@@ -2154,19 +2164,33 @@ export function documentSourceSegments(state, serializer) {
   let documentPosition = 0;
   let previousSourceEnd = 0;
   const childCount = sourceDocumentChildCount(state.doc);
+  const fullSource = serializer(state.doc);
   for (let index = 0; index < childCount; index += 1) {
     const node = state.doc.child(index);
     const nodeTo = documentPosition + node.nodeSize;
-    const prefix = state.doc.type.create(
-      {
-        ...state.doc.attrs,
-        markdownBlockGaps: JSON.stringify(gaps.slice(0, index + 2))
-      },
-      state.doc.content.cut(0, nodeTo)
-    );
-    const prefixSource = serializer(prefix);
     const sourceStart = previousSourceEnd + gaps[index].length;
-    const sourceEnd = prefixSource.length - gaps[index + 1].length;
+    const blockSource = serializedDocumentBlockSource(state, node, serializer);
+    let sourceEnd = typeof blockSource === "string"
+      && fullSource.slice(sourceStart, sourceStart + blockSource.length) === blockSource
+      ? sourceStart + blockSource.length
+      : null;
+    if (!Number.isFinite(sourceEnd)) {
+      const prefix = state.doc.type.create(
+        {
+          ...state.doc.attrs,
+          markdownBlockGaps: JSON.stringify(gaps.slice(0, index + 2))
+        },
+        state.doc.content.cut(0, nodeTo)
+      );
+      let prefixSource;
+      try {
+        prefixSource = serializer(prefix);
+      } catch {
+        return null;
+      }
+      sourceEnd = prefixSource.length - gaps[index + 1].length;
+      if (sourceEnd < sourceStart || sourceEnd > fullSource.length) return null;
+    }
     segments.push({
       index,
       node,
@@ -2179,7 +2203,8 @@ export function documentSourceSegments(state, serializer) {
     previousSourceEnd = sourceEnd;
     documentPosition = nodeTo;
   }
-  return { fullSource: serializer(state.doc), gaps, segments };
+  if (previousSourceEnd + (gaps.at(-1)?.length || 0) !== fullSource.length) return null;
+  return { fullSource, gaps, segments };
 }
 
 export function rootBoundarySourceSelection(state, direction, serializer, extend = false) {
@@ -2412,6 +2437,8 @@ export function documentSourceOffsetAtPosition(state, position, serializer, affi
   const documentSource = documentSourceSegments(state, serializer);
   if (!documentSource) return null;
   const bounded = Math.max(0, Math.min(position, state.doc.content.size));
+  const literalOffset = literalTextblockDocumentSourceOffset(state, bounded, serializer);
+  if (Number.isFinite(literalOffset)) return literalOffset;
   for (const segment of documentSource.segments) {
     const start = segment.position;
     const end = start + segment.node.nodeSize;
@@ -2494,6 +2521,11 @@ export function documentPositionAtSourceOffset(state, sourceOffset, serializer) 
       continue;
     }
     if (!resolved.parent.isTextblock) continue;
+    const literalOffset = literalTextblockDocumentSourceOffset(state, position, serializer);
+    if (Number.isFinite(literalOffset)) {
+      if (literalOffset === sourceOffset) return position;
+      continue;
+    }
     const localOffset = sourceCaretOffset(
       state,
       unit,
@@ -2694,7 +2726,7 @@ export function sourceSelectionFromDocumentSelection(
   };
 }
 
-function plainTextParagraphSourceMapping(
+function literalTextblockSourceMapping(
   state,
   selection = state?.selection,
   serializer = null
@@ -2702,10 +2734,10 @@ function plainTextParagraphSourceMapping(
   if (
     !selection
     || !selection.$from.sameParent(selection.$to)
-    || selection.$from.parent.type.name !== "paragraph"
+    || !["paragraph", "heading"].includes(selection.$from.parent.type.name)
   ) return null;
-  const paragraph = selection.$from.parent;
-  const textNode = paragraph.childCount === 1 ? paragraph.firstChild : null;
+  const textblock = selection.$from.parent;
+  const textNode = textblock.childCount === 1 ? textblock.firstChild : null;
   const text = textNode?.isText && !textNode.marks.length ? textNode.text : null;
   if (typeof text !== "string") return null;
 
@@ -2716,10 +2748,29 @@ function plainTextParagraphSourceMapping(
     selection.from > position
     && selection.to < position + node.nodeSize
   )) || null;
-  let source = paragraph.attrs.paragraphSource;
+  let source = textblock.attrs.paragraphSource;
   let segmentSourceOffset = 0;
+  if (textblock.type.name === "heading" && typeof textblock.attrs.headingSource === "string") {
+    if (!segment || segment.node !== textblock) return null;
+    const segmentSource = documentSource.fullSource.slice(segment.from, segment.to);
+    const rawSource = textblock.attrs.headingSource;
+    const sourceStart = textblock.attrs.headingSourceStart;
+    const contentStart = textblock.attrs.headingContentStart;
+    const contentEnd = textblock.attrs.headingContentEnd;
+    if (
+      rawSource !== segmentSource
+      || !Number.isFinite(sourceStart)
+      || !Number.isFinite(contentStart)
+      || !Number.isFinite(contentEnd)
+    ) return null;
+    const from = contentStart - sourceStart;
+    const to = contentEnd - sourceStart;
+    if (from < 0 || to < from || to > rawSource.length) return null;
+    source = rawSource.slice(from, to);
+    segmentSourceOffset = from;
+  }
   if (typeof source !== "string") {
-    if (!segment || segment.node === paragraph) return null;
+    if (!segment || segment.node === textblock) return null;
     const unit = {
       from: segment.position,
       to: segment.position + segment.node.nodeSize,
@@ -2728,8 +2779,12 @@ function plainTextParagraphSourceMapping(
     };
     const metadata = structuralSourceMetadata(state, unit);
     const segmentSource = documentSource.fullSource.slice(segment.from, segment.to);
-    const contentStart = paragraph.attrs.markdownSourceStart;
-    const contentEnd = paragraph.attrs.markdownSourceEnd;
+    const contentStart = textblock.type.name === "heading"
+      ? textblock.attrs.headingContentStart
+      : textblock.attrs.markdownSourceStart;
+    const contentEnd = textblock.type.name === "heading"
+      ? textblock.attrs.headingContentEnd
+      : textblock.attrs.markdownSourceEnd;
     if (
       metadata?.rawSource !== segmentSource
       || !Number.isFinite(metadata.sourceStart)
@@ -2744,7 +2799,29 @@ function plainTextParagraphSourceMapping(
   }
   if (source === text) return null;
   if (decodedMarkdownSourceOffset(source, text, text.length) !== source.length) return null;
-  return { paragraph, source, text, segmentSourceOffset, segment, documentSource };
+  return { textblock, source, text, segmentSourceOffset, segment, documentSource };
+}
+
+function literalTextblockDocumentSourceOffset(state, position, serializer) {
+  if (!state?.doc || !Number.isFinite(position) || typeof serializer !== "function") return null;
+  let selection;
+  try {
+    if (!state.doc.resolve(position).parent.isTextblock) return null;
+    selection = TextSelection.create(state.doc, position);
+  } catch {
+    return null;
+  }
+  const mapping = literalTextblockSourceMapping(state, selection, serializer);
+  if (!mapping?.segment) return null;
+  const visibleOffset = selection.$from.parentOffset;
+  const sourceOffset = decodedMarkdownSourceOffset(
+    mapping.source,
+    mapping.text,
+    visibleOffset
+  );
+  return Number.isFinite(sourceOffset)
+    ? mapping.segment.from + mapping.segmentSourceOffset + sourceOffset
+    : null;
 }
 
 export function plainTextMarkdownSourceSelection(
@@ -2752,7 +2829,7 @@ export function plainTextMarkdownSourceSelection(
   serializer,
   selection = state?.selection
 ) {
-  const mapping = plainTextParagraphSourceMapping(state, selection, serializer);
+  const mapping = literalTextblockSourceMapping(state, selection, serializer);
   if (!mapping || typeof serializer !== "function") return null;
   const { source, text, segmentSourceOffset } = mapping;
   const start = selection.$from.start();
@@ -2779,7 +2856,7 @@ export function plainTextMarkdownSourceSelection(
 export function plainTextMarkdownSourceToken(state, direction, serializer = null) {
   const { selection } = state || {};
   if (!selection?.empty || !["backward", "forward"].includes(direction)) return null;
-  const mapping = plainTextParagraphSourceMapping(state, selection, serializer);
+  const mapping = literalTextblockSourceMapping(state, selection, serializer);
   if (!mapping) return null;
   const { source, text, segmentSourceOffset } = mapping;
 
@@ -5876,7 +5953,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             0,
             Math.min(mappedPosition(mapping, originalPosition, assoc), editorView.state.doc.content.size)
           );
-          if (unit.kind === "inline") {
+          if (unit.kind === "inline" && unit.name !== "literal_source") {
             const handoff = structuralSourceHandoffTarget(
               editorView.state,
               position,
