@@ -346,6 +346,20 @@ test("code history changes restore the same embedded editor focus", () => {
   );
 });
 
+test("exact source selections capture copy and cut before DOM reconciliation", () => {
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /const capturedExactClipboardEvents = new WeakSet\(\)/);
+  assert.match(syntax, /const captureExactClipboard = \(event\) =>/);
+  assert.match(syntax, /sourceSelectionText\(sourceSelection\)/);
+  assert.match(syntax, /sourceClipboardEdit\([\s\S]*sourceSelection/);
+  assert.match(syntax, /addEventListener\("copy", captureExactClipboard, true\)/);
+  assert.match(syntax, /addEventListener\("cut", captureExactClipboard, true\)/);
+  assert.match(syntax, /removeEventListener\("copy", captureExactClipboard, true\)/);
+  assert.match(syntax, /removeEventListener\("cut", captureExactClipboard, true\)/);
+  assert.match(syntax, /if \(capturedExactClipboardEvents\.has\(event\)\) return true/);
+  assert.match(syntax, /queueMicrotask\(\(\) => \{[\s\S]*dispatchExactEdit\(/);
+});
+
 test("multi-click activation carries word and line selection into raw Markdown controls", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /pointerClickCount: Math\.max\(1, Number\(event\?\.detail\) \|\| 1\)/);

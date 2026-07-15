@@ -5032,6 +5032,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
   let exactHistoryFrame = 0;
   let exactSourceDispatchDepth = 0;
   let protectedExactSource = null;
+  const capturedExactClipboardEvents = new WeakSet();
 
   const rememberExactEdit = (sourceSelection, transaction, afterSourceSelection = null) => {
     if (!sourceSelection || !transaction?.docChanged) return;
@@ -5475,6 +5476,39 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       view.dom.tetherRunBoundaryHistory = runBoundaryHistory;
       view.dom.tetherRunSourceControlHistory = runSourceControlHistory;
       view.dom.tetherReplaceExactSourceSelection = replaceExactSourceSelection;
+      const captureExactClipboard = (event) => {
+        if (!event.clipboardData || !["copy", "cut"].includes(event.type)) return;
+        const currentView = editorView || view;
+        const sourceSelection = markdownSyntaxKey.getState(currentView.state)?.sourceSelection;
+        const selectedText = sourceSelectionText(sourceSelection);
+        if (!sourceSelection || selectedText == null || selectedText === "") return;
+        const edit = event.type === "cut" && currentView.editable
+          ? sourceClipboardEdit(
+              currentView.state,
+              "",
+              ctx.get(parserCtx),
+              ctx.get(serializerCtx),
+              sourceSelection
+            )
+          : null;
+        if (event.type === "cut" && !edit) return;
+        event.preventDefault();
+        event.clipboardData.setData("text/plain", selectedText);
+        if (["\n", "\r\n"].includes(selectedText)) {
+          event.clipboardData.setData("text/html", "<br>");
+        }
+        capturedExactClipboardEvents.add(event);
+        if (edit) {
+          queueMicrotask(() => {
+            dispatchExactEdit(
+              currentView,
+              edit.transaction,
+              edit.sourceSelection,
+              edit.sourceSelection
+            );
+          });
+        }
+      };
       const captureExactDeletion = (event) => {
         if (
           event.altKey
@@ -5510,6 +5544,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         });
       };
       view.dom.addEventListener("keydown", captureExactDeletion, true);
+      view.dom.addEventListener("copy", captureExactClipboard, true);
+      view.dom.addEventListener("cut", captureExactClipboard, true);
       view.dom.addEventListener("mousedown", captureSourceHandoff, true);
       return {
         update(nextView) {
@@ -5517,6 +5553,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         },
         destroy() {
           view.dom.removeEventListener("keydown", captureExactDeletion, true);
+          view.dom.removeEventListener("copy", captureExactClipboard, true);
+          view.dom.removeEventListener("cut", captureExactClipboard, true);
           view.dom.removeEventListener("mousedown", captureSourceHandoff, true);
           if (view.dom.tetherProtectCurrentSource === protectCurrentSource) {
             delete view.dom.tetherProtectCurrentSource;
@@ -5599,6 +5637,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return replaceExactTextInput(view, event);
         },
         copy(view, event) {
+          if (capturedExactClipboardEvents.has(event)) return true;
           const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
           const plainSelection = sourceSelection
             ? null
@@ -5613,6 +5652,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return true;
         },
         cut(view, event) {
+          if (capturedExactClipboardEvents.has(event)) return true;
           if (!view.editable || !event.clipboardData) return false;
           const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection
             || plainTextMarkdownSourceSelection(view.state, ctx.get(serializerCtx));

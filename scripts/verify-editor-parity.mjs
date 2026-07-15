@@ -262,6 +262,75 @@ async function clickElement(selector) {
   await delay(120);
 }
 
+async function textBoundaryPoint(text, offset, rootSelector) {
+  return waitFor(
+    () => evaluate(`(() => {
+      const root = document.querySelector(${JSON.stringify(rootSelector)});
+      if (!root) return null;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      let node;
+      while ((node = walker.nextNode())) nodes.push(node);
+      const combined = nodes.map((candidate) => candidate.data).join("");
+      const match = combined.indexOf(${JSON.stringify(text)});
+      if (match < 0) return null;
+      const target = match + ${offset};
+      let consumed = 0;
+      for (const candidate of nodes) {
+        const end = consumed + candidate.data.length;
+        if (target <= end) {
+          const local = target - consumed;
+          const range = document.createRange();
+          if (local < candidate.data.length) {
+            range.setStart(candidate, local);
+            range.setEnd(candidate, local + 1);
+            const rect = range.getBoundingClientRect();
+            return { x: rect.left + Math.min(1, rect.width / 4), y: rect.top + rect.height / 2 };
+          }
+          if (!candidate.data.length) return null;
+          range.setStart(candidate, candidate.data.length - 1);
+          range.setEnd(candidate, candidate.data.length);
+          const rect = range.getBoundingClientRect();
+          return { x: rect.right - Math.min(1, rect.width / 4), y: rect.top + rect.height / 2 };
+        }
+        consumed = end;
+      }
+      return null;
+    })()`),
+    `Could not locate the ${JSON.stringify(text)} source boundary in ${rootSelector}`
+  );
+}
+
+async function dragBetweenTextBoundaries(start, end) {
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...start });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+    ...start
+  });
+  const steps = 6;
+  for (let index = 1; index <= steps; index += 1) {
+    const ratio = index / steps;
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      button: "left",
+      buttons: 1,
+      x: start.x + (end.x - start.x) * ratio,
+      y: start.y + (end.y - start.y) * ratio
+    });
+  }
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+    ...end
+  });
+  await delay(250);
+}
+
 async function sourceControlState() {
   return evaluate(`(() => {
     const control = document.querySelector(".tether-continuous-source");
@@ -1250,6 +1319,85 @@ async function verifyBackwardCodeToProseCutPaste() {
   await stopSession();
 }
 
+async function verifyCodePointerDragCutPaste() {
+  const codeOffset = codeContent.indexOf("value");
+  const proseOffset = 2;
+  const beforeOffset = 3;
+  const contentStart = codeFixture.indexOf(codeContent);
+  const scenarios = [
+    {
+      name: "code-to-prose",
+      startText: codeContent,
+      startOffset: codeOffset,
+      startRoot: ".cm-content",
+      endText: "After.",
+      endOffset: proseOffset,
+      endRoot: ".ProseMirror",
+      selectionStart: contentStart + codeOffset,
+      selectionEnd: codeFixture.indexOf("After.") + proseOffset
+    },
+    {
+      name: "prose-to-code",
+      startText: "Before.",
+      startOffset: beforeOffset,
+      startRoot: ".ProseMirror",
+      endText: codeContent,
+      endOffset: codeOffset,
+      endRoot: ".cm-content",
+      selectionStart: codeFixture.indexOf("Before.") + beforeOffset,
+      selectionEnd: contentStart + codeOffset
+    }
+  ];
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  for (const scenario of scenarios) {
+    const selectedText = codeFixture.slice(scenario.selectionStart, scenario.selectionEnd);
+    const cutSource = `${codeFixture.slice(0, scenario.selectionStart)}${codeFixture.slice(scenario.selectionEnd)}`;
+
+    await startSession(codeFixture, codeContent);
+    const start = await textBoundaryPoint(
+      scenario.startText,
+      scenario.startOffset,
+      scenario.startRoot
+    );
+    const end = await textBoundaryPoint(
+      scenario.endText,
+      scenario.endOffset,
+      scenario.endRoot
+    );
+    await dragBetweenTextBoundaries(start, end);
+    const dragState = await evaluate(`(() => ({
+      activeElement: document.activeElement?.className || document.activeElement?.tagName || null,
+      domSelection: getSelection()?.toString() || "",
+      cmSelection: document.querySelector(".cm-selectionBackground")?.getBoundingClientRect().toJSON() || null,
+      exactMarker: document.querySelector(".tether-source-newline-selection")?.className || null,
+      exactMarkerText: document.querySelector(".tether-source-newline-selection")?.textContent || null
+    }))()`);
+    const cutText = await dispatchCutAndCaptureText();
+    if (cutText !== selectedText) {
+      throw new Error(`${scenario.name} pointer-drag Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(selectedText)}; drag state: ${JSON.stringify(dragState)}`);
+    }
+    await waitForSaveState(false);
+    await save(cutSource);
+
+    if (await dispatchPasteText(selectedText) == null) {
+      throw new Error(`No focused editor received the ${scenario.name} pointer-drag Paste event`);
+    }
+    await waitForSaveState(false);
+    await save(codeFixture);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+    await waitForSaveState(false);
+    await save(cutSource);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+    await waitForSaveState(false);
+    await save(codeFixture);
+    await stopSession();
+  }
+}
+
 async function verifyListItemCutPaste() {
   const visibleOffset = 2;
   const selectionStart = listFixture.indexOf("Alpha") + visibleOffset;
@@ -2028,6 +2176,11 @@ async function run() {
     console.log("Verified backward code-to-prose Cut/Paste retains physical Markdown source and history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "code-pointer-drag-cut-paste") {
+    await verifyCodePointerDragCutPaste();
+    console.log("Verified bidirectional pointer drags between code and prose retain physical fence source and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "list-item-cut-paste") {
     await verifyListItemCutPaste();
     console.log("Verified list-item Cut/Paste retains physical markers and history.");
@@ -2092,6 +2245,7 @@ async function run() {
   await verifyCodeToProseReplacement();
   await verifyCodeToProseCutPaste();
   await verifyBackwardCodeToProseCutPaste();
+  await verifyCodePointerDragCutPaste();
   await verifyListItemCutPaste();
   await verifyTaskCheckboxHistory();
   await verifyTableBoundaryCutPasteHistory();
