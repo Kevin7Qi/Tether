@@ -22,10 +22,15 @@ const uiStateFileName = "tether-state.json";
 const localGrantsFileName = "tether-local-grants.json";
 const trustedHostsFileName = "tether-trusted-hosts.json";
 const localGrants = new Set();
+const editorParityRun = process.env.TETHER_EDITOR_PARITY === "1";
 
 app.setName("Tether");
 app.commandLine.appendSwitch("force-color-profile", "srgb");
 if (process.platform === "win32") app.setAppUserModelId("app.tether.markdown");
+// Keep automated parity runs out of the Dock and menu bar on macOS. A hidden
+// BrowserWindow alone still lets Electron briefly activate the application,
+// which causes the distracting screen/menu-bar flash during repeated checks.
+if (editorParityRun && process.platform === "darwin") app.setActivationPolicy("accessory");
 
 function installApplicationMenu() {
   // Windows/Linux keep a menu-less window by design. macOS requires an
@@ -307,7 +312,6 @@ function toRendererError(error) {
 
 function createWindow() {
   const backgroundColor = getResolvedWindowBackground();
-  const editorParityRun = process.env.TETHER_EDITOR_PARITY === "1";
   mainWindow = new BrowserWindow({
     width: 1320,
     height: 860,
@@ -322,7 +326,8 @@ function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       sandbox: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: !editorParityRun
     }
   });
   mainWindow.setMenuBarVisibility(false);

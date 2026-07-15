@@ -3,6 +3,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow } from "electron";
 
+// This verifier never needs to become a foreground macOS application. Using
+// accessory activation avoids Dock/menu-bar flashes while retaining an
+// offscreen BrowserWindow for real Chromium layout measurements.
+if (process.platform === "darwin") app.setActivationPolicy("accessory");
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const [appStyles, milkdownListStyles] = await Promise.all([
   readFile(resolve(root, "src/renderer/styles.css"), "utf8"),
@@ -103,7 +108,7 @@ async function verifyAlignment() {
     show: false,
     width: 800,
     height: 600,
-    webPreferences: { sandbox: true }
+    webPreferences: { sandbox: true, backgroundThrottling: false }
   });
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
   const geometry = await window.webContents.executeJavaScript(`(() => {
