@@ -870,6 +870,58 @@ export default function WysiwygSurface({
       if (typeof event.data !== "string" || event.data === "") return;
       replaceCodeSourceOnlyInsertion(event, event.data);
     };
+    const replaceCodeSourceTransfer = (event, replacement) => {
+      if (
+        readOnlyRef.current
+        || isSourceInputComposing(event)
+        || typeof replacement !== "string"
+        || replacement === ""
+      ) return false;
+      const target = event.target instanceof Element ? event.target : null;
+      const codeView = tetherCodeViewForElement(target);
+      const block = target?.closest(".milkdown-code-block");
+      const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));
+      const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+      if (!codeView || !block || !view || !serializer) return false;
+
+      let codeBlock;
+      try {
+        codeBlock = enclosingCodeBlock(view.state.doc, view.posAtDOM(block, 0, -1));
+      } catch {
+        return false;
+      }
+      if (!codeBlock) return false;
+      const selection = codeView.state.selection.main;
+      const documentSource = documentSourceSegments(view.state, serializer);
+      const sourceAnchor = documentSourceOffsetAtPosition(
+        view.state,
+        codeContentSourcePosition(codeBlock.position, selection.anchor),
+        serializer,
+        "forward"
+      );
+      const sourceHead = documentSourceOffsetAtPosition(
+        view.state,
+        codeContentSourcePosition(codeBlock.position, selection.head),
+        serializer,
+        "forward"
+      );
+      if (
+        !documentSource
+        || !Number.isFinite(sourceAnchor)
+        || !Number.isFinite(sourceHead)
+      ) return false;
+      const sourceSelection = {
+        anchor: sourceAnchor,
+        head: sourceHead,
+        fullSource: documentSource.fullSource,
+        boundary: codeContentSourcePosition(codeBlock.position, selection.head)
+      };
+      codeSourceOnlyHistory = null;
+      if (!view.dom.tetherReplaceExactSourceSelection?.(sourceSelection, replacement)) return false;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return true;
+    };
     const handleCodeSourceOnlyTransfer = (event) => {
       const transfer = event.clipboardData || event.dataTransfer;
       if (!transfer) return;
@@ -879,7 +931,8 @@ export default function WysiwygSurface({
       if (hasImageFile) return;
       const text = transfer.getData?.("text/plain");
       if (!text) return;
-      replaceCodeSourceOnlyInsertion(event, text);
+      if (replaceCodeSourceOnlyInsertion(event, text)) return;
+      if (event.type === "paste") replaceCodeSourceTransfer(event, text);
     };
     const handleCodeBoundaryKey = (event) => {
       if (readOnlyRef.current) return;

@@ -289,6 +289,18 @@ async function dispatchKey({ key, code, virtualKeyCode, modifiers = 0 }) {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...common });
 }
 
+async function dispatchPasteText(text) {
+  return evaluate(`(() => {
+    const transfer = new DataTransfer();
+    transfer.setData("text/plain", ${JSON.stringify(text)});
+    return document.activeElement?.dispatchEvent(new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: transfer
+    })) ?? null;
+  })()`);
+}
+
 async function waitForSavedSource(expected) {
   try {
     return await waitFor(
@@ -1108,6 +1120,61 @@ async function verifyCodeToProseReplacement() {
   await stopSession();
 }
 
+async function verifyCodeToProseCutPaste() {
+  await startSession(codeFixture, codeContent);
+  const { selectionStart, selectedLength } = await selectCodeEndIntoFollowingProse();
+  const cutSource = `${codeFixture.slice(0, selectionStart)}${
+    codeFixture.slice(selectionStart + selectedLength)
+  }`;
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  await evaluate(`document.addEventListener("cut", (event) => {
+    window.__tetherParityCutText = event.clipboardData?.getData("text/plain") ?? null;
+  }, { once: true })`);
+  const cutHandled = await evaluate(`document.execCommand("cut")`);
+  if (!cutHandled) throw new Error("Chromium did not dispatch the code-to-prose Cut command");
+  const cutText = await evaluate(`window.__tetherParityCutText`);
+  const expectedCutText = codeFixture.slice(selectionStart, selectionStart + selectedLength);
+  if (cutText !== expectedCutText) {
+    throw new Error(`Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(expectedCutText)}`);
+  }
+  await waitForSaveState(false);
+  await save(cutSource);
+
+  const pasteDispatched = await dispatchPasteText(expectedCutText);
+  if (pasteDispatched == null) throw new Error("No focused element received the code-to-prose Paste event");
+  await waitForSaveState(false);
+  await save(codeFixture);
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(cutSource);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(codeFixture);
+  await stopSession();
+
+  const codePaste = "X\nY";
+  const codePasteFixture = codeFixture.replace(codeContent, `${codeContent}${codePaste}`);
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("end");
+  if (await dispatchPasteText(codePaste) == null) {
+    throw new Error("No focused code editor received the multiline Paste event");
+  }
+  await waitForSaveState(false);
+  await save(codePasteFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(codeFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(codePasteFixture);
+  await stopSession();
+}
+
 async function verifyProseToCodeReplacement() {
   const anchor = "Bef".length;
   const codeStart = codeFixture.indexOf(codeBlockSource);
@@ -1623,6 +1690,11 @@ async function run() {
     console.log("Verified real Electron code-to-prose replacement history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "code-to-prose-cut-paste") {
+    await verifyCodeToProseCutPaste();
+    console.log("Verified code-to-prose Cut/Paste retains physical Markdown source and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "closing-fence-replacement") {
     await verifyClosingFenceReplacement();
     console.log("Verified real Electron closing-fence replacement history.");
@@ -1665,6 +1737,7 @@ async function run() {
   await verifyClosingFenceReplacement();
   await verifyCodeToProseSelection();
   await verifyCodeToProseReplacement();
+  await verifyCodeToProseCutPaste();
   await verifyProseToCodeReplacement();
   await verifyCodeBoundaryDeletion();
   await verifyCodeToProseBackspace();

@@ -5313,8 +5313,33 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const serializer = ctx.get(serializerCtx);
         protectedExactSource = serializeMarkdownDocument(currentView.state.doc, serializer);
       };
+      const replaceExactSourceSelection = (sourceSelection, replacement) => {
+        const currentView = editorView || view;
+        if (
+          !currentView.editable
+          || !sourceSelection
+          || typeof replacement !== "string"
+        ) return false;
+        const transaction = replaceSourceSelectionTransaction(
+          currentView.state,
+          sourceSelection,
+          replacement,
+          ctx.get(parserCtx)
+        );
+        if (!transaction) return false;
+        dispatchExactEdit(
+          currentView,
+          transaction,
+          sourceSelection,
+          sourceSelection,
+          null,
+          { isolatedHistory: true }
+        );
+        return true;
+      };
       view.dom.tetherProtectCurrentSource = protectCurrentSource;
       view.dom.tetherRunBoundaryHistory = runBoundaryHistory;
+      view.dom.tetherReplaceExactSourceSelection = replaceExactSourceSelection;
       const captureExactDeletion = (event) => {
         if (
           event.altKey
@@ -5363,6 +5388,9 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           }
           if (view.dom.tetherRunBoundaryHistory === runBoundaryHistory) {
             delete view.dom.tetherRunBoundaryHistory;
+          }
+          if (view.dom.tetherReplaceExactSourceSelection === replaceExactSourceSelection) {
+            delete view.dom.tetherReplaceExactSourceSelection;
           }
           editorView = null;
         }

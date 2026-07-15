@@ -295,6 +295,18 @@ test("CodeMirror text insertion at an immediate closing fence edits literal Mark
   assert.match(surface, /removeEventListener\("drop", handleCodeSourceOnlyTransfer, true\)/);
 });
 
+test("CodeMirror plain-text paste uses canonical Markdown source history", () => {
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(surface, /const replaceCodeSourceTransfer = \(event, replacement\) =>/);
+  assert.match(surface, /documentSourceOffsetAtPosition\([\s\S]*codeContentSourcePosition\(codeBlock\.position, selection\.anchor\)/);
+  assert.match(surface, /tetherReplaceExactSourceSelection\?\.\(sourceSelection, replacement\)/);
+  assert.match(surface, /replaceCodeSourceOnlyInsertion\(event, text\)[\s\S]*replaceCodeSourceTransfer\(event, text\)/);
+  assert.match(syntax, /const replaceExactSourceSelection = \(sourceSelection, replacement\) =>/);
+  assert.match(syntax, /dispatchExactEdit\([\s\S]*\{ isolatedHistory: true \}/);
+  assert.match(syntax, /tetherReplaceExactSourceSelection = replaceExactSourceSelection/);
+});
+
 test("extended CodeMirror selections continue through physical fence source", () => {
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
   assert.match(surface, /!selection\.empty && !event\.shiftKey/);
