@@ -2626,8 +2626,8 @@ export default function App() {
   // The inline editor reports edits on a debounce, so anything that reads or
   // snapshots the document (save, tab switch, mode switch) must flush first.
   // Returns the up-to-date markdown, or null when nothing was pending.
-  function flushInlineEdits() {
-    const flushed = editorApiRef.current?.flushPendingEdits?.();
+  function flushInlineEdits(options = undefined) {
+    const flushed = editorApiRef.current?.flushPendingEdits?.(options);
     if (typeof flushed !== "string") return null;
     if (flushed !== editorContent) dispatchDocument({ type: "EDIT", value: flushed });
     return flushed;
@@ -2700,7 +2700,7 @@ export default function App() {
     if (!saveTargetReady) return;
     // Flush before the dirty check: the inline editor reports edits on a
     // debounce, so a quick Cmd+S right after typing must not miss them.
-    const flushed = flushInlineEdits();
+    const flushed = flushInlineEdits({ preserveFocus: true });
     const contentToSave = flushed ?? editorContent;
     if (!dirty && (flushed == null || flushed === content)) return;
     setBusy(true);
@@ -2711,12 +2711,14 @@ export default function App() {
       setBusy(false);
 
       if (!response.ok) {
+        editorApiRef.current?.restorePendingSaveFocus?.();
         setError(response.error);
         setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
         return;
       }
 
       setLocalSampleContent(contentToSave);
+      editorApiRef.current?.acceptSavedContent?.(response.file.content);
       applyFreshFile(response.file);
       setStatus({ state: "idle", message: "Saved local sample", checkedAt: null, metadata: response.file.metadata });
       return;
@@ -2731,6 +2733,7 @@ export default function App() {
       setBusy(false);
 
       if (!response.ok) {
+        editorApiRef.current?.restorePendingSaveFocus?.();
         setError(response.error);
         if (response.error.code === "LOCAL_CONFLICT") {
           const latest = localFile?.path ? await remoteApi.readLocalFile(localFile.path) : null;
@@ -2744,6 +2747,7 @@ export default function App() {
       }
 
       setLocalFile({ path: response.file.path });
+      editorApiRef.current?.acceptSavedContent?.(response.file.content);
       applyFreshFile(response.file);
       setStatus({ state: "idle", message: "Saved local file", checkedAt: null, metadata: response.file.metadata });
       return;
@@ -2758,6 +2762,7 @@ export default function App() {
     setBusy(false);
 
     if (!response.ok) {
+      editorApiRef.current?.restorePendingSaveFocus?.();
       if (isConnectionLostError(response.error)) {
         handleRemoteConnectionLoss(connectionLostMessage(connection.host));
         return;
@@ -2773,6 +2778,7 @@ export default function App() {
       return;
     }
 
+    editorApiRef.current?.acceptSavedContent?.(response.file.content);
     applyFreshFile(response.file);
     setStatus((current) => ({ ...current, message: "Saved remote file" }));
   }

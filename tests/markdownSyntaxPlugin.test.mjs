@@ -58,6 +58,7 @@ import {
   sourceCharacterDeletionRange,
   sourceControlInitialDeletion,
   sourceControlInitialHistoryChange,
+  sourceControlSaveFocus,
   sourceEditCaretOffset,
   sourceLineEndingAt,
   sourceBoundarySelectionRange,
@@ -110,6 +111,23 @@ const schema = new Schema({
     strike_through: {},
     link: { attrs: { href: {}, title: { default: null } } }
   }
+});
+
+test("saving a temporary source control captures its logical unit and selection", () => {
+  const focus = sourceControlSaveFocus({
+    classList: ["tether-continuous-source", "is-block", "is-code_block"],
+    selectionStart: 7,
+    selectionEnd: 13,
+    selectionDirection: "backward"
+  }, 21);
+
+  assert.deepEqual(focus, {
+    position: 21,
+    name: "code_block",
+    selection: { start: 7, end: 13, direction: "backward" }
+  });
+  assert.equal(sourceControlSaveFocus(null, 21), null);
+  assert.equal(sourceControlSaveFocus({ classList: [] }, Number.NaN), null);
 });
 
 function stateWithMarks(markNames) {

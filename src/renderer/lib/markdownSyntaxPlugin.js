@@ -4252,6 +4252,22 @@ export function flushActiveMarkdownSource(viewDom) {
   if (control?.element?.isConnected) control.finish(true, null, true);
 }
 
+export function sourceControlSaveFocus(control, position) {
+  if (!control || !Number.isFinite(position)) return null;
+  const name = Array.from(control.classList || [])
+    .find((className) => className.startsWith("is-") && !["is-block", "is-inline"].includes(className))
+    ?.slice(3) || null;
+  return {
+    position,
+    name,
+    selection: {
+      start: control.selectionStart ?? 0,
+      end: control.selectionEnd ?? control.selectionStart ?? 0,
+      direction: control.selectionDirection || "none"
+    }
+  };
+}
+
 export const markdownSyntaxPlugin = $prose((ctx) => {
   let editorView = null;
   let pendingActivation = false;

@@ -134,6 +134,7 @@ import {
   sourceFaithfulOrderedListSplitKeymap,
   sourceLineJumpEdge,
   sourceSelectionRangeAfterMotion,
+  sourceControlSaveFocus,
   sourceWordOffset,
   sourceWordSelectionRange,
   replaceSourceSelectionTransaction,
@@ -259,6 +260,11 @@ export default function WysiwygSurface({
   // The document model is a stronger undo-baseline signal than serialization:
   // transient normalization can spell the same restored document differently.
   const baselineDocRef = useRef(null);
+  // Saving commits a temporary Markdown source control so the file snapshot is
+  // structurally complete. Remember that control's logical caret so Cmd+S can
+  // reopen the same source unit after the save instead of ejecting focus from
+  // the editor.
+  const pendingSaveFocusRef = useRef(null);
   const applyingExternalRef = useRef(false);
   const hasUserChangeRef = useRef(false);
   const refreshWidgetsRef = useRef(null);
@@ -276,12 +282,27 @@ export default function WysiwygSurface({
       // Commit any in-progress inline source edit and return the up-to-date
       // markdown when it differs from what onChange has already reported as
       // the clean baseline; null means "nothing pending".
-      flushPendingEdits: () => {
+      flushPendingEdits: ({ preserveFocus = false } = {}) => {
         const crepe = crepeRef.current;
         if (!crepe) return null;
         let view = null;
         try {
           view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
+          const active = view.dom.ownerDocument.activeElement;
+          if (preserveFocus && active?.matches?.(".tether-continuous-source")) {
+            let position = null;
+            try {
+              position = view.posAtDOM(active, 0, -1);
+            } catch {
+              // A source widget can disappear during a blur race. In that case
+              // saving remains correct; there simply is no caret to restore.
+            }
+            if (Number.isFinite(position)) {
+              pendingSaveFocusRef.current = sourceControlSaveFocus(active, position);
+            }
+          } else if (preserveFocus) {
+            pendingSaveFocusRef.current = null;
+          }
           flushActiveMarkdownSource(view.dom);
         } catch {
           return null;
@@ -298,6 +319,61 @@ export default function WysiwygSurface({
         }
         hasUserChangeRef.current = true;
         return markdown;
+      },
+      acceptSavedContent: (markdown) => {
+        const crepe = crepeRef.current;
+        if (!crepe || typeof markdown !== "string") return;
+        const doc = markSyntheticTrailingParagraph(crepe, true);
+        baselineMarkdownRef.current = normalizeSerializedMarkdown(
+          crepe.getMarkdown(),
+          doc,
+          markdown
+        );
+        baselineSourceRef.current = markdown;
+        baselineDocRef.current = doc;
+        lastMarkdownRef.current = markdown;
+        hasUserChangeRef.current = false;
+
+        const savedFocus = pendingSaveFocusRef.current;
+        pendingSaveFocusRef.current = null;
+        if (!savedFocus) return;
+        let remainingFrames = 4;
+        const restore = () => {
+          window.requestAnimationFrame(() => {
+            const currentCrepe = crepeRef.current;
+            if (!currentCrepe) return;
+            const currentView = currentCrepe.editor.action((ctx) => ctx.get(editorViewCtx));
+            const node = currentView.state.doc.nodeAt(savedFocus.position);
+            if (savedFocus.name && node?.type.name !== savedFocus.name) {
+              currentView.focus();
+              return;
+            }
+            if (remainingFrames > 1) {
+              remainingFrames -= 1;
+              restore();
+              return;
+            }
+            activateMarkdownSourceAt(currentView, savedFocus.position, {
+              explicitUnitPosition: savedFocus.position,
+              initialSourceSelection: savedFocus.selection,
+              focusLock: true
+            });
+          });
+        };
+        restore();
+      },
+      restorePendingSaveFocus: () => {
+        const savedFocus = pendingSaveFocusRef.current;
+        pendingSaveFocusRef.current = null;
+        if (!savedFocus) return;
+        const crepe = crepeRef.current;
+        if (!crepe) return;
+        const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
+        activateMarkdownSourceAt(view, savedFocus.position, {
+          explicitUnitPosition: savedFocus.position,
+          initialSourceSelection: savedFocus.selection,
+          focusLock: true
+        });
       },
       runHistoryCommand: (command) => {
         if (readOnlyRef.current || !["undo", "redo"].includes(command)) return false;
