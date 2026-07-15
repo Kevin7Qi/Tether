@@ -48,9 +48,25 @@ function joinAdjacentDefinitions(left, right) {
 
 function sourceSuffix(context, fallbackSource = null) {
   if (typeof context === "string") return context.match(/(?:\r\n|\r|\n)*$/)?.[0] ?? "";
-  const childCount = context?.childCount;
+  const trailing = context?.lastChild;
+  const hasSyntheticTrailing = Boolean(
+    trailing?.type?.name === "paragraph"
+    && !trailing.content?.size
+    && trailing.attrs?.tetherSyntheticTrailing
+  );
+  const childCount = Number.isFinite(context?.childCount) && hasSyntheticTrailing
+    ? Math.max(0, context.childCount - 1)
+    : context?.childCount;
   const gaps = documentGaps(context?.attrs?.markdownBlockGaps, childCount);
-  if (gaps) return gaps[gaps.length - 1];
+  if (gaps) {
+    const suffix = gaps[gaps.length - 1];
+    const lastSourceChild = hasSyntheticTrailing && childCount > 0
+      ? context.child(childCount - 1)
+      : trailing;
+    return suffix === "" && lastSourceChild?.type?.name === "code_block"
+      ? lastSourceChild.attrs?.fenceTrailingLineEnding || suffix
+      : suffix;
+  }
   if (typeof fallbackSource === "string") {
     return fallbackSource.match(/(?:\r\n|\r|\n)*$/)?.[0] ?? "";
   }

@@ -15,6 +15,7 @@ import {
   tetherCodeViewForElement
 } from "./codeEditor.js";
 import { decodedMarkdownSourceOffset, sourceTabEdit } from "./sourceEditing.js";
+import { normalizeSerializedMarkdown } from "./markdownStyle.js";
 
 export { sourceTabEdit } from "./sourceEditing.js";
 
@@ -29,6 +30,10 @@ export function publishMarkdownSourceDraft(view, markdown) {
     bubbles: true,
     detail: { markdown }
   }));
+}
+
+function serializeMarkdownDocument(doc, serializer) {
+  return normalizeSerializedMarkdown(serializer(doc), doc);
 }
 
 export function isUnmarkedFullDocumentReplacement(transaction, state) {
@@ -91,7 +96,7 @@ export function shouldRejectStaleExactSourceReplacement(
   serializer
 ) {
   if (protectedSource == null || typeof serializer !== "function") return false;
-  return serializer(transaction.doc) !== protectedSource
+  return serializeMarkdownDocument(transaction.doc, serializer) !== protectedSource
     && (
       isUnmarkedFullDocumentReplacement(transaction, state)
       || isUnmarkedCodeBlockBoundaryMutation(transaction, state)
@@ -920,7 +925,7 @@ export function sourceAwareClipboardText(state, serializer) {
     }, serializer);
   }
   if (selection.from === 0 && selection.to === state.doc.content.size) {
-    return serializer(state.doc);
+    return serializeMarkdownDocument(state.doc, serializer);
   }
 
   if (!selection.$from.sameParent(selection.$to) || !selection.$from.parent.isTextblock) {
@@ -1312,7 +1317,7 @@ export function markdownSourceDraftMarkdown(state, parser, serializer, unit, sou
     const replacement = parsed?.content?.size ? parsed.content : Fragment.from(fallback);
     transaction = state.tr.replace(unit.from, unit.to, new Slice(replacement, 0, 0));
   }
-  return serializer(transaction.doc);
+  return serializeMarkdownDocument(transaction.doc, serializer);
 }
 
 export function inlineSourceBoundaryDirection(
@@ -1492,11 +1497,11 @@ export function exactSourceProtectionDecision(
       protectedSource: armProtection
         && protectedSource == null
         && typeof serializer === "function"
-        ? serializer(state.doc)
+        ? serializeMarkdownDocument(state.doc, serializer)
         : protectedSource
     };
   }
-  const candidateSource = serializer(transaction.doc);
+  const candidateSource = serializeMarkdownDocument(transaction.doc, serializer);
   if (shouldRejectStaleExactSourceReplacement(
     transaction,
     state,
@@ -1946,7 +1951,7 @@ function sourceDocumentChildCount(doc) {
 
 export function serializedDocumentGaps(state, serializer) {
   if (typeof serializer !== "function") return null;
-  const fullSource = serializer(state.doc);
+  const fullSource = serializeMarkdownDocument(state.doc, serializer);
   const gaps = [];
   let cursor = 0;
   const childCount = sourceDocumentChildCount(state.doc);
@@ -1974,6 +1979,12 @@ function serializedDocumentBlockSource(state, child, serializer) {
     serialized = serializer(single);
   } catch {
     return null;
+  }
+  const ownedTrailingLineEnding = child.type.name === "code_block"
+    ? child.attrs.fenceTrailingLineEnding
+    : "";
+  if (ownedTrailingLineEnding && serialized.endsWith(ownedTrailingLineEnding)) {
+    return serialized;
   }
   // A root serializer contributes one terminal line break. That line break is
   // document spacing, not part of the block's own physical source segment.
@@ -2005,8 +2016,8 @@ export function sourceNewlineSourceRange(state, serializer) {
     },
     state.doc.content.cut(0, info.boundary)
   );
-  const prefixSource = serializer(prefix);
-  const fullSource = serializer(state.doc);
+  const prefixSource = serializeMarkdownDocument(prefix, serializer);
+  const fullSource = serializeMarkdownDocument(state.doc, serializer);
   const gapStart = prefixSource.length - gap.length;
   if (gapStart < 0 || fullSource.slice(gapStart, gapStart + gap.length) !== gap) return null;
 
@@ -2158,7 +2169,7 @@ export function sourceLineEndingAt(source, offset) {
 
 export function sourceSelectionAfterEdit(transaction, editSelection, serializer) {
   if (!transaction?.doc || !editSelection || typeof serializer !== "function") return null;
-  const fullSource = serializer(transaction.doc);
+  const fullSource = serializeMarkdownDocument(transaction.doc, serializer);
   const caret = sourceEditCaretOffset(editSelection, fullSource);
   if (!Number.isFinite(caret)) return null;
   return {
@@ -2177,7 +2188,7 @@ export function documentSourceSegments(state, serializer) {
   let documentPosition = 0;
   let previousSourceEnd = 0;
   const childCount = sourceDocumentChildCount(state.doc);
-  const fullSource = serializer(state.doc);
+  const fullSource = serializeMarkdownDocument(state.doc, serializer);
   for (let index = 0; index < childCount; index += 1) {
     const node = state.doc.child(index);
     const nodeTo = documentPosition + node.nodeSize;
@@ -2197,7 +2208,7 @@ export function documentSourceSegments(state, serializer) {
       );
       let prefixSource;
       try {
-        prefixSource = serializer(prefix);
+        prefixSource = serializeMarkdownDocument(prefix, serializer);
       } catch {
         return null;
       }
@@ -4902,7 +4913,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     if (!sourceSelection || !transaction?.docChanged) return;
     const beforeSource = sourceSelection.fullSource;
     const serializer = ctx.get(serializerCtx);
-    const afterSource = serializer(transaction.doc);
+    const afterSource = serializeMarkdownDocument(transaction.doc, serializer);
     if (beforeSource === afterSource) return;
     const afterState = EditorState.create({
       doc: transaction.doc,
@@ -4942,7 +4953,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     { isolatedHistory = false } = {}
   ) => {
     const serializer = ctx.get(serializerCtx);
-    const afterSource = serializer(transaction.doc);
+    const afterSource = serializeMarkdownDocument(transaction.doc, serializer);
     const afterSelection = requestedAfterSelection?.fullSource === afterSource
       ? {
           ...requestedAfterSelection,
@@ -5083,7 +5094,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     const view = editorView;
     if (!view) return false;
     const serializer = ctx.get(serializerCtx);
-    const currentSource = serializer(view.state.doc);
+    const currentSource = serializeMarkdownDocument(view.state.doc, serializer);
     const step = exactSourceHistoryStep(boundaryEditHistory, command, currentSource);
     if (!step?.sourceSelection || typeof step.source !== "string") return false;
     const parsed = ctx.get(parserCtx)(step.source);
@@ -5124,12 +5135,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
   const restoreExactSelectionAfterHistory = (view) => {
     if (!exactEditHistory.length) return;
     const serializer = ctx.get(serializerCtx);
-    const beforeHistorySource = serializer(view.state.doc);
+    const beforeHistorySource = serializeMarkdownDocument(view.state.doc, serializer);
     if (exactHistoryFrame) cancelAnimationFrame(exactHistoryFrame);
     exactHistoryFrame = requestAnimationFrame(() => {
       exactHistoryFrame = 0;
       if (!view.dom.isConnected) return;
-      const afterHistorySource = serializer(view.state.doc);
+      const afterHistorySource = serializeMarkdownDocument(view.state.doc, serializer);
       const sourceSelection = exactSourceSelectionAfterHistory(
         exactEditHistory,
         beforeHistorySource,
@@ -5299,7 +5310,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       editorView = view;
       const protectCurrentSource = () => {
         const currentView = editorView || view;
-        protectedExactSource = ctx.get(serializerCtx)(currentView.state.doc);
+        const serializer = ctx.get(serializerCtx);
+        protectedExactSource = serializeMarkdownDocument(currentView.state.doc, serializer);
       };
       view.dom.tetherProtectCurrentSource = protectCurrentSource;
       view.dom.tetherRunBoundaryHistory = runBoundaryHistory;
@@ -5720,7 +5732,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             && event.key === "Enter"
           ) {
             const replacement = sourceLineEndingAt(
-              exactSelection?.fullSource || serializer(_view.state.doc),
+              exactSelection?.fullSource || serializeMarkdownDocument(_view.state.doc, serializer),
               exactSelection
                 ? Math.min(exactSelection.anchor, exactSelection.head)
                 : 0

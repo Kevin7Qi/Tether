@@ -19,7 +19,7 @@ import { Clock, Container, Ctx } from "@milkdown/kit/ctx";
 import { AllSelection, EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import { history, redo, undo } from "@milkdown/kit/prose/history";
 import { GapCursor } from "@milkdown/kit/prose/gapcursor";
-import { paragraphSchema, textSchema } from "@milkdown/kit/preset/commonmark";
+import { textSchema } from "@milkdown/kit/preset/commonmark";
 import { emptyCodeClosingFenceSourceOffset } from "../src/renderer/lib/codeEditor.js";
 import {
   sourceFaithfulDocumentRemark,
@@ -37,6 +37,7 @@ import {
   typedCodeFenceTransaction
 } from "../src/renderer/lib/markdownFence.js";
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
+import { sourceFaithfulParagraphSchema } from "../src/renderer/lib/markdownParagraph.js";
 import {
   continuousMarkdownSource,
   documentGapFocusDirection,
@@ -89,7 +90,7 @@ async function milkdownTransformer() {
     sourceFaithfulFenceRemark,
     sourceFaithfulDocumentRemark,
     sourceFaithfulDocumentSchema,
-    paragraphSchema,
+    sourceFaithfulParagraphSchema,
     textSchema,
     sourceFaithfulCodeBlockSchema,
     sourceFaithfulCodeBlockInputRule
@@ -458,6 +459,23 @@ test("edited fenced code preserves CRLF wrappers and unclosed source", async () 
     serialize(unclosedDoc.type.create(unclosedDoc.attrs, [editedUnclosed])),
     "```js\r\nchanged\r\n```After\r\n"
   );
+});
+
+test("an unclosed fenced block at EOF preserves its exact terminal newline", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  for (const source of [
+    "Before.\n\n```js\nconst value = 1;X",
+    "Before.\n\n```js\nconst value = 1;X\n"
+  ]) {
+    const parsed = parse(source);
+    const syntheticTrailing = parsed.type.schema.nodes.paragraph.create({
+      tetherSyntheticTrailing: true
+    });
+    const doc = parsed.type.create(parsed.attrs, [...parsed.content.content, syntheticTrailing]);
+    const documentSource = documentSourceSegments(EditorState.create({ doc }), serialize);
+    assert.equal(documentSource?.fullSource, source);
+    assert.deepEqual(documentSource?.gaps, ["", "\n\n", ""]);
+  }
 });
 
 test("Backspace after a fence deletes physical separator newlines before fence markers", async () => {

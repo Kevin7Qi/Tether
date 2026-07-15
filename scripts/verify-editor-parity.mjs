@@ -919,6 +919,96 @@ async function verifyCodeBoundarySelection() {
   await stopSession();
 }
 
+async function verifyCodeJumpNavigation() {
+  const contentStart = codeBlockSource.indexOf("\n") + 1;
+  const contentEnd = contentStart + codeContent.length;
+
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("start");
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 9 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource
+      && state.selectionStart === 3 && state.selectionEnd === contentStart
+      && state.selectionDirection === "backward",
+    "Shift-Option-ArrowLeft did not select the opening fence language and newline"
+  );
+  await stopSession();
+
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("end");
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 9 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource
+      && state.selectionStart === contentEnd && state.selectionEnd === codeBlockSource.length
+      && state.selectionDirection === "forward",
+    "Shift-Option-ArrowRight did not select the closing fence newline and marker"
+  );
+  await stopSession();
+
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("end");
+  await dispatchKey({ key: "ArrowUp", code: "ArrowUp", virtualKeyCode: 38, modifiers: 4 });
+  await waitFor(
+    async () => {
+      const state = await editorState();
+      return state.anchorText === "Before." && state.anchorOffset === 0;
+    },
+    "Command-ArrowUp from code did not reach the physical document start"
+  );
+  await stopSession();
+
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("end");
+  await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 4 });
+  await waitFor(
+    () => evaluate(`(() => {
+      const selection = getSelection();
+      return selection?.anchorNode?.data === "After."
+        && selection.anchorOffset === "After.".length
+        && Boolean(document.querySelector(".tether-source-newline-selection.is-caret"));
+    })()`),
+    "Command-ArrowDown from code did not retain the physical terminal newline caret"
+  );
+  await stopSession();
+
+  await startSession(emptyCodeFixture, "Before.");
+  await focusCodeBoundary("start");
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 4 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === emptyCodeBlockSource
+      && state.selectionStart === emptyCodeBlockSource.length
+      && state.selectionEnd === emptyCodeBlockSource.length,
+    "Command-ArrowRight in an immediate empty fence did not reach the physical closing line end"
+  );
+  await stopSession();
+}
+
+async function verifyCodeDocumentJumpReplacement() {
+  const contentStart = codeBlockSource.indexOf("\n") + 1;
+  const contentEnd = contentStart + codeContent.length;
+  const selectionStart = codeFixture.indexOf(codeBlockSource) + contentEnd;
+  const replaced = `${codeFixture.slice(0, selectionStart)}X`;
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("end");
+  await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 12 });
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await save(replaced);
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(codeFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(replaced);
+  await stopSession();
+}
+
 async function verifyClosingFenceReplacement() {
   const contentEnd = codeBlockSource.indexOf("\n") + 1 + codeContent.length;
   await startSession(codeFixture, codeContent);
@@ -1468,6 +1558,16 @@ async function verifyCodeLanguagePickerSourceFidelity() {
 }
 
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "code-jump-navigation") {
+    await verifyCodeJumpNavigation();
+    console.log("Verified code line, word, and document jumps traverse physical fence source.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "code-document-jump-replacement") {
+    await verifyCodeDocumentJumpReplacement();
+    console.log("Verified code document-jump replacement retains exact terminal source and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-block-layout") {
     await verifyCodeBlockLayout();
     console.log("Verified compact, balanced single-line fenced-code spacing.");
@@ -1560,6 +1660,8 @@ async function run() {
   await verifyInlineCrossBoundarySelection();
   await verifyCodeBoundaryNavigation();
   await verifyCodeBoundarySelection();
+  await verifyCodeJumpNavigation();
+  await verifyCodeDocumentJumpReplacement();
   await verifyClosingFenceReplacement();
   await verifyCodeToProseSelection();
   await verifyCodeToProseReplacement();
