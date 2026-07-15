@@ -1088,6 +1088,13 @@ export function sourceCaretOffset(
   if (!Number.isFinite(clickPosition)) return source.length;
 
   const position = Math.max(0, Math.min(clickPosition, state.doc.content.size));
+  if (unit.name === "hardbreak" && position >= unit.from && position <= unit.to) {
+    // A hard break's temporary source contains only its marker; inserting a
+    // mapping sentinel before the atom replaces `nodeAt(unit.from)` with text,
+    // so the generic serializer cannot locate that sentinel. Map the two real
+    // atom boundaries directly to the marker's physical source boundaries.
+    return position === unit.from ? 0 : source.length;
+  }
   if (unit.name === "table") {
     const tableOffset = tableCellSourceOffsetAtPosition(state, position, source, "forward");
     if (tableOffset != null) return tableOffset;

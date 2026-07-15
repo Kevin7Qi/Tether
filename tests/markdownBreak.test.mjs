@@ -32,8 +32,10 @@ import {
 } from "../src/renderer/lib/markdownDocument.js";
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
+  documentSourceUnitStartOffset,
   sourceAwareClipboardText,
   sourceClipboardEdit,
+  sourceSelectionAcrossUnitBoundary,
   sourceSelectionFromDocumentSelection,
   sourceSelectionText
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
@@ -145,5 +147,32 @@ test("hard-break selections include the physical marker and newline", async () =
     const edit = sourceClipboardEdit(state, " ", parse, serialize);
     assert.equal(edit?.selectedText, token);
     assert.equal(serialize(edit.transaction.doc), joined);
+  }
+});
+
+test("hard-break source controls hand selections through the physical newline", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  for (const [source, marker, token] of [
+    ["alpha  \nbeta\n", "  ", "  \n"],
+    ["alpha\\\r\nbeta\r\n", "\\", "\\\r\n"]
+  ]) {
+    const doc = parse(source);
+    const breakPosition = textPosition(doc, "alpha") + "alpha".length;
+    const unit = {
+      from: breakPosition,
+      to: breakPosition + doc.nodeAt(breakPosition).nodeSize,
+      kind: "inline",
+      name: "hardbreak"
+    };
+    const state = EditorState.create({ doc });
+    const unitStart = documentSourceUnitStartOffset(state, unit, serialize);
+    assert.equal(unitStart, source.indexOf(marker));
+    const crossed = sourceSelectionAcrossUnitBoundary(
+      source,
+      unitStart,
+      { anchor: 0, head: marker.length },
+      "forward"
+    );
+    assert.equal(source.slice(crossed.anchor, crossed.head), token);
   }
 });

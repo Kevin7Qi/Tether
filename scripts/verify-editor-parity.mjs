@@ -1373,6 +1373,57 @@ async function verifyTableBoundaryCutPasteHistory() {
   await stopSession();
 }
 
+async function verifyHardBreakCutPasteHistory() {
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+  for (const { markerSource, lineEnding } of [
+    { markerSource: "  ", lineEnding: "\n" },
+    { markerSource: "\\", lineEnding: "\r\n" }
+  ]) {
+    const selectedSource = `${markerSource}${lineEnding}`;
+    const hardBreakFixture = `Alpha${selectedSource}Beta${lineEnding}`;
+    const collapsedFixture = `AlphaBeta${lineEnding}`;
+
+    await startSession(hardBreakFixture, "Alpha");
+    await placeCaretInText("Alpha", "Alpha".length);
+    for (let selectedLength = 1; selectedLength <= markerSource.length; selectedLength += 1) {
+      await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+      await waitForSourceControl(
+        (state) => state?.active && state.value === markerSource &&
+          state.selectionStart === 0 && state.selectionEnd === selectedLength &&
+          state.selectionDirection === "forward",
+        `Shift+Right did not select hard-break marker byte ${selectedLength}`
+      );
+    }
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+    await assertSourceControlClosed(
+      "Extending through a hard break did not hand its source selection back to the document"
+    );
+
+    const cutText = await dispatchCutAndCaptureText();
+    if (cutText !== selectedSource) {
+      throw new Error(`Hard-break Cut emitted ${JSON.stringify(cutText)} instead of ${JSON.stringify(selectedSource)}`);
+    }
+    await waitForSaveState(false);
+    await save(collapsedFixture);
+
+    if (await dispatchPasteText(selectedSource) == null) {
+      throw new Error("No focused editor received the hard-break source Paste event");
+    }
+    await waitForSaveState(false);
+    await save(hardBreakFixture);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+    await waitForSaveState(false);
+    await save(collapsedFixture);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+    await waitForSaveState(false);
+    await save(hardBreakFixture);
+    await stopSession();
+  }
+}
+
 async function verifyProseToCodeReplacement() {
   const anchor = "Bef".length;
   const codeStart = codeFixture.indexOf(codeBlockSource);
@@ -1992,6 +2043,11 @@ async function run() {
     console.log("Verified rendered table boundaries retain physical padding, pipes, and history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "hard-break-history") {
+    await verifyHardBreakCutPasteHistory();
+    console.log("Verified rendered hard breaks retain physical markers, line endings, and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "closing-fence-replacement") {
     await verifyClosingFenceReplacement();
     console.log("Verified real Electron closing-fence replacement history.");
@@ -2039,6 +2095,7 @@ async function run() {
   await verifyListItemCutPaste();
   await verifyTaskCheckboxHistory();
   await verifyTableBoundaryCutPasteHistory();
+  await verifyHardBreakCutPasteHistory();
   await verifyProseToCodeReplacement();
   await verifyProseToCodeCutPaste();
   await verifyCodeBoundaryDeletion();
