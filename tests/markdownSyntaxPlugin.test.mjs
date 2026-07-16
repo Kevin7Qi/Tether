@@ -32,7 +32,7 @@ import {
   inlineSourceBoundaryDeleteDirection,
   inlineSourceBoundaryDirection,
   inlineSourceBoundarySelectionDirection,
-  inlineSourceContentOffset,
+  inlineSourceEnterEdit,
   inlineSourceVerticalDirection,
   exactSourceProtectionDecision,
   finishUnchangedSourceHandoff,
@@ -3165,18 +3165,46 @@ test("continuous source controls are reserved for inline, atomic, and explicit s
   assert.equal(usesContinuousSourceEditor(table, table), true);
 });
 
-test("inline source offsets map through delimiters and syntax-only regions", () => {
-  const inlineParser = (source) => {
-    const code = source.match(/^`([\s\S]*)`$/);
-    const link = source.match(/^\[([^\]]+)\]\(([^)]*)\)$/);
-    const text = code?.[1] ?? link?.[1] ?? source;
-    return schema.node("doc", null, [schema.node("paragraph", null, text ? [schema.text(text)] : [])]);
+test("inline source Enter inserts the physical line ending at its exact hidden offset", () => {
+  const strong = schema.marks.strong.create();
+  const doc = schema.node("doc", null, [schema.node("paragraph", null, [
+    schema.text("Before "),
+    schema.text("marked", [strong]),
+    schema.text(" after.")
+  ])]);
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, "Before ".length + 2)
+  });
+  const unit = activeMarkdownSyntax(state);
+  const serializer = (doc) => {
+    let source = "";
+    doc.firstChild.forEach((node) => {
+      source += node.marks.some((mark) => mark.type.name === "strong")
+        ? `**${node.text}**`
+        : node.text;
+    });
+    return `${source}\r\n`;
   };
+  const parser = (source) => schema.node("doc", null, source
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => schema.node("paragraph", null, [schema.text(line)])));
+  const edit = inlineSourceEnterEdit(
+    state,
+    unit,
+    "**marked**",
+    "**marked**",
+    5,
+    parser,
+    serializer
+  );
 
-  assert.equal(inlineSourceContentOffset("`marked`", 0, inlineParser), 0);
-  assert.equal(inlineSourceContentOffset("`marked`", 4, inlineParser), 3);
-  assert.equal(inlineSourceContentOffset("`marked`", 8, inlineParser), 6);
-  assert.equal(inlineSourceContentOffset("[docs](https://example.com)", 15, inlineParser), 4);
+  assert.equal(edit.historySelection.anchor, "Before ".length);
+  assert.equal(edit.historySelection.head, "Before **marked**".length);
+  assert.equal(edit.afterSelection.anchor, "Before **mar\r\n".length);
+  assert.equal(edit.afterSelection.head, edit.afterSelection.anchor);
+  assert.equal(edit.afterSelection.fullSource, "Before **mar\r\nked** after.\r\n");
 });
 
 test("source controls leave IME composition keystrokes entirely native", () => {

@@ -44,6 +44,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /connectRendererTarget\(outgoingTargetId\)/);
   assert.match(verifier, /window\.remoteMarkdown\.resetEditorParity/);
   assert.match(verifier, /window\.localStorage\.clear\(\)/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "inline-source-enter"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-boundary-deletion"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "prose-select-all-editing"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "structural-marker-navigation"/);

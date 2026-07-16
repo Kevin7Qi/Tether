@@ -1,6 +1,6 @@
 import { parserCtx, serializerCtx } from "@milkdown/kit/core";
 import { Fragment, Slice } from "@milkdown/kit/prose/model";
-import { joinBackward, joinForward, lift, splitBlock } from "@milkdown/kit/prose/commands";
+import { joinBackward, joinForward, lift } from "@milkdown/kit/prose/commands";
 import {
   closeHistory,
   redo as redoProseMirror,
@@ -3424,7 +3424,8 @@ export function replaceSourceSelectionTransaction(
   state,
   sourceSelection,
   replacement,
-  parser
+  parser,
+  requestedCaretSourceOffset = null
 ) {
   if (!sourceSelection || typeof parser !== "function") return null;
   const from = Math.min(sourceSelection.anchor, sourceSelection.head);
@@ -3442,7 +3443,9 @@ export function replaceSourceSelectionTransaction(
   let caret = null;
   let marker = "\uE000";
   while (nextSource.includes(marker)) marker += "\uE001";
-  const caretSourceOffset = from + replacement.length;
+  const caretSourceOffset = Number.isFinite(requestedCaretSourceOffset)
+    ? Math.max(0, Math.min(nextSource.length, requestedCaretSourceOffset))
+    : from + replacement.length;
   const marked = parser(
     `${nextSource.slice(0, caretSourceOffset)}${marker}${nextSource.slice(caretSourceOffset)}`
   );
@@ -3458,6 +3461,63 @@ export function replaceSourceSelectionTransaction(
     Math.min(caret ?? sourceSelection.boundary, transaction.doc.content.size)
   );
   return transaction.setSelection(Selection.near(transaction.doc.resolve(caret), 1));
+}
+
+export function inlineSourceEnterEdit(
+  state,
+  unit,
+  originalSource,
+  value,
+  localOffset,
+  parser,
+  serializer
+) {
+  if (
+    !state?.doc
+    || !unit
+    || typeof originalSource !== "string"
+    || typeof value !== "string"
+    || typeof parser !== "function"
+    || typeof serializer !== "function"
+  ) return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const unitStart = documentSourceUnitStartOffset(state, unit, serializer);
+  if (!documentSource || !Number.isFinite(unitStart)) return null;
+  const offset = Math.max(0, Math.min(value.length, Number(localOffset) || 0));
+  const lineEnding = sourceLineEndingAt(
+    documentSource.fullSource,
+    unitStart + Math.min(offset, originalSource.length)
+  );
+  const replacement = `${value.slice(0, offset)}${lineEnding}${value.slice(offset)}`;
+  const historySelection = {
+    anchor: unitStart,
+    head: unitStart + originalSource.length,
+    fullSource: documentSource.fullSource,
+    boundary: unit.from
+  };
+  const afterSource = `${documentSource.fullSource.slice(0, unitStart)}${replacement}${
+    documentSource.fullSource.slice(unitStart + originalSource.length)
+  }`;
+  const caret = unitStart + offset + lineEnding.length;
+  const transaction = replaceSourceSelectionTransaction(
+    state,
+    historySelection,
+    replacement,
+    parser,
+    caret
+  );
+  if (!transaction) return null;
+  return {
+    transaction,
+    historySelection,
+    editSelection: historySelection,
+    afterSelection: {
+      anchor: caret,
+      head: caret,
+      fullSource: afterSource,
+      boundary: transaction.selection.head
+    }
+  };
 }
 
 export function sourceClipboardEdit(
@@ -3590,41 +3650,6 @@ export function usesContinuousSourceEditor(unit, explicitUnit = null) {
   return unit.kind === "inline"
     || sourceAtomNames.has(unit.name)
     || unit === explicitUnit;
-}
-
-export function inlineSourceContentOffset(source, sourceOffset, parser) {
-  const boundedOffset = Math.max(0, Math.min(source.length, sourceOffset));
-  let marker = "\uE100";
-  while (source.includes(marker)) marker += "\uE101";
-
-  const originalBlock = parser(source)?.firstChild;
-  const originalSize = originalBlock?.isTextblock ? originalBlock.content.size : 0;
-  const markedSource = `${source.slice(0, boundedOffset)}${marker}${source.slice(boundedOffset)}`;
-  const markedBlock = parser(markedSource)?.firstChild;
-  let markerPosition = null;
-  if (markedBlock?.isTextblock) {
-    markedBlock.descendants((node, position) => {
-      if (markerPosition != null || !node.isText) return markerPosition == null;
-      const index = node.text.indexOf(marker);
-      if (index >= 0) markerPosition = position + index;
-      return false;
-    });
-  }
-  if (markerPosition != null) return Math.max(0, Math.min(originalSize, markerPosition));
-
-  // Syntax-only regions such as a link destination or an inline-math value
-  // live in node attributes rather than document text. They map to the nearest
-  // visible edge because ProseMirror has no caret position inside the attribute.
-  const visibleText = originalBlock?.textContent || "";
-  if (visibleText) {
-    const visibleStart = source.indexOf(visibleText);
-    if (visibleStart >= 0) {
-      if (boundedOffset <= visibleStart) return 0;
-      if (boundedOffset >= visibleStart + visibleText.length) return originalSize;
-      return Math.min(originalSize, boundedOffset - visibleStart);
-    }
-  }
-  return boundedOffset <= source.length / 2 ? 0 : originalSize;
 }
 
 export function isSourceInputComposing(event) {
@@ -4299,8 +4324,8 @@ function continuousSourceEditor(
       }
       const value = editor.value;
       finishKeyboardHandoff(
-        true,
-        (mapping) => onInlineEnter(value, sourceOffset, mapping)
+        false,
+        () => onInlineEnter(value, sourceOffset)
       );
     } else if (isBlock && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -6965,24 +6990,26 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           );
           focusProseMirrorRoot(editorView);
         };
-        const splitFromInlineSource = (value, sourceOffset, mapping = null) => {
+        const insertLineBreakFromInlineSource = (value, sourceOffset) => {
           if (!editorView?.dom.isConnected) return;
-          const parser = ctx.get(parserCtx);
-          const contentOffset = inlineSourceContentOffset(value, sourceOffset, parser);
-          const from = mappedPosition(mapping, unit.from, -1);
-          const to = mappedPosition(mapping, unit.to, 1);
-          const position = Math.max(
-            0,
-            Math.min(from + contentOffset, to, editorView.state.doc.content.size)
+          const edit = inlineSourceEnterEdit(
+            editorView.state,
+            unit,
+            source,
+            value,
+            sourceOffset,
+            ctx.get(parserCtx),
+            serializer
           );
-          editorView.dispatch(
-            editorView.state.tr
-              .setSelection(TextSelection.create(editorView.state.doc, position))
-              .setMeta(markdownSyntaxKey, "close")
-              .scrollIntoView()
+          if (!edit) return;
+          dispatchExactEdit(
+            editorView,
+            edit.transaction,
+            edit.historySelection,
+            edit.editSelection,
+            edit.afterSelection,
+            { isolatedHistory: true }
           );
-          splitBlock(editorView.state, editorView.dispatch, editorView);
-          editorView.focus();
         };
         const publishDraft = (value) => {
           if (!editorView?.dom.isConnected) return;
@@ -7015,7 +7042,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           dragFromSource,
           wordJumpFromSource,
           jumpFromSource,
-          splitFromInlineSource,
+          insertLineBreakFromInlineSource,
           publishDraft,
           () => true,
           (control) => {

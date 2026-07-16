@@ -1076,6 +1076,70 @@ async function verifyInlineCrossBoundarySelection() {
   await stopSession();
 }
 
+async function verifyInlineSourceEnterHistory() {
+  const source = "[guide](https://example.com)";
+  const markdown = `Before ${source} after.\n`;
+  const splitOffset = source.indexOf("example") + "exam".length;
+  const splitSource = `${source.slice(0, splitOffset)}\n${source.slice(splitOffset)}`;
+  const splitMarkdown = `Before ${splitSource} after.\n`;
+  const save = async (expected) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(expected);
+  };
+
+  await startSession(markdown, "Before ");
+  await placeCaretInText("Before ", "Before ".length - 2);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === source,
+    "Link source did not activate before its hidden-destination Enter edit"
+  );
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(${splitOffset}, ${splitOffset});
+    return Boolean(control);
+  })()`);
+  await dispatchKey({ key: "Enter", code: "Enter", virtualKeyCode: 13 });
+  await assertSourceControlClosed("Enter inside a link destination left its source control open");
+  await waitForSaveState(false);
+  await save(splitMarkdown);
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(markdown);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(splitMarkdown);
+  await stopSession();
+
+  const crlfMarkdown = `Before ${source} after.\r\n`;
+  const selectionStart = source.indexOf("example");
+  const selectionEnd = selectionStart + "example".length;
+  const selectedReplacement = `${source.slice(0, selectionStart)}\r\n${source.slice(selectionEnd)}`;
+  const crlfSplitMarkdown = `Before ${selectedReplacement} after.\r\n`;
+  await startSession(crlfMarkdown, "Before ");
+  await placeCaretInText("Before ", "Before ".length - 2);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === source,
+    "CRLF link source did not activate before its selected Enter edit"
+  );
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(${selectionStart}, ${selectionEnd});
+    return Boolean(control);
+  })()`);
+  await dispatchKey({ key: "Enter", code: "Enter", virtualKeyCode: 13 });
+  await assertSourceControlClosed("Enter over selected CRLF link source left its control open");
+  await waitForSaveState(false);
+  await save(crlfSplitMarkdown);
+  await stopSession();
+}
+
 async function focusCodeBoundary(edge) {
   await waitFor(
     () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .cm-content"))`),
@@ -3041,6 +3105,11 @@ async function verifyCodeLanguagePickerSourceFidelity() {
 }
 
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "inline-source-enter") {
+    await verifyInlineSourceEnterHistory();
+    console.log("Verified Enter inside hidden inline source preserves exact Markdown and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-boundary-deletion") {
     await verifyCodeBoundaryDeletion();
     console.log("Verified code-boundary deletion publishes exact fence source immediately.");
@@ -3236,6 +3305,7 @@ async function run() {
   await verifyInlineConstructBoundaries();
   await verifyInlineConstructDeletion();
   await verifyInlineCrossBoundarySelection();
+  await verifyInlineSourceEnterHistory();
   await verifyCodeBoundaryNavigation();
   await verifyCodeBoundarySelection();
   await verifyCodeJumpNavigation();
