@@ -1819,7 +1819,8 @@ async function verifyStructuralMarkerNavigation() {
     { name: "bullet list", source: "- Alpha", visible: "Alpha", caret: 1, selector: ".content-dom" },
     { name: "ordered list", source: "7) Alpha", visible: "Alpha", caret: 2, selector: ".content-dom" },
     { name: "task list", source: "+ [X] Alpha", visible: "Alpha", caret: 5, selector: ".content-dom" },
-    { name: "blockquote", source: "> Alpha", visible: "Alpha", caret: 1, selector: "blockquote" }
+    { name: "blockquote", source: "> Alpha", visible: "Alpha", caret: 1, selector: "blockquote" },
+    { name: "footnote definition", source: "[^note]: Alpha", visible: "Alpha", caret: 8, selector: null }
   ];
 
   for (const fixture of fixtures) {
@@ -1963,6 +1964,40 @@ async function verifyBlockAtomTraversal() {
   await waitForSaveState(false);
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(fixture.replace("Before.", "Before.X"));
+  await stopSession();
+
+  const leadingGapDeleted = fixture.replace("Before.\r\n\r\n", "Before.\r\n");
+  await startSession(fixture, "Before.");
+  await placeCaretInText("Before.", "Before.".length);
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(leadingGapDeleted);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(fixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(leadingGapDeleted);
+  await stopSession();
+
+  const trailingGapDeleted = fixture.replace("* * *\r\n\r\nAfter.", "* * *\r\nAfter.");
+  await startSession(fixture, "After.");
+  await placeCaretInText("After.", 0);
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(trailingGapDeleted);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(fixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(trailingGapDeleted);
   await stopSession();
 }
 
@@ -2783,6 +2818,78 @@ async function verifyCodeBlockLayout() {
   await stopSession();
 }
 
+async function verifyMultilineCodeBlockLayout() {
+  const lines = [
+    "const first = 1;",
+    "const second = 2;",
+    "const third = 3;",
+    `const longValue = "${"source-faithful-".repeat(18)}";`,
+    "return first + second + third;"
+  ];
+  const fixture = `Before.\n\n\`\`\`js\n${lines.join("\n")}\n\`\`\`\n\nAfter.\n`;
+  await startSession(fixture, lines[0]);
+  await waitFor(
+    () => evaluate(`document.querySelectorAll(".milkdown-code-block .cm-line").length === ${lines.length}`),
+    "multiline code block did not render every source line"
+  );
+  const geometry = await evaluate(`(() => {
+    const prose = document.querySelector(".ProseMirror");
+    const block = prose?.querySelector(".milkdown-code-block");
+    const tools = block?.querySelector(".tools");
+    const scroller = block?.querySelector(".cm-scroller");
+    const lines = [...(block?.querySelectorAll(".cm-line") || [])];
+    const gutters = [...(block?.querySelectorAll(".cm-lineNumbers .cm-gutterElement") || [])]
+      .filter((node) => node.textContent.trim());
+    const proseRect = prose?.getBoundingClientRect();
+    const blockRect = block?.getBoundingClientRect();
+    const toolsRect = tools?.getBoundingClientRect();
+    const firstRect = lines.at(0)?.getBoundingClientRect();
+    const lastRect = lines.at(-1)?.getBoundingClientRect();
+    const firstGutterRect = gutters.at(0)?.getBoundingClientRect();
+    const lastGutterRect = gutters.at(-1)?.getBoundingClientRect();
+    if (
+      !proseRect || !blockRect || !toolsRect || !scroller
+      || !firstRect || !lastRect || !firstGutterRect || !lastGutterRect
+    ) return null;
+    return {
+      lineCount: lines.length,
+      gutterCount: gutters.length,
+      gutterLabels: gutters.map((node) => node.textContent.trim()),
+      blockWithinDocument: blockRect.left >= proseRect.left - 0.5
+        && blockRect.right <= proseRect.right + 0.5,
+      documentOverflow: prose.scrollWidth - prose.clientWidth,
+      horizontalOverflow: scroller.scrollWidth - scroller.clientWidth,
+      toolsToFirstLine: firstRect.top - toolsRect.bottom,
+      lastLineToBlockBottom: blockRect.bottom - lastRect.bottom,
+      firstMarkerDelta: firstGutterRect.top - firstRect.top,
+      lastMarkerDelta: lastGutterRect.top - lastRect.top,
+      firstLineHeight: firstRect.height,
+      lastLineHeight: lastRect.height
+    };
+  })()`);
+  const balanced = geometry
+    && geometry.lineCount === lines.length
+    && Array.from({ length: lines.length }, (_, index) => String(index + 1))
+      .every((label) => geometry.gutterLabels.includes(label))
+    && geometry.blockWithinDocument
+    && geometry.documentOverflow <= 1
+    && geometry.horizontalOverflow > 80
+    && geometry.toolsToFirstLine >= 0
+    && geometry.toolsToFirstLine <= 3
+    && geometry.lastLineToBlockBottom >= 12
+    && geometry.lastLineToBlockBottom <= 32
+    && Math.abs(geometry.firstMarkerDelta) <= 0.5
+    && Math.abs(geometry.lastMarkerDelta) <= 0.5
+    && Math.abs(geometry.firstLineHeight - geometry.lastLineHeight) <= 0.5;
+  if (!balanced) {
+    throw new Error(`multiline code block layout is clipped or misaligned: ${JSON.stringify(geometry)}`);
+  }
+  if (process.env.TETHER_PARITY_SCREENSHOT) {
+    await captureElementsScreenshot([".milkdown-code-block"], process.env.TETHER_PARITY_SCREENSHOT);
+  }
+  await stopSession();
+}
+
 async function verifyCodeLanguagePickerPresentation() {
   await startSession(codeFixture, "const value = 1;");
   const closedOverflow = await evaluate(
@@ -2888,6 +2995,11 @@ async function run() {
   if (process.env.TETHER_PARITY_CASE === "code-block-layout") {
     await verifyCodeBlockLayout();
     console.log("Verified compact, balanced single-line fenced-code spacing.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "multiline-code-block-layout") {
+    await verifyMultilineCodeBlockLayout();
+    console.log("Verified multiline fenced-code alignment and contained horizontal scrolling.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "code-language-picker") {
@@ -3075,6 +3187,7 @@ async function run() {
   await verifyFenceVariantEditing();
   await verifyCodeCrlfClipboard();
   await verifyCodeBlockLayout();
+  await verifyMultilineCodeBlockLayout();
   await verifyCodeLanguagePickerPresentation();
   await verifyCodeLanguagePickerSourceFidelity();
   console.log("Verified real Electron typing, saving, history, and fenced-code presentation.");
