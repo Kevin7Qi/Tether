@@ -1390,6 +1390,36 @@ export function markdownSourceDraftMarkdown(state, parser, serializer, unit, sou
   return serializeMarkdownDocument(transaction.doc, serializer);
 }
 
+export function activateMarkdownSourceDeletionAt(
+  view,
+  position,
+  options,
+  unit,
+  source,
+  parser,
+  serializer
+) {
+  const deletion = sourceControlInitialDeletion(
+    source,
+    options.sourceOffset,
+    options.initialDeleteDirection
+  );
+  const draft = deletion
+    ? markdownSourceDraftMarkdown(
+        view.state,
+        parser,
+        serializer,
+        unit,
+        deletion.afterValue
+      )
+    : null;
+  activateMarkdownSourceAt(view, position, options);
+  // Publish from the originating key event. A decoration widget can be
+  // replaced several times before its focus frame, so making the temporary
+  // control responsible for this first change can lose the deletion entirely.
+  if (draft != null) publishMarkdownSourceDraft(view, draft);
+}
+
 export function inlineSourceBoundaryDirection(
   key,
   selectionStart,
@@ -4281,10 +4311,6 @@ function continuousSourceEditor(
   requestAnimationFrame(() => {
     if (finished || !editor.isConnected) return;
     resize();
-    // Boundary Backspace/Delete is applied while this temporary control is
-    // created, before a native input event exists. Publish that first value so
-    // dirty state, Save, and history reflect the edit immediately.
-    if (initialDeletionHistory) onDraftChange?.(editor.value);
     if (!shouldFocus()) return;
     editor.focus();
     const caret = Math.max(0, Math.min(editor.value.length, startingCaret));
@@ -6297,12 +6323,21 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               ctx.get(serializerCtx)
             );
             if (literalTarget) {
+              const serializer = ctx.get(serializerCtx);
               event.preventDefault();
-              activateMarkdownSourceAt(_view, _view.state.selection.from, {
-                literalSourceUnit: literalTarget.unit,
-                sourceOffset: literalTarget.boundaryOffset,
-                initialDeleteDirection: direction
-              });
+              activateMarkdownSourceDeletionAt(
+                _view,
+                _view.state.selection.from,
+                {
+                  literalSourceUnit: literalTarget.unit,
+                  sourceOffset: literalTarget.boundaryOffset,
+                  initialDeleteDirection: direction
+                },
+                literalTarget.unit,
+                literalTarget.unit.source,
+                ctx.get(parserCtx),
+                serializer
+              );
               return true;
             }
             const target = markdownDeletionTarget(_view.state, direction);
@@ -6312,12 +6347,20 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               const serializer = ctx.get(serializerCtx);
               const source = continuousMarkdownSource(_view.state, unit, serializer);
               event.preventDefault();
-              activateMarkdownSourceAt(_view, target.position, {
-                atomPosition: target.atomPosition,
-                explicitUnitPosition: target.explicitUnitPosition,
-                sourceOffset: target.edge === "end" ? source.length : 0,
-                initialDeleteDirection: direction
-              });
+              activateMarkdownSourceDeletionAt(
+                _view,
+                target.position,
+                {
+                  atomPosition: target.atomPosition,
+                  explicitUnitPosition: target.explicitUnitPosition,
+                  sourceOffset: target.edge === "end" ? source.length : 0,
+                  initialDeleteDirection: direction
+                },
+                unit,
+                source,
+                ctx.get(parserCtx),
+                serializer
+              );
               return true;
             }
           }
@@ -6547,12 +6590,25 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               serializer
             );
             if (handoff) {
-              activateMarkdownSourceAt(editorView, position, {
-                explicitUnitPosition: handoff.unit.from,
-                sourceOffset: handoff.sourceOffset,
-                initialDeleteDirection: direction,
-                focusLock: true
-              });
+              const handoffSource = continuousMarkdownSource(
+                editorView.state,
+                handoff.unit,
+                serializer
+              );
+              activateMarkdownSourceDeletionAt(
+                editorView,
+                position,
+                {
+                  explicitUnitPosition: handoff.unit.from,
+                  sourceOffset: handoff.sourceOffset,
+                  initialDeleteDirection: direction,
+                  focusLock: true
+                },
+                handoff.unit,
+                handoffSource,
+                ctx.get(parserCtx),
+                serializer
+              );
               return;
             }
           }
@@ -6580,13 +6636,21 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             : null;
           if (adjacentTarget && adjacentUnit) {
             const adjacentSource = continuousMarkdownSource(editorView.state, adjacentUnit, serializer);
-            activateMarkdownSourceAt(editorView, adjacentTarget.position, {
-              atomPosition: adjacentTarget.atomPosition,
-              explicitUnitPosition: adjacentTarget.explicitUnitPosition,
-              sourceOffset: adjacentTarget.edge === "end" ? adjacentSource.length : 0,
-              initialDeleteDirection: direction,
-              focusLock: true
-            });
+            activateMarkdownSourceDeletionAt(
+              editorView,
+              adjacentTarget.position,
+              {
+                atomPosition: adjacentTarget.atomPosition,
+                explicitUnitPosition: adjacentTarget.explicitUnitPosition,
+                sourceOffset: adjacentTarget.edge === "end" ? adjacentSource.length : 0,
+                initialDeleteDirection: direction,
+                focusLock: true
+              },
+              adjacentUnit,
+              adjacentSource,
+              ctx.get(parserCtx),
+              serializer
+            );
             return;
           }
           let transaction = editorView.state.tr.setMeta(markdownSyntaxKey, "close");

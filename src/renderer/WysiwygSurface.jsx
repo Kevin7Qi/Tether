@@ -116,6 +116,7 @@ import {
   applyDocumentSourceJump,
   activateDocumentSourceSelection,
   activateMarkdownBlockSourceAt,
+  activateMarkdownSourceDeletionAt,
   activateMarkdownSourceAt,
   activateMarkdownTableSourceAt,
   continuousMarkdownSource,
@@ -1304,15 +1305,43 @@ export default function WysiwygSurface({
         return;
       }
       if (deletionDirection) {
+        const unit = {
+          from: blockPosition,
+          to: blockPosition + node.nodeSize,
+          kind: "block",
+          name: "code_block"
+        };
+        const parser = crepeRef.current?.editor.action((ctx) => ctx.get(parserCtx));
+        const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+        if (!parser || !serializer) return;
+        const source = continuousMarkdownSource(view.state, unit, serializer);
+        const boundaryPosition = codeBoundarySourcePosition(
+          blockPosition,
+          node.content.size,
+          deletionDirection
+        );
+        const sourceOffset = sourceCaretOffset(
+          view.state,
+          unit,
+          source,
+          boundaryPosition,
+          null,
+          serializer
+        );
         event.preventDefault();
         event.stopImmediatePropagation();
-        activateMarkdownSourceAt(
+        activateMarkdownSourceDeletionAt(
           view,
-          codeBoundarySourcePosition(blockPosition, node.content.size, deletionDirection),
+          boundaryPosition,
           {
             explicitUnitPosition: blockPosition,
+            sourceOffset,
             initialDeleteDirection: deletionDirection
-          }
+          },
+          unit,
+          source,
+          parser,
+          serializer
         );
         return;
       }

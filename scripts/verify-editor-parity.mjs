@@ -90,7 +90,9 @@ const inlineBoundaryFixtures = [
   { name: "link", source: "[guide](https://example.com)" },
   { name: "strikethrough", source: "~~strike~~" },
   { name: "image", source: "![Alt](https://example.com/image.png)" },
-  { name: "inline math", source: "$x + y$" }
+  { name: "inline math", source: "$x + y$" },
+  { name: "footnote reference", source: "[^note]", suffix: "\n[^note]: Footnote\n" },
+  { name: "inline HTML", source: "<em>html</em>" }
 ];
 let child = null;
 let cdp = null;
@@ -915,7 +917,7 @@ async function verifyLiteralSourceTokens() {
 
 async function verifyInlineConstructBoundaries() {
   for (const fixture of inlineBoundaryFixtures) {
-    const markdown = `Before ${fixture.source} after.\n`;
+    const markdown = `Before ${fixture.source} after.\n${fixture.suffix || ""}`;
     await startSession(markdown, "Before ");
     await placeCaretInText("Before ", "Before ".length - 2);
     await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
@@ -954,9 +956,10 @@ async function verifyInlineConstructBoundaries() {
 
 async function verifyInlineConstructDeletion() {
   for (const fixture of inlineBoundaryFixtures) {
-    const markdown = `Before ${fixture.source} after.\n`;
+    const suffix = fixture.suffix || "";
+    const markdown = `Before ${fixture.source} after.\n${suffix}`;
     const forwardSource = fixture.source.slice(1);
-    const forwardMarkdown = `Before ${forwardSource} after.\n`;
+    const forwardMarkdown = `Before ${forwardSource} after.\n${suffix}`;
     await startSession(markdown, "Before ");
     await placeCaretInText("Before ", "Before ".length - 2);
     await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
@@ -990,7 +993,7 @@ async function verifyInlineConstructDeletion() {
     await stopSession();
 
     const backwardSource = fixture.source.slice(0, -1);
-    const backwardMarkdown = `Before ${backwardSource} after.\n`;
+    const backwardMarkdown = `Before ${backwardSource} after.\n${suffix}`;
     await startSession(markdown, " after.");
     await placeCaretInText(" after.", 2);
     await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
@@ -2001,6 +2004,77 @@ async function verifyBlockAtomTraversal() {
   await stopSession();
 }
 
+async function verifyBlockAtomCutPasteHistory() {
+  const fixture = "Before.\r\n\r\n* * *\r\n\r\nAfter.\r\n";
+  const rangeStart = "Before.".length;
+  const rangeEnd = fixture.indexOf("After.");
+  const selectedSource = fixture.slice(rangeStart, rangeEnd);
+  const cutFixture = `${fixture.slice(0, rangeStart)}${fixture.slice(rangeEnd)}`;
+  const save = async (source) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+  const waitForExactSelection = (anchor, head, message) => waitFor(async () => {
+    const exact = (await editorState()).exactSourceSelection;
+    return exact?.anchor === anchor && exact?.head === head && exact?.fullSource === fixture;
+  }, message);
+
+  await startSession(fixture, "Before.");
+  await placeCaretInText("Before.", "Before.".length);
+  for (let step = 0; step < 9; step += 1) {
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+  }
+  await waitForExactSelection(
+    rangeStart,
+    rangeEnd,
+    "Shift+Right did not select both CRLF gaps and the complete rendered thematic break"
+  );
+  const copied = await dispatchCopyAndCaptureText();
+  if (copied !== selectedSource) {
+    throw new Error(
+      `Block-atom Copy emitted ${JSON.stringify(copied)} instead of ${JSON.stringify(selectedSource)}`
+    );
+  }
+  const cut = await dispatchCutAndCaptureText();
+  if (cut !== selectedSource) {
+    throw new Error(
+      `Block-atom Cut emitted ${JSON.stringify(cut)} instead of ${JSON.stringify(selectedSource)}`
+    );
+  }
+  await waitForSaveState(false);
+  await save(cutFixture);
+  if (await dispatchPasteText(selectedSource) == null) {
+    throw new Error("No focused editor received the rendered block-atom source Paste event");
+  }
+  await waitForSaveState(false);
+  await save(fixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(cutFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(fixture);
+  await stopSession();
+
+  await startSession(fixture, "After.");
+  await placeCaretInText("After.", 0);
+  for (let step = 0; step < 9; step += 1) {
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 8 });
+  }
+  await waitForExactSelection(
+    rangeEnd,
+    rangeStart,
+    "Shift+Left did not select the complete rendered thematic break in reverse source order"
+  );
+  const backwardCopied = await dispatchCopyAndCaptureText();
+  if (backwardCopied !== selectedSource) {
+    throw new Error(
+      `Backward block-atom Copy emitted ${JSON.stringify(backwardCopied)} instead of ${JSON.stringify(selectedSource)}`
+    );
+  }
+  await stopSession();
+}
+
 async function verifyListItemCutPaste() {
   const visibleOffset = 2;
   const selectionStart = listFixture.indexOf("Alpha") + visibleOffset;
@@ -2967,6 +3041,11 @@ async function verifyCodeLanguagePickerSourceFidelity() {
 }
 
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "code-boundary-deletion") {
+    await verifyCodeBoundaryDeletion();
+    console.log("Verified code-boundary deletion publishes exact fence source immediately.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-jump-navigation") {
     await verifyCodeJumpNavigation();
     console.log("Verified code line, word, and document jumps traverse physical fence source.");
@@ -3092,6 +3171,11 @@ async function run() {
     console.log("Verified rendered block atoms traverse their exact surrounding source.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "block-atom-cut-paste") {
+    await verifyBlockAtomCutPasteHistory();
+    console.log("Verified block-atom selections retain exact source and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "list-item-cut-paste") {
     await verifyListItemCutPaste();
     console.log("Verified list-item Cut/Paste retains physical markers and history.");
@@ -3168,6 +3252,7 @@ async function run() {
   await verifyCodeToCodePointerDragCutPaste();
   await verifyStructuralMarkerNavigation();
   await verifyBlockAtomTraversal();
+  await verifyBlockAtomCutPasteHistory();
   await verifyListItemCutPaste();
   await verifyTaskCheckboxHistory();
   await verifyTableBoundaryCutPasteHistory();
