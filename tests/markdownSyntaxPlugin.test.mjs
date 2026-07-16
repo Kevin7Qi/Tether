@@ -33,6 +33,7 @@ import {
   inlineSourceBoundaryDirection,
   inlineSourceBoundarySelectionDirection,
   inlineSourceEnterEdit,
+  inlineSourceTabEdit,
   inlineSourceValueEdit,
   inlineSourceVerticalDirection,
   exactSourceProtectionDecision,
@@ -3257,6 +3258,73 @@ test("inline source newline edits preserve exact hidden offsets and line endings
   );
   assert.equal(pasteEdit.afterSelection.anchor, "Before **ma\r\n".length);
   assert.equal(pasteEdit.afterSelection.fullSource, "Before **ma\r\nrked** after.\r\n");
+});
+
+test("inline source Tab edits operate on physical document lines", () => {
+  const strong = schema.marks.strong.create();
+  const doc = schema.node("doc", null, [schema.node("paragraph", null, [
+    schema.text("Before "),
+    schema.text("marked", [strong]),
+    schema.text(" after.")
+  ])]);
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, "Before ".length + 2)
+  });
+  const unit = activeMarkdownSyntax(state);
+  const serializer = (value) => {
+    let source = "";
+    value.firstChild.forEach((node) => {
+      source += node.marks.some((mark) => mark.type.name === "strong")
+        ? `**${node.text}**`
+        : node.text;
+    });
+    return `${source}\n`;
+  };
+  const parser = (source) => schema.node("doc", null, source
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => schema.node("paragraph", null, [schema.text(line)])));
+
+  const collapsed = inlineSourceTabEdit(
+    state,
+    unit,
+    "**marked**",
+    "**marked**",
+    { anchor: 5, head: 5 },
+    false,
+    parser,
+    serializer
+  );
+  assert.equal(collapsed.changed, true);
+  assert.equal(collapsed.afterSelection.fullSource, "Before **mar\tked** after.\n");
+  assert.equal(collapsed.afterSelection.head, "Before **mar\t".length);
+
+  const selected = inlineSourceTabEdit(
+    state,
+    unit,
+    "**marked**",
+    "**marked**",
+    { anchor: 2, head: 8 },
+    false,
+    parser,
+    serializer
+  );
+  assert.equal(selected.afterSelection.fullSource, "\tBefore **marked** after.\n");
+  assert.equal(selected.afterSelection.anchor, "\tBefore **".length);
+
+  const noOutdent = inlineSourceTabEdit(
+    state,
+    unit,
+    "**marked**",
+    "**marked**",
+    { anchor: 5, head: 5 },
+    true,
+    parser,
+    serializer
+  );
+  assert.equal(noOutdent.changed, false);
+  assert.equal(noOutdent.afterSelection.head, "Before **mar".length);
 });
 
 test("source controls leave IME composition keystrokes entirely native", () => {

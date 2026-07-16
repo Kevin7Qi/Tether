@@ -1300,6 +1300,71 @@ async function verifyInlineSourceLineJumps() {
   await stopSession();
 }
 
+async function verifyInlineSourceTabHistory() {
+  const source = "[guide](https://example.com)";
+  const markdown = `Before ${source} after.\n`;
+  const localCaret = source.indexOf("example") + "exam".length;
+  const tabbedSource = `${source.slice(0, localCaret)}\t${source.slice(localCaret)}`;
+  const tabbedMarkdown = `Before ${tabbedSource} after.\n`;
+  const activate = async (fixture = markdown, visible = "Before ") => {
+    await startSession(fixture, visible);
+    await placeCaretInText(visible, visible.length - 2);
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === source,
+      "Link source did not activate before its source-native Tab edit"
+    );
+  };
+  const save = async (expected) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(expected);
+  };
+
+  await activate();
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(${localCaret}, ${localCaret});
+    return Boolean(control);
+  })()`);
+  await dispatchKey({ key: "Tab", code: "Tab", virtualKeyCode: 9 });
+  await waitForSaveState(false);
+  await save(tabbedMarkdown);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(markdown);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(tabbedMarkdown);
+  await stopSession();
+
+  const selectionStart = source.indexOf("example");
+  const selectionEnd = selectionStart + "example".length;
+  await activate();
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(${selectionStart}, ${selectionEnd});
+    return Boolean(control);
+  })()`);
+  await dispatchKey({ key: "Tab", code: "Tab", virtualKeyCode: 9 });
+  await waitForSaveState(false);
+  await save(`\t${markdown}`);
+  await stopSession();
+
+  const indentedMarkdown = `   ${markdown}`;
+  await activate(indentedMarkdown, "Before ");
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(${localCaret}, ${localCaret});
+    return Boolean(control);
+  })()`);
+  await dispatchKey({ key: "Tab", code: "Tab", virtualKeyCode: 9, modifiers: 8 });
+  await waitForSaveState(false);
+  await save(markdown);
+  await stopSession();
+}
+
 async function focusCodeBoundary(edge) {
   await waitFor(
     () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .cm-content"))`),
@@ -3265,6 +3330,11 @@ async function verifyCodeLanguagePickerSourceFidelity() {
 }
 
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "inline-source-tab") {
+    await verifyInlineSourceTabHistory();
+    console.log("Verified hidden inline source uses physical Markdown Tab and Shift-Tab semantics.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "inline-source-line-jumps") {
     await verifyInlineSourceLineJumps();
     console.log("Verified hidden inline source uses physical Markdown Home/End semantics.");
@@ -3478,6 +3548,7 @@ async function run() {
   await verifyInlineSourceEnterHistory();
   await verifyInlineSourceMultilinePasteHistory();
   await verifyInlineSourceLineJumps();
+  await verifyInlineSourceTabHistory();
   await verifyCodeBoundaryNavigation();
   await verifyCodeBoundarySelection();
   await verifyCodeJumpNavigation();

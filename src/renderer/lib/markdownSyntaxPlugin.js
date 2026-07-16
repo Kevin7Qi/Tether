@@ -3603,6 +3603,78 @@ export function inlineSourceEnterEdit(
   );
 }
 
+export function inlineSourceTabEdit(
+  state,
+  unit,
+  originalSource,
+  value,
+  localSelection,
+  outdent,
+  parser,
+  serializer
+) {
+  if (
+    !state?.doc
+    || !unit
+    || typeof originalSource !== "string"
+    || typeof value !== "string"
+    || !localSelection
+    || typeof parser !== "function"
+    || typeof serializer !== "function"
+  ) return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const unitStart = documentSourceUnitStartOffset(state, unit, serializer);
+  if (!documentSource || !Number.isFinite(unitStart)) return null;
+  const localAnchor = Math.max(
+    0,
+    Math.min(value.length, Number(localSelection.anchor) || 0)
+  );
+  const localHead = Math.max(
+    0,
+    Math.min(value.length, Number(localSelection.head) || 0)
+  );
+  const currentSource = `${documentSource.fullSource.slice(0, unitStart)}${value}${
+    documentSource.fullSource.slice(unitStart + originalSource.length)
+  }`;
+  const start = unitStart + Math.min(localAnchor, localHead);
+  const end = unitStart + Math.max(localAnchor, localHead);
+  const edit = sourceTabEdit(currentSource, start, end, Boolean(outdent));
+  const backward = localAnchor > localHead;
+  const anchor = backward ? edit.selectionEnd : edit.selectionStart;
+  const head = backward ? edit.selectionStart : edit.selectionEnd;
+  const afterSelection = {
+    anchor,
+    head,
+    fullSource: edit.value,
+    boundary: unit.from,
+    verticalColumn: null
+  };
+  if (edit.value === documentSource.fullSource) {
+    return { changed: false, transaction: null, afterSelection };
+  }
+  const historySelection = {
+    anchor: 0,
+    head: documentSource.fullSource.length,
+    fullSource: documentSource.fullSource,
+    boundary: unit.from
+  };
+  const transaction = replaceSourceSelectionTransaction(
+    state,
+    historySelection,
+    edit.value,
+    parser,
+    head
+  );
+  if (!transaction) return null;
+  return {
+    changed: true,
+    transaction,
+    historySelection,
+    editSelection: historySelection,
+    afterSelection
+  };
+}
+
 export function sourceClipboardEdit(
   state,
   replacement,
@@ -3784,6 +3856,7 @@ function continuousSourceEditor(
   onDocumentJump,
   onInlineEnter,
   onInlineMultilinePaste,
+  onInlineTab,
   onDraftChange,
   shouldFocus,
   setActiveControl
@@ -4401,13 +4474,25 @@ function continuousSourceEditor(
       event.preventDefault();
       finishKeyboardHandoff(false);
     } else if (
-      isBlock
-      && event.key === "Tab"
+      event.key === "Tab"
       && !event.altKey
       && !event.ctrlKey
       && !event.metaKey
     ) {
       event.preventDefault();
+      if (!isBlock) {
+        const localSelection = sourceInputSelection(
+          editor.selectionStart ?? 0,
+          editor.selectionEnd ?? editor.selectionStart ?? 0,
+          editor.selectionDirection
+        );
+        const value = editor.value;
+        finishKeyboardHandoff(
+          false,
+          () => onInlineTab(value, localSelection, event.shiftKey)
+        );
+        return;
+      }
       const edit = sourceTabEdit(
         editor.value,
         editor.selectionStart,
@@ -7214,6 +7299,38 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             { isolatedHistory: true }
           );
         };
+        const tabFromInlineSource = (value, localSelection, outdent) => {
+          if (!editorView?.dom.isConnected) return;
+          const edit = inlineSourceTabEdit(
+            editorView.state,
+            unit,
+            source,
+            value,
+            localSelection,
+            outdent,
+            ctx.get(parserCtx),
+            serializer
+          );
+          if (!edit) return;
+          if (!edit.changed) {
+            activateDocumentSourceOffset(
+              editorView,
+              edit.afterSelection,
+              edit.afterSelection.head,
+              "forward",
+              serializer
+            );
+            return;
+          }
+          dispatchExactEdit(
+            editorView,
+            edit.transaction,
+            edit.historySelection,
+            edit.editSelection,
+            edit.afterSelection,
+            { isolatedHistory: true }
+          );
+        };
         const publishDraft = (value) => {
           if (!editorView?.dom.isConnected) return;
           const markdown = markdownSourceDraftMarkdown(
@@ -7248,6 +7365,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           jumpFromSource,
           insertLineBreakFromInlineSource,
           pasteMultilineFromInlineSource,
+          tabFromInlineSource,
           publishDraft,
           () => true,
           (control) => {
