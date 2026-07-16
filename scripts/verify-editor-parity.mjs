@@ -1847,6 +1847,125 @@ async function verifyStructuralMarkerNavigation() {
   }
 }
 
+async function verifyBlockAtomTraversal() {
+  const fixture = "Before.\r\n\r\n* * *\r\n\r\nAfter.\r\n";
+  const ruleSource = "* * *";
+  const ruleStart = fixture.indexOf(ruleSource);
+  const waitForExactCaret = async (offset, message) => {
+    try {
+      return await waitFor(async () => {
+        const state = await editorState();
+        return state.exactSourceSelection?.anchor === offset
+          && state.exactSourceSelection?.head === offset
+          && state.exactSourceSelection?.fullSource === fixture;
+      }, message);
+    } catch (error) {
+      const state = await editorState().catch(() => null);
+      const control = await sourceControlState().catch(() => null);
+      throw new Error(`${error.message}\nEditor state: ${JSON.stringify(state)}\nSource control: ${JSON.stringify(control)}`);
+    }
+  };
+  const waitForRenderedCaret = async (text, offset, message) => {
+    try {
+      return await waitFor(async () => {
+        const state = await editorState();
+        return state.anchorText === text && state.anchorOffset === offset
+          && state.exactSourceSelection == null;
+      }, message);
+    } catch (error) {
+      const state = await editorState().catch(() => null);
+      const control = await sourceControlState().catch(() => null);
+      throw new Error(`${error.message}\nEditor state: ${JSON.stringify(state)}\nSource control: ${JSON.stringify(control)}`);
+    }
+  };
+
+  await startSession(fixture, "Before.");
+  await placeCaretInText("Before.", "Before.".length);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForExactCaret(
+    "Before.\r\n".length,
+    "ArrowRight skipped the first CRLF before a rendered thematic break"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === ruleSource
+      && state.selectionStart === 0 && state.selectionEnd === 0,
+    "ArrowRight did not hand the blank CRLF into the rendered thematic-break boundary"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === ruleSource
+      && state.selectionStart === 1 && state.selectionEnd === 1,
+    "ArrowRight skipped the first physical thematic-break marker"
+  );
+  for (let offset = 2; offset <= ruleSource.length; offset += 1) {
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await waitForSourceControl(
+      (state) => state?.active && state.selectionStart === offset && state.selectionEnd === offset,
+      `ArrowRight did not traverse thematic-break source offset ${offset}`
+    );
+  }
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await assertSourceControlClosed(
+    "ArrowRight did not leave the rendered thematic break through its trailing CRLF"
+  );
+  await waitForExactCaret(
+    ruleStart + ruleSource.length + 2,
+    "ArrowRight skipped the first CRLF after a rendered thematic break"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForRenderedCaret(
+    "After.",
+    0,
+    "ArrowRight did not hand the blank CRLF after a rendered thematic break into prose"
+  );
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(fixture.replace("After.", "XAfter."));
+  await stopSession();
+
+  await startSession(fixture, "After.");
+  await placeCaretInText("After.", 0);
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForExactCaret(
+    ruleStart + ruleSource.length + 2,
+    "ArrowLeft skipped the blank CRLF after a rendered thematic break"
+  );
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === ruleSource
+      && state.selectionStart === ruleSource.length && state.selectionEnd === ruleSource.length,
+    "ArrowLeft did not hand the trailing CRLF into the thematic-break source boundary"
+  );
+  for (let offset = ruleSource.length - 1; offset >= 0; offset -= 1) {
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    await waitForSourceControl(
+      (state) => state?.active && state.selectionStart === offset && state.selectionEnd === offset,
+      `ArrowLeft did not traverse thematic-break source offset ${offset}`
+    );
+  }
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await assertSourceControlClosed(
+    "ArrowLeft did not leave the rendered thematic break through its leading CRLF"
+  );
+  await waitForExactCaret(
+    "Before.\r\n".length,
+    "ArrowLeft skipped the blank CRLF before a rendered thematic break"
+  );
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForRenderedCaret(
+    "Before.",
+    "Before.".length,
+    "ArrowLeft did not hand the leading CRLF before a rendered thematic break into prose"
+  );
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(fixture.replace("Before.", "Before.X"));
+  await stopSession();
+}
+
 async function verifyListItemCutPaste() {
   const visibleOffset = 2;
   const selectionStart = listFixture.indexOf("Alpha") + visibleOffset;
@@ -2856,6 +2975,11 @@ async function run() {
     console.log("Verified rendered structural markers navigate one physical source byte at a time.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "block-atom-traversal") {
+    await verifyBlockAtomTraversal();
+    console.log("Verified rendered block atoms traverse their exact surrounding source.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "list-item-cut-paste") {
     await verifyListItemCutPaste();
     console.log("Verified list-item Cut/Paste retains physical markers and history.");
@@ -2931,6 +3055,7 @@ async function run() {
   await verifyCodePointerDragCutPaste();
   await verifyCodeToCodePointerDragCutPaste();
   await verifyStructuralMarkerNavigation();
+  await verifyBlockAtomTraversal();
   await verifyListItemCutPaste();
   await verifyTaskCheckboxHistory();
   await verifyTableBoundaryCutPasteHistory();

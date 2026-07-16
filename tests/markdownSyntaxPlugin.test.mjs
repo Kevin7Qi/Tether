@@ -2413,6 +2413,33 @@ test("physical source offsets map back to rendered text but not hidden delimiter
   );
 });
 
+test("physical block endpoints map back to rendered prose beside source gaps", () => {
+  const first = blockSchema.node("paragraph", null, [blockSchema.text("First")]);
+  const second = blockSchema.node("paragraph", null, [blockSchema.text("Second")]);
+  const gaps = ["", "\r\n\r\n", ""];
+  const doc = blockSchema.node("doc", {
+    markdownBlockGaps: JSON.stringify(gaps)
+  }, [first, second]);
+  const serialize = (value) => {
+    const blocks = [];
+    value.forEach((node) => blocks.push(node.textContent));
+    const exactGaps = JSON.parse(value.attrs.markdownBlockGaps);
+    return blocks.reduce(
+      (source, block, index) => `${source}${block}${exactGaps[index + 1]}`,
+      exactGaps[0]
+    );
+  };
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, first.nodeSize - 1)
+  });
+  const sourceOffset = "First".length;
+
+  assert.equal(documentSourceTarget(state, sourceOffset, serialize, "forward")?.kind, "gap");
+  assert.equal(documentSourceTarget(state, sourceOffset, serialize, "backward")?.kind, "block");
+  assert.equal(documentPositionAtSourceOffset(state, sourceOffset, serialize), first.nodeSize - 1);
+});
+
 test("source-control pointer drags preserve their physical source anchor", () => {
   const fullSource = "before **bold** after";
   const unitStart = fullSource.indexOf("**bold**");

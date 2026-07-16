@@ -2608,9 +2608,15 @@ export function documentPositionAtSourceOffset(state, sourceOffset, serializer) 
   if (!state?.doc || !Number.isFinite(sourceOffset) || typeof serializer !== "function") {
     return null;
   }
-  const target = documentSourceTarget(state, sourceOffset, serializer, "forward")
-    || documentSourceTarget(state, sourceOffset, serializer, "backward");
-  if (!target || target.kind !== "block") return null;
+  const forwardTarget = documentSourceTarget(state, sourceOffset, serializer, "forward");
+  const backwardTarget = documentSourceTarget(state, sourceOffset, serializer, "backward");
+  // At a block endpoint followed by a physical separator, forward affinity
+  // correctly identifies the gap while backward affinity identifies the
+  // visible block edge at that same source offset. Prefer either visible block
+  // over a gap so a boundary handoff returns to rendered prose instead of
+  // opening a raw paragraph control only in the backward direction.
+  const target = [forwardTarget, backwardTarget].find((candidate) => candidate?.kind === "block");
+  if (!target) return null;
   const unit = {
     from: target.position,
     to: target.position + target.node.nodeSize,

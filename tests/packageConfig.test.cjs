@@ -46,6 +46,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /window\.localStorage\.clear\(\)/);
   assert.match(verifier, /TETHER_PARITY_CASE === "prose-select-all-editing"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "structural-marker-navigation"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "block-atom-traversal"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-crlf-clipboard"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "soft-line-editing"/);
   assert.match(verifier, /Soft-line Copy emitted/);
