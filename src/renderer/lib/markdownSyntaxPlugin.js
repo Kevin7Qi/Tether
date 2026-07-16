@@ -3389,6 +3389,35 @@ export function sourceSelectionLineJump(sourceSelection, edge, extend = false) {
   };
 }
 
+export function sourceLineSelectionAcrossUnitBoundary(
+  fullSource,
+  unitStart,
+  localSelection,
+  edge,
+  extend = false
+) {
+  if (
+    typeof fullSource !== "string"
+    || !Number.isFinite(unitStart)
+    || !localSelection
+    || !["start", "end"].includes(edge)
+  ) return null;
+  const start = Math.max(0, Math.min(fullSource.length, unitStart));
+  const anchor = Math.max(
+    0,
+    Math.min(fullSource.length, start + (Number(localSelection.anchor) || 0))
+  );
+  const head = Math.max(
+    0,
+    Math.min(fullSource.length, start + (Number(localSelection.head) || 0))
+  );
+  return sourceSelectionLineJump(
+    { anchor, head, fullSource, verticalColumn: null },
+    edge,
+    extend
+  );
+}
+
 export function sourceSelectionWordJump(sourceSelection, direction, extend = false) {
   if (!sourceSelection || !["backward", "forward"].includes(direction)) return null;
   const collapsed = sourceSelection.anchor === sourceSelection.head;
@@ -3751,6 +3780,7 @@ function continuousSourceEditor(
   onBoundarySelect,
   onPointerDrag,
   onWordJump,
+  onLineJump,
   onDocumentJump,
   onInlineEnter,
   onInlineMultilinePaste,
@@ -4262,7 +4292,8 @@ function continuousSourceEditor(
       );
       return;
     }
-    const wordJumpDirection = sourceInputWordJumpDirection(
+    const lineJumpEdge = sourceLineJumpEdge(event);
+    const wordJumpDirection = lineJumpEdge ? null : sourceInputWordJumpDirection(
       event.key,
       editor.selectionStart,
       editor.selectionEnd,
@@ -4322,7 +4353,7 @@ function continuousSourceEditor(
           event.altKey || event.ctrlKey || event.metaKey,
           editor.selectionDirection
         );
-    const localSelection = wordJumpDirection || boundarySelectionDirection
+    const localSelection = lineJumpEdge || wordJumpDirection || boundarySelectionDirection
       ? sourceInputSelection(
           editor.selectionStart ?? 0,
           editor.selectionEnd ?? editor.selectionStart ?? 0,
@@ -4330,7 +4361,8 @@ function continuousSourceEditor(
         )
       : null;
     if (
-      wordJumpDirection
+      lineJumpEdge
+      || wordJumpDirection
       || boundaryDirection
       || boundaryDeleteDirection
       || verticalDirection
@@ -4340,7 +4372,14 @@ function continuousSourceEditor(
       event.stopPropagation();
       const targetPoint = verticalDirection ? caretTargetPoint(verticalDirection) : null;
       finishKeyboardHandoff(true, (mapping) => {
-        if (wordJumpDirection) {
+        if (lineJumpEdge) {
+          onLineJump(
+            lineJumpEdge,
+            localSelection,
+            event.shiftKey,
+            mapping
+          );
+        } else if (wordJumpDirection) {
           onWordJump(
             wordJumpDirection,
             localSelection,
@@ -6924,6 +6963,81 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             baseOffset + localSelection.anchor
           );
         };
+        const lineJumpFromSource = (
+          edge,
+          localSelection,
+          extend,
+          mapping = null
+        ) => {
+          if (!editorView?.dom.isConnected) return;
+          const mappedUnit = {
+            ...unit,
+            from: Math.max(
+              0,
+              Math.min(mappedPosition(mapping, unit.from, -1), editorView.state.doc.content.size)
+            ),
+            to: Math.max(
+              0,
+              Math.min(mappedPosition(mapping, unit.to, 1), editorView.state.doc.content.size)
+            )
+          };
+          const documentSource = documentSourceSegments(editorView.state, serializer);
+          const unitStart = documentSourceUnitStartOffset(
+            editorView.state,
+            mappedUnit,
+            serializer
+          );
+          const next = documentSource && sourceLineSelectionAcrossUnitBoundary(
+            documentSource.fullSource,
+            unitStart,
+            localSelection,
+            edge,
+            extend
+          );
+          if (!next) return;
+          const direction = edge === "start" ? "backward" : "forward";
+
+          if (!extend || next.anchor === next.head) {
+            const renderedPosition = documentPositionAtSourceOffset(
+              editorView.state,
+              next.head,
+              serializer
+            );
+            if (renderedPosition != null) {
+              editorView.dispatch(
+                editorView.state.tr
+                  .setSelection(TextSelection.create(editorView.state.doc, renderedPosition))
+                  .setMeta(markdownSyntaxKey, "close")
+                  .scrollIntoView()
+              );
+              focusExactEditSelection(editorView);
+              return;
+            }
+            activateDocumentSourceOffset(
+              editorView,
+              next,
+              next.head,
+              direction,
+              serializer
+            );
+            return;
+          }
+
+          const boundary = direction === "backward" ? mappedUnit.from : mappedUnit.to;
+          editorView.dispatch(
+            editorView.state.tr
+              .setSelection(textSelectionAcrossBoundary(editorView.state, boundary, direction))
+              .setMeta(markdownSyntaxKey, {
+                action: "source-selection",
+                sourceSelection: {
+                  ...next,
+                  boundary
+                }
+              })
+              .scrollIntoView()
+          );
+          focusProseMirrorRoot(editorView);
+        };
         const wordJumpFromSource = (
           direction,
           localSelection,
@@ -7130,6 +7244,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           selectFromBoundary,
           dragFromSource,
           wordJumpFromSource,
+          lineJumpFromSource,
           jumpFromSource,
           insertLineBreakFromInlineSource,
           pasteMultilineFromInlineSource,

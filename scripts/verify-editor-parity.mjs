@@ -1207,6 +1207,99 @@ async function verifyInlineSourceMultilinePasteHistory() {
   await stopSession();
 }
 
+async function verifyInlineSourceLineJumps() {
+  const source = "[guide](https://example.com)";
+  const markdown = `Before ${source} after.\n`;
+  const localCaret = source.indexOf("example") + "exam".length;
+  const documentCaret = "Before ".length + localCaret;
+  const lineEnd = markdown.length - 1;
+  const activateAtCaret = async () => {
+    await startSession(markdown, "Before ");
+    await placeCaretInText("Before ", "Before ".length - 2);
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === source,
+      "Link source did not activate before its physical line jump"
+    );
+    await evaluate(`(() => {
+      const control = document.querySelector(".tether-continuous-source");
+      control?.setSelectionRange(${localCaret}, ${localCaret});
+      return Boolean(control);
+    })()`);
+  };
+  const save = async (expected) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(expected);
+  };
+
+  await activateAtCaret();
+  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+  await assertSourceControlClosed("Home stopped at the inline token instead of the Markdown line start");
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await save(`X${markdown}`);
+  await stopSession();
+
+  await activateAtCaret();
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 4 });
+  await assertSourceControlClosed("Cmd-Left stopped at the inline token instead of the Markdown line start");
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await save(`X${markdown}`);
+  await stopSession();
+
+  await activateAtCaret();
+  await dispatchKey({ key: "End", code: "End", virtualKeyCode: 35 });
+  await assertSourceControlClosed("End stopped at the inline token instead of the Markdown line end");
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await save(`${markdown.slice(0, lineEnd)}X\n`);
+  await stopSession();
+
+  await activateAtCaret();
+  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36, modifiers: 8 });
+  await waitFor(async () => {
+    const exact = (await editorState()).exactSourceSelection;
+    return exact?.anchor === documentCaret && exact?.head === 0 && exact?.fullSource === markdown;
+  }, "Shift-Home did not select from hidden link source to the physical line start");
+  const backwardCopy = await dispatchCopyAndCaptureText();
+  if (backwardCopy !== markdown.slice(0, documentCaret)) {
+    throw new Error(`Shift-Home Copy emitted ${JSON.stringify(backwardCopy)}`);
+  }
+  await stopSession();
+
+  await activateAtCaret();
+  await dispatchKey({ key: "End", code: "End", virtualKeyCode: 35, modifiers: 8 });
+  await waitFor(async () => {
+    const exact = (await editorState()).exactSourceSelection;
+    return exact?.anchor === documentCaret && exact?.head === lineEnd && exact?.fullSource === markdown;
+  }, "Shift-End did not select from hidden link source to the physical line end");
+  const forwardCopy = await dispatchCopyAndCaptureText();
+  if (forwardCopy !== markdown.slice(documentCaret, lineEnd)) {
+    throw new Error(`Shift-End Copy emitted ${JSON.stringify(forwardCopy)}`);
+  }
+  await stopSession();
+
+  await activateAtCaret();
+  await dispatchKey({
+    key: "ArrowRight",
+    code: "ArrowRight",
+    virtualKeyCode: 39,
+    modifiers: 12
+  });
+  await waitFor(async () => {
+    const exact = (await editorState()).exactSourceSelection;
+    return exact?.anchor === documentCaret && exact?.head === lineEnd && exact?.fullSource === markdown;
+  }, "Shift-Cmd-Right did not select from hidden link source to the physical line end");
+  const commandCopy = await dispatchCopyAndCaptureText();
+  if (commandCopy !== markdown.slice(documentCaret, lineEnd)) {
+    throw new Error(`Shift-Cmd-Right Copy emitted ${JSON.stringify(commandCopy)}`);
+  }
+  await stopSession();
+}
+
 async function focusCodeBoundary(edge) {
   await waitFor(
     () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .cm-content"))`),
@@ -3172,6 +3265,11 @@ async function verifyCodeLanguagePickerSourceFidelity() {
 }
 
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "inline-source-line-jumps") {
+    await verifyInlineSourceLineJumps();
+    console.log("Verified hidden inline source uses physical Markdown Home/End semantics.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "inline-source-multiline-paste") {
     await verifyInlineSourceMultilinePasteHistory();
     console.log("Verified multiline Paste inside hidden inline source preserves exact Markdown and history.");
@@ -3379,6 +3477,7 @@ async function run() {
   await verifyInlineCrossBoundarySelection();
   await verifyInlineSourceEnterHistory();
   await verifyInlineSourceMultilinePasteHistory();
+  await verifyInlineSourceLineJumps();
   await verifyCodeBoundaryNavigation();
   await verifyCodeBoundarySelection();
   await verifyCodeJumpNavigation();

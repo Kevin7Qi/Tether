@@ -69,6 +69,7 @@ import {
   sourceControlSaveFocus,
   sourceEditCaretOffset,
   sourceLineEndingAt,
+  sourceLineSelectionAcrossUnitBoundary,
   sourceOffsetAfterCharacter,
   sourceBoundarySelectionRange,
   sourceInputSelection,
@@ -2514,6 +2515,43 @@ test("line-jump shortcuts distinguish physical line edges from word and document
   assert.equal(sourceLineJumpEdge({ key: "ArrowLeft", ctrlKey: true }), null);
   assert.equal(sourceLineJumpEdge({ key: "Home", metaKey: true }), null);
   assert.equal(sourceLineJumpEdge({ key: "Home", altKey: true }), null);
+});
+
+test("temporary inline source line jumps use physical document offsets", () => {
+  const fullSource = "Before [guide](https://example.com) after.\r\n";
+  const unitStart = "Before ".length;
+  const localCaret = "[guide](https://exam".length;
+  const localSelection = { anchor: localCaret, head: localCaret };
+
+  assert.deepEqual(
+    sourceLineSelectionAcrossUnitBoundary(
+      fullSource,
+      unitStart,
+      localSelection,
+      "start"
+    ),
+    {
+      anchor: 0,
+      head: 0,
+      fullSource,
+      verticalColumn: null
+    }
+  );
+  assert.deepEqual(
+    sourceLineSelectionAcrossUnitBoundary(
+      fullSource,
+      unitStart,
+      localSelection,
+      "end",
+      true
+    ),
+    {
+      anchor: unitStart + localCaret,
+      head: fullSource.length - 2,
+      fullSource,
+      verticalColumn: null
+    }
+  );
 });
 
 test("exact source selections own physical line and word jumps across CRLF gaps", () => {
