@@ -33,6 +33,7 @@ import {
   inlineSourceBoundaryDirection,
   inlineSourceBoundarySelectionDirection,
   inlineSourceEnterEdit,
+  inlineSourceValueEdit,
   inlineSourceVerticalDirection,
   exactSourceProtectionDecision,
   finishUnchangedSourceHandoff,
@@ -3165,7 +3166,7 @@ test("continuous source controls are reserved for inline, atomic, and explicit s
   assert.equal(usesContinuousSourceEditor(table, table), true);
 });
 
-test("inline source Enter inserts the physical line ending at its exact hidden offset", () => {
+test("inline source newline edits preserve exact hidden offsets and line endings", () => {
   const strong = schema.marks.strong.create();
   const doc = schema.node("doc", null, [schema.node("paragraph", null, [
     schema.text("Before "),
@@ -3205,6 +3206,19 @@ test("inline source Enter inserts the physical line ending at its exact hidden o
   assert.equal(edit.afterSelection.anchor, "Before **mar\r\n".length);
   assert.equal(edit.afterSelection.head, edit.afterSelection.anchor);
   assert.equal(edit.afterSelection.fullSource, "Before **mar\r\nked** after.\r\n");
+
+  const pastedValue = "**ma\r\nrked**";
+  const pasteEdit = inlineSourceValueEdit(
+    state,
+    unit,
+    "**marked**",
+    pastedValue,
+    "**ma\r\n".length,
+    parser,
+    serializer
+  );
+  assert.equal(pasteEdit.afterSelection.anchor, "Before **ma\r\n".length);
+  assert.equal(pasteEdit.afterSelection.fullSource, "Before **ma\r\nrked** after.\r\n");
 });
 
 test("source controls leave IME composition keystrokes entirely native", () => {

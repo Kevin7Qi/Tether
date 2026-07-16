@@ -1140,6 +1140,73 @@ async function verifyInlineSourceEnterHistory() {
   await stopSession();
 }
 
+async function verifyInlineSourceMultilinePasteHistory() {
+  const source = "[guide](https://example.com)";
+  const markdown = `Before ${source} after.\n`;
+  const selectionStart = source.indexOf("example");
+  const selectionEnd = selectionStart + "example".length;
+  const pastedText = "first\nsecond";
+  const pastedSource = `${source.slice(0, selectionStart)}${pastedText}${source.slice(selectionEnd)}`;
+  const pastedMarkdown = `Before ${pastedSource} after.\n`;
+  const save = async (expected) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(expected);
+  };
+
+  await startSession(markdown, "Before ");
+  await placeCaretInText("Before ", "Before ".length - 2);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === source,
+    "Link source did not activate before multiline Paste"
+  );
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(${selectionStart}, ${selectionEnd});
+    return Boolean(control);
+  })()`);
+  if (await dispatchPasteText(pastedText) == null) {
+    throw new Error("No hidden inline source control received multiline Paste");
+  }
+  await waitForSaveState(false);
+  await save(pastedMarkdown);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(markdown);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(pastedMarkdown);
+  await stopSession();
+
+  const crlfMarkdown = `Before ${source} after.\r\n`;
+  const crlfOffset = source.indexOf("example") + "exam".length;
+  const crlfPaste = "A\r\nB";
+  const crlfSource = `${source.slice(0, crlfOffset)}${crlfPaste}${source.slice(crlfOffset)}`;
+  const crlfPastedMarkdown = `Before ${crlfSource} after.\r\n`;
+  await startSession(crlfMarkdown, "Before ");
+  await placeCaretInText("Before ", "Before ".length - 2);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === source,
+    "CRLF link source did not activate before multiline Paste"
+  );
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(${crlfOffset}, ${crlfOffset});
+    return Boolean(control);
+  })()`);
+  if (await dispatchPasteText(crlfPaste) == null) {
+    throw new Error("No hidden inline source control received CRLF Paste");
+  }
+  await waitForSaveState(false);
+  await save(crlfPastedMarkdown);
+  await stopSession();
+}
+
 async function focusCodeBoundary(edge) {
   await waitFor(
     () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .cm-content"))`),
@@ -3105,6 +3172,11 @@ async function verifyCodeLanguagePickerSourceFidelity() {
 }
 
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "inline-source-multiline-paste") {
+    await verifyInlineSourceMultilinePasteHistory();
+    console.log("Verified multiline Paste inside hidden inline source preserves exact Markdown and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "inline-source-enter") {
     await verifyInlineSourceEnterHistory();
     console.log("Verified Enter inside hidden inline source preserves exact Markdown and history.");
@@ -3306,6 +3378,7 @@ async function run() {
   await verifyInlineConstructDeletion();
   await verifyInlineCrossBoundarySelection();
   await verifyInlineSourceEnterHistory();
+  await verifyInlineSourceMultilinePasteHistory();
   await verifyCodeBoundaryNavigation();
   await verifyCodeBoundarySelection();
   await verifyCodeJumpNavigation();

@@ -3463,6 +3463,79 @@ export function replaceSourceSelectionTransaction(
   return transaction.setSelection(Selection.near(transaction.doc.resolve(caret), 1));
 }
 
+function inlineSourceValueEditFromDocument(
+  state,
+  unit,
+  originalSource,
+  value,
+  localCaret,
+  parser,
+  documentSource,
+  unitStart
+) {
+  const caret = unitStart + Math.max(0, Math.min(value.length, Number(localCaret) || 0));
+  const historySelection = {
+    anchor: unitStart,
+    head: unitStart + originalSource.length,
+    fullSource: documentSource.fullSource,
+    boundary: unit.from
+  };
+  const afterSource = `${documentSource.fullSource.slice(0, unitStart)}${value}${
+    documentSource.fullSource.slice(unitStart + originalSource.length)
+  }`;
+  const transaction = replaceSourceSelectionTransaction(
+    state,
+    historySelection,
+    value,
+    parser,
+    caret
+  );
+  if (!transaction) return null;
+  return {
+    transaction,
+    historySelection,
+    editSelection: historySelection,
+    afterSelection: {
+      anchor: caret,
+      head: caret,
+      fullSource: afterSource,
+      boundary: transaction.selection.head
+    }
+  };
+}
+
+export function inlineSourceValueEdit(
+  state,
+  unit,
+  originalSource,
+  value,
+  localCaret,
+  parser,
+  serializer
+) {
+  if (
+    !state?.doc
+    || !unit
+    || typeof originalSource !== "string"
+    || typeof value !== "string"
+    || typeof parser !== "function"
+    || typeof serializer !== "function"
+  ) return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const unitStart = documentSourceUnitStartOffset(state, unit, serializer);
+  if (!documentSource || !Number.isFinite(unitStart)) return null;
+  return inlineSourceValueEditFromDocument(
+    state,
+    unit,
+    originalSource,
+    value,
+    localCaret,
+    parser,
+    documentSource,
+    unitStart
+  );
+}
+
 export function inlineSourceEnterEdit(
   state,
   unit,
@@ -3489,35 +3562,16 @@ export function inlineSourceEnterEdit(
     unitStart + Math.min(offset, originalSource.length)
   );
   const replacement = `${value.slice(0, offset)}${lineEnding}${value.slice(offset)}`;
-  const historySelection = {
-    anchor: unitStart,
-    head: unitStart + originalSource.length,
-    fullSource: documentSource.fullSource,
-    boundary: unit.from
-  };
-  const afterSource = `${documentSource.fullSource.slice(0, unitStart)}${replacement}${
-    documentSource.fullSource.slice(unitStart + originalSource.length)
-  }`;
-  const caret = unitStart + offset + lineEnding.length;
-  const transaction = replaceSourceSelectionTransaction(
+  return inlineSourceValueEditFromDocument(
     state,
-    historySelection,
+    unit,
+    originalSource,
     replacement,
+    offset + lineEnding.length,
     parser,
-    caret
+    documentSource,
+    unitStart
   );
-  if (!transaction) return null;
-  return {
-    transaction,
-    historySelection,
-    editSelection: historySelection,
-    afterSelection: {
-      anchor: caret,
-      head: caret,
-      fullSource: afterSource,
-      boundary: transaction.selection.head
-    }
-  };
 }
 
 export function sourceClipboardEdit(
@@ -3699,6 +3753,7 @@ function continuousSourceEditor(
   onWordJump,
   onDocumentJump,
   onInlineEnter,
+  onInlineMultilinePaste,
   onDraftChange,
   shouldFocus,
   setActiveControl
@@ -4100,6 +4155,19 @@ function continuousSourceEditor(
     const text = event.clipboardData.getData("text/plain");
     event.preventDefault();
     event.stopPropagation();
+    if (!isBlock && /[\r\n]/.test(text)) {
+      const edit = sourceControlClipboardEdit(
+        editor.value,
+        editor.selectionStart,
+        editor.selectionEnd,
+        text
+      );
+      finishKeyboardHandoff(
+        false,
+        () => onInlineMultilinePaste(edit.value, edit.caret)
+      );
+      return;
+    }
     applyClipboardEdit(text, "insertFromPaste");
   });
   editor.addEventListener("mousedown", (event) => {
@@ -7011,6 +7079,27 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             { isolatedHistory: true }
           );
         };
+        const pasteMultilineFromInlineSource = (value, sourceOffset) => {
+          if (!editorView?.dom.isConnected) return;
+          const edit = inlineSourceValueEdit(
+            editorView.state,
+            unit,
+            source,
+            value,
+            sourceOffset,
+            ctx.get(parserCtx),
+            serializer
+          );
+          if (!edit) return;
+          dispatchExactEdit(
+            editorView,
+            edit.transaction,
+            edit.historySelection,
+            edit.editSelection,
+            edit.afterSelection,
+            { isolatedHistory: true }
+          );
+        };
         const publishDraft = (value) => {
           if (!editorView?.dom.isConnected) return;
           const markdown = markdownSourceDraftMarkdown(
@@ -7043,6 +7132,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           wordJumpFromSource,
           jumpFromSource,
           insertLineBreakFromInlineSource,
+          pasteMultilineFromInlineSource,
           publishDraft,
           () => true,
           (control) => {
