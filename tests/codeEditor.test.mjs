@@ -8,6 +8,7 @@ import {
   codeBoundaryDeletionDirection,
   codeContentOffsetAtSourceOffset,
   codeBoundaryNavigationKeyDirection,
+  codeBoundaryNavigationPosition,
   codeBoundaryNavigationDirection,
   codeBoundaryNavigationSourceOffset,
   codeBoundarySelectionKeyDirection,
@@ -225,6 +226,30 @@ test("CodeMirror ordinary arrows leave a fenced block at its source boundaries",
   assert.equal(codeBoundaryNavigationDirection(firstLine, "ArrowLeft"), null);
   assert.equal(codeBoundaryNavigationDirection(lastLine, "ArrowRight"), null);
   assert.equal(codeBoundaryNavigationDirection(codeState(0, 10, false), "ArrowLeft"), null);
+});
+
+test("CodeMirror vertical arrows collapse extended selections toward the physical fence line", () => {
+  const forward = EditorState.create({
+    doc: "first\nsecond",
+    selection: { anchor: 2, head: 8 }
+  });
+  const backward = EditorState.create({
+    doc: "first\nsecond",
+    selection: { anchor: 8, head: 2 }
+  });
+  for (const state of [forward, backward]) {
+    assert.equal(codeBoundaryNavigationDirection(state, "ArrowUp"), "backward");
+    assert.equal(codeBoundaryNavigationPosition(state, "ArrowUp"), 2);
+    assert.equal(codeBoundaryNavigationDirection(state, "ArrowDown"), "forward");
+    assert.equal(codeBoundaryNavigationPosition(state, "ArrowDown"), 8);
+  }
+
+  const middle = EditorState.create({
+    doc: "first\nmiddle\nlast",
+    selection: { anchor: 7, head: 10 }
+  });
+  assert.equal(codeBoundaryNavigationDirection(middle, "ArrowUp"), null);
+  assert.equal(codeBoundaryNavigationDirection(middle, "ArrowDown"), null);
 });
 
 test("CodeMirror boundary arrows enter the adjacent fenced-source character", () => {

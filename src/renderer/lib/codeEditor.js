@@ -90,14 +90,32 @@ export function codeBoundarySelectionKeyDirection(state, event) {
 }
 
 export function codeBoundaryNavigationDirection(state, key) {
+  const position = codeBoundaryNavigationPosition(state, key);
+  if (!Number.isFinite(position)) return null;
+  return key === "ArrowLeft" || key === "ArrowUp" ? "backward" : "forward";
+}
+
+export function codeBoundaryNavigationPosition(state, key) {
   const ranges = state?.selection?.ranges || [];
-  if (ranges.length !== 1 || !ranges[0].empty) return null;
-  const head = ranges[0].head;
-  const line = state.doc.lineAt(head);
-  if (key === "ArrowLeft" && head === 0) return "backward";
-  if (key === "ArrowUp" && line.number === 1) return "backward";
-  if (key === "ArrowRight" && head === state.doc.length) return "forward";
-  if (key === "ArrowDown" && line.number === state.doc.lines) return "forward";
+  if (ranges.length !== 1) return null;
+  const selection = ranges[0];
+  const head = selection.head;
+  if (key === "ArrowLeft") return selection.empty && head === 0 ? head : null;
+  if (key === "ArrowRight") {
+    return selection.empty && head === state.doc.length ? head : null;
+  }
+  if (!["ArrowUp", "ArrowDown"].includes(key)) return null;
+
+  // Native vertical movement first collapses an extended selection toward its
+  // lower edge for Up or upper edge for Down, then moves one physical line.
+  // Use that edge even when it is not the active CodeMirror selection head.
+  const anchor = Number.isFinite(selection.anchor) ? selection.anchor : head;
+  const position = selection.empty
+    ? head
+    : key === "ArrowUp" ? Math.min(anchor, head) : Math.max(anchor, head);
+  const line = state.doc.lineAt(position);
+  if (key === "ArrowUp" && line.number === 1) return position;
+  if (key === "ArrowDown" && line.number === state.doc.lines) return position;
   return null;
 }
 

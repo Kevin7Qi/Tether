@@ -49,6 +49,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /window\.localStorage\.clear\(\)/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-selection-movement"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-extended-word-navigation"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "code-extended-vertical-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-control-select-all"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-line-delete"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-word-delete"/);
@@ -198,6 +199,7 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(surface, /renderLanguage: tetherCodeLanguageLabel/);
   assert.match(surface, /labelNode\.nodeValue = renderedLanguage/);
   assert.match(surface, /codeBoundaryNavigationKeyDirection/);
+  assert.match(surface, /codeBoundaryNavigationPosition/);
   assert.match(surface, /codeBoundaryWordJumpDirection/);
   assert.match(surface, /codeBoundaryDeletionKeyDirection/);
   assert.match(surface, /codeTabEdit/);

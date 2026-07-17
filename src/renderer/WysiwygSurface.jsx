@@ -25,6 +25,7 @@ import {
   codeBoundaryDeletionKeyDirection,
   codeBoundaryNavigationSourceOffset,
   codeBoundaryNavigationKeyDirection,
+  codeBoundaryNavigationPosition,
   codeBoundarySelectionKeyDirection,
   codeBoundarySourcePosition,
   codeBoundaryWordJumpDirection,
@@ -1342,7 +1343,8 @@ export default function WysiwygSurface({
         );
         return;
       }
-      const codeHead = codeView.state.selection.main.head;
+      const codeHead = codeBoundaryNavigationPosition(codeView.state, event.key);
+      if (!Number.isFinite(codeHead)) return;
       const unit = {
         from: blockPosition,
         to: blockPosition + node.nodeSize,
