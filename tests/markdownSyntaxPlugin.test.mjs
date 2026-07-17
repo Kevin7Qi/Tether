@@ -68,6 +68,7 @@ import {
   sourceControlClipboardEdit,
   sourceControlInputHistoryStep,
   sourceControlSaveFocus,
+  sourceControlWordDeletionEdit,
   sourceEditCaretOffset,
   sourceLineEndingAt,
   sourceLineSelectionAcrossUnitBoundary,
@@ -95,9 +96,12 @@ import {
   sourceSelectionRangeAfterMotion,
   sourceSelectionTabEdit,
   sourceSelectionText,
+  sourceSelectionWordDelete,
   sourceSelectionWordJump,
   sourceVerticalOffset,
   sourceWordJumpTarget,
+  sourceWordDeleteDirection,
+  sourceWordDeletionTargetEdit,
   sourceWordOffset,
   sourceWordSelectionRange,
   sourceWordSelectionAcrossUnitBoundary,
@@ -2749,6 +2753,114 @@ test("word-wise source movement traverses Markdown punctuation and whitespace gr
     end: 8,
     direction: "backward"
   });
+});
+
+test("word deletion shortcuts transform exact physical source ranges", () => {
+  assert.equal(sourceWordDeleteDirection({ key: "Backspace", altKey: true }), "backward");
+  assert.equal(sourceWordDeleteDirection({ key: "Delete", ctrlKey: true }), "forward");
+  assert.equal(sourceWordDeleteDirection({ key: "Backspace", metaKey: true }), null);
+  assert.equal(sourceWordDeleteDirection({ key: "Backspace", altKey: true, ctrlKey: true }), null);
+  assert.equal(sourceWordDeleteDirection({ key: "Backspace" }), null);
+
+  const fullSource = "Before **bold** after.\n";
+  const unitStart = fullSource.indexOf("**bold**");
+  const backward = sourceSelectionWordDelete({
+    anchor: unitStart,
+    head: unitStart,
+    fullSource,
+    boundary: 8
+  }, "backward");
+  assert.equal(backward.changed, true);
+  assert.deepEqual(
+    [backward.deletionSelection.anchor, backward.deletionSelection.head],
+    [unitStart, 0]
+  );
+  assert.equal(backward.afterSelection.fullSource, "**bold** after.\n");
+  assert.equal(backward.afterSelection.head, 0);
+
+  const forward = sourceSelectionWordDelete({
+    anchor: unitStart,
+    head: unitStart,
+    fullSource,
+    boundary: 8
+  }, "forward");
+  assert.equal(forward.afterSelection.fullSource, "Before bold** after.\n");
+  assert.equal(forward.afterSelection.head, unitStart);
+
+  const selected = sourceSelectionWordDelete({
+    anchor: unitStart + 4,
+    head: unitStart + 2,
+    fullSource,
+    boundary: 8
+  }, "backward");
+  assert.equal(selected.afterSelection.fullSource, "Before **ld** after.\n");
+  assert.equal(selected.afterSelection.head, unitStart + 2);
+
+  assert.equal(sourceSelectionWordDelete({
+    anchor: 0,
+    head: 0,
+    fullSource,
+    boundary: 0
+  }, "backward").changed, false);
+});
+
+test("word deletion enters and crosses rendered Markdown source units exactly", () => {
+  const strong = schema.marks.strong.create();
+  const doc = schema.node("doc", null, [schema.node("paragraph", null, [
+    schema.text("Before "),
+    schema.text("marked", [strong]),
+    schema.text(" after.")
+  ])]);
+  const serializer = (value) => {
+    let source = "";
+    value.firstChild?.forEach((node) => {
+      source += node.marks.some((mark) => mark.type.name === "strong")
+        ? `**${node.text}**`
+        : node.text;
+    });
+    return `${source}\n`;
+  };
+  const parser = (source) => schema.node("doc", null, [
+    schema.node("paragraph", null, source.trimEnd()
+      ? [schema.text(source.trimEnd())]
+      : [])
+  ]);
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, "Before ".length + 2)
+  });
+  const unit = activeMarkdownSyntax(state);
+  const fromControl = sourceControlWordDeletionEdit(
+    state,
+    unit,
+    "**marked**",
+    "**marked**",
+    { anchor: 0, head: 0 },
+    "backward",
+    parser,
+    serializer
+  );
+  assert.equal(fromControl.changed, true);
+  assert.equal(fromControl.afterSelection.fullSource, "**marked** after.\n");
+  assert.equal(fromControl.afterSelection.head, 0);
+  assert.ok(fromControl.transaction?.docChanged);
+
+  const boundaryState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, "Before ".length + 1)
+  });
+  const fromRenderedBoundary = sourceWordDeletionTargetEdit(
+    boundaryState,
+    "forward",
+    parser,
+    serializer
+  );
+  assert.equal(
+    fromRenderedBoundary.afterSelection.fullSource,
+    "Before marked** after.\n"
+  );
+  assert.equal(fromRenderedBoundary.afterSelection.head, "Before ".length);
+  assert.ok(fromRenderedBoundary.transaction?.docChanged);
 });
 
 test("an existing code selection keeps its source anchor while crossing fence lines", () => {

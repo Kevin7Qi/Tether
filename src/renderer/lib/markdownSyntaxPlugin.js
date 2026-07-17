@@ -863,6 +863,50 @@ export function sourceWordJumpTarget(state, event, serializer) {
   };
 }
 
+export function sourceWordDeletionTargetEdit(
+  state,
+  direction,
+  parser,
+  serializer
+) {
+  if (
+    !state?.selection?.empty
+    || !["backward", "forward"].includes(direction)
+    || typeof parser !== "function"
+    || typeof serializer !== "function"
+  ) return null;
+  const target = sourceWordJumpTarget(state, {
+    key: direction === "backward" ? "ArrowLeft" : "ArrowRight",
+    altKey: true
+  }, serializer);
+  if (!target?.unit) return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const unitStart = documentSourceUnitStartOffset(state, target.unit, serializer);
+  if (!documentSource || !Number.isFinite(unitStart)) return null;
+  const currentOffset = unitStart + target.currentOffset;
+  const historySelection = {
+    anchor: currentOffset,
+    head: currentOffset,
+    fullSource: documentSource.fullSource,
+    boundary: target.position
+  };
+  const wordEdit = sourceSelectionWordDelete(historySelection, direction);
+  if (!wordEdit?.changed) return null;
+  const transaction = replaceSourceSelectionTransaction(
+    state,
+    wordEdit.deletionSelection,
+    "",
+    parser,
+    wordEdit.afterSelection.head
+  );
+  return transaction ? {
+    transaction,
+    historySelection,
+    editSelection: wordEdit.deletionSelection,
+    afterSelection: wordEdit.afterSelection
+  } : null;
+}
+
 export function sourceLineJumpTarget(state, edge, serializer) {
   const { selection } = state;
   if (
@@ -1553,6 +1597,18 @@ export function sourceInputWordJumpDirection(
   if (key === "ArrowLeft" && localSelection.head === 0) return "backward";
   if (key === "ArrowRight" && localSelection.head === sourceLength) return "forward";
   return null;
+}
+
+export function sourceWordDeleteDirection(event) {
+  if (
+    !event
+    || event.metaKey
+    || event.shiftKey
+    || !["Backspace", "Delete"].includes(event.key)
+  ) return null;
+  const wordModifier = Boolean(event.altKey) !== Boolean(event.ctrlKey);
+  if (!wordModifier) return null;
+  return event.key === "Backspace" ? "backward" : "forward";
 }
 
 export function sourceWordSelectionAcrossUnitBoundary(
@@ -3434,6 +3490,54 @@ export function sourceSelectionWordJump(sourceSelection, direction, extend = fal
   };
 }
 
+export function sourceSelectionWordDelete(sourceSelection, direction) {
+  if (
+    !sourceSelection
+    || typeof sourceSelection.fullSource !== "string"
+    || !["backward", "forward"].includes(direction)
+  ) return null;
+  const collapsed = sourceSelection.anchor === sourceSelection.head;
+  const target = collapsed
+    ? sourceWordOffset(sourceSelection.fullSource, sourceSelection.head, direction)
+    : null;
+  const deletionSelection = collapsed
+    ? {
+        ...sourceSelection,
+        anchor: sourceSelection.head,
+        head: target,
+        verticalColumn: null
+      }
+    : { ...sourceSelection, verticalColumn: null };
+  const from = Math.min(deletionSelection.anchor, deletionSelection.head);
+  const to = Math.max(deletionSelection.anchor, deletionSelection.head);
+  if (from === to) {
+    return {
+      changed: false,
+      deletionSelection,
+      afterSelection: {
+        ...sourceSelection,
+        anchor: from,
+        head: from,
+        verticalColumn: null
+      }
+    };
+  }
+  const fullSource = `${sourceSelection.fullSource.slice(0, from)}${
+    sourceSelection.fullSource.slice(to)
+  }`;
+  return {
+    changed: true,
+    deletionSelection,
+    afterSelection: {
+      ...sourceSelection,
+      anchor: from,
+      head: from,
+      fullSource,
+      verticalColumn: null
+    }
+  };
+}
+
 export function sourceSelectionTabEdit(sourceSelection, outdent = false) {
   if (!sourceSelection || typeof sourceSelection.fullSource !== "string") return null;
   const backward = sourceSelection.anchor > sourceSelection.head;
@@ -3675,6 +3779,79 @@ export function inlineSourceTabEdit(
   };
 }
 
+export function sourceControlWordDeletionEdit(
+  state,
+  unit,
+  originalSource,
+  value,
+  localSelection,
+  direction,
+  parser,
+  serializer
+) {
+  if (
+    !state?.doc
+    || !unit
+    || typeof originalSource !== "string"
+    || typeof value !== "string"
+    || !localSelection
+    || !["backward", "forward"].includes(direction)
+    || typeof parser !== "function"
+    || typeof serializer !== "function"
+  ) return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const unitStart = documentSourceUnitStartOffset(state, unit, serializer);
+  if (!documentSource || !Number.isFinite(unitStart)) return null;
+  const localAnchor = Math.max(
+    0,
+    Math.min(value.length, Number(localSelection.anchor) || 0)
+  );
+  const localHead = Math.max(
+    0,
+    Math.min(value.length, Number(localSelection.head) || 0)
+  );
+  const currentSource = `${documentSource.fullSource.slice(0, unitStart)}${value}${
+    documentSource.fullSource.slice(unitStart + originalSource.length)
+  }`;
+  const currentSelection = {
+    anchor: unitStart + localAnchor,
+    head: unitStart + localHead,
+    fullSource: currentSource,
+    boundary: unit.from,
+    verticalColumn: null
+  };
+  const wordEdit = sourceSelectionWordDelete(currentSelection, direction);
+  if (!wordEdit) return null;
+  const afterSelection = {
+    ...wordEdit.afterSelection,
+    boundary: unit.from
+  };
+  if (afterSelection.fullSource === documentSource.fullSource) {
+    return { changed: false, transaction: null, afterSelection };
+  }
+  const historySelection = {
+    anchor: 0,
+    head: documentSource.fullSource.length,
+    fullSource: documentSource.fullSource,
+    boundary: unit.from
+  };
+  const transaction = replaceSourceSelectionTransaction(
+    state,
+    historySelection,
+    afterSelection.fullSource,
+    parser,
+    afterSelection.head
+  );
+  if (!transaction) return null;
+  return {
+    changed: true,
+    transaction,
+    historySelection,
+    editSelection: historySelection,
+    afterSelection
+  };
+}
+
 export function sourceClipboardEdit(
   state,
   replacement,
@@ -3854,6 +4031,7 @@ function continuousSourceEditor(
   onWordJump,
   onLineJump,
   onDocumentJump,
+  onSourceWordDelete,
   onInlineEnter,
   onInlineMultilinePaste,
   onInlineTab,
@@ -4340,6 +4518,22 @@ function continuousSourceEditor(
         event.stopImmediatePropagation();
         return;
       }
+    }
+    const wordDeleteDirection = sourceWordDeleteDirection(event);
+    if (wordDeleteDirection) {
+      const localSelection = sourceInputSelection(
+        editor.selectionStart ?? 0,
+        editor.selectionEnd ?? editor.selectionStart ?? 0,
+        editor.selectionDirection
+      );
+      const value = editor.value;
+      event.preventDefault();
+      event.stopPropagation();
+      finishKeyboardHandoff(
+        false,
+        () => onSourceWordDelete(value, localSelection, wordDeleteDirection)
+      );
+      return;
     }
     const documentJumpEdge = sourceDocumentJumpEdge(event);
     if (documentJumpEdge) {
@@ -5537,7 +5731,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     focusExactEditSelection(view);
   };
 
-  const deleteExactSource = (view, direction) => {
+  const deleteExactSource = (view, direction, word = false) => {
     if (
       !view?.editable
       || !["backward", "forward"].includes(direction)
@@ -5553,10 +5747,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       : plainTextMarkdownSourceSelection(view.state, serializer);
     const exactSelection = sourceSelection || documentSelection || plainSelection;
     if (exactSelection || sourceNewlineSelectionInfo(view.state)) {
-      const deletionSelection = exactSelection
+      const wordEdit = word && exactSelection
+        ? sourceSelectionWordDelete(exactSelection, direction)
+        : null;
+      if (word && exactSelection && !wordEdit?.changed) return false;
+      const deletionSelection = wordEdit?.deletionSelection || (exactSelection
         && exactSelection.anchor === exactSelection.head
         ? extendSourceSelection(exactSelection, direction)
-        : exactSelection;
+        : exactSelection);
       const transaction = deletionSelection
         ? replaceSourceSelectionTransaction(
             view.state,
@@ -5576,7 +5774,26 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         transaction,
         exactSelection,
         deletionSelection || exactSelection,
-        null,
+        wordEdit?.afterSelection || null,
+        { isolatedHistory: true }
+      );
+      return true;
+    }
+
+    if (word) {
+      const edit = sourceWordDeletionTargetEdit(
+        view.state,
+        direction,
+        ctx.get(parserCtx),
+        serializer
+      );
+      if (!edit) return false;
+      dispatchExactEdit(
+        view,
+        edit.transaction,
+        edit.historySelection,
+        edit.editSelection,
+        edit.afterSelection,
         { isolatedHistory: true }
       );
       return true;
@@ -5901,19 +6118,20 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         }
       };
       const captureExactDeletion = (event) => {
-        if (
-          event.altKey
-          || event.ctrlKey
-          || event.metaKey
-          || event.shiftKey
-          || !["Backspace", "Delete"].includes(event.key)
-        ) return;
+        const wordDirection = sourceWordDeleteDirection(event);
+        const plainDeletion = !event.altKey
+          && !event.ctrlKey
+          && !event.metaKey
+          && !event.shiftKey
+          && ["Backspace", "Delete"].includes(event.key);
+        if (!wordDirection && !plainDeletion) return;
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest("button, input, select, textarea, .cm-content, .tether-continuous-source")) {
           return;
         }
-        const direction = event.key === "Backspace" ? "backward" : "forward";
-        if (!deleteExactSource(view, direction)) return;
+        const direction = wordDirection
+          || (event.key === "Backspace" ? "backward" : "forward");
+        if (!deleteExactSource(view, direction, Boolean(wordDirection))) return;
         event.preventDefault();
         event.stopImmediatePropagation();
       };
@@ -7299,6 +7517,38 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             { isolatedHistory: true }
           );
         };
+        const deleteWordFromSource = (value, localSelection, direction) => {
+          if (!editorView?.dom.isConnected) return;
+          const edit = sourceControlWordDeletionEdit(
+            editorView.state,
+            unit,
+            source,
+            value,
+            localSelection,
+            direction,
+            ctx.get(parserCtx),
+            serializer
+          );
+          if (!edit) return;
+          if (!edit.changed) {
+            activateDocumentSourceOffset(
+              editorView,
+              edit.afterSelection,
+              edit.afterSelection.head,
+              direction,
+              serializer
+            );
+            return;
+          }
+          dispatchExactEdit(
+            editorView,
+            edit.transaction,
+            edit.historySelection,
+            edit.editSelection,
+            edit.afterSelection,
+            { isolatedHistory: true }
+          );
+        };
         const tabFromInlineSource = (value, localSelection, outdent) => {
           if (!editorView?.dom.isConnected) return;
           const edit = inlineSourceTabEdit(
@@ -7363,6 +7613,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           wordJumpFromSource,
           lineJumpFromSource,
           jumpFromSource,
+          deleteWordFromSource,
           insertLineBreakFromInlineSource,
           pasteMultilineFromInlineSource,
           tabFromInlineSource,

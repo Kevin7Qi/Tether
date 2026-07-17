@@ -35,6 +35,8 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(main, /offscreen:\s*editorParityRun/);
   assert.match(verifier, /TETHER_EDITOR_PARITY:\s*"1"/);
   assert.match(verifier, /prepareBackgroundElectron\(electronPath\)/);
+  assert.match(verifier, /const maxWindowsPerElectronSession = 8/);
+  assert.match(verifier, /sessionWindowCount >= maxWindowsPerElectronSession/);
   assert.match(verifier, /async function stopSession\(force = false\)/);
   assert.match(verifier, /await stopSession\(true\)/);
   assert.match(verifier, /process\.exit\(exitCode\)/);
@@ -44,6 +46,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /connectRendererTarget\(outgoingTargetId\)/);
   assert.match(verifier, /window\.remoteMarkdown\.resetEditorParity/);
   assert.match(verifier, /window\.localStorage\.clear\(\)/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "source-word-delete"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "inline-source-tab"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "inline-source-line-jumps"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "inline-source-multiline-paste"/);
@@ -389,7 +392,7 @@ test("code history changes restore the same embedded editor focus", () => {
   assert.match(surface, /lastFocusedCodeTarget[\s\S]*!historyCommandPending[\s\S]*!activeDocumentSourceSelection\(currentView\?\.state\)/);
   assert.match(surface, /activeDocumentSourceSelection\(view\.state\)[\s\S]*lastFocusedCodeTarget = null;[\s\S]*view\.dom\.focus\(\)/);
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
-  assert.match(syntax, /const deleteExactSource = \(view, direction\) =>[\s\S]*\{ isolatedHistory: true \}/);
+  assert.match(syntax, /const deleteExactSource = \(view, direction, word = false\) =>[\s\S]*\{ isolatedHistory: true \}/);
   assert.match(syntax, /addEventListener\("keydown", captureExactDeletion, true\)/);
   assert.match(syntax, /view\.dom\.tetherRunBoundaryHistory = runBoundaryHistory/);
   assert.match(syntax, /delete view\.dom\.tetherRunBoundaryHistory/);
