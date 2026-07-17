@@ -2636,6 +2636,83 @@ async function verifyBlockAtomCutPasteHistory() {
   await stopSession();
 }
 
+async function verifySourceSelectionNativeMovement() {
+  const fixture = "Before.\r\n\r\n* * *\r\n\r\nAfter.\r\n";
+  const anchor = "Before.".length;
+  const head = fixture.indexOf("After.");
+  const scenarios = [
+    {
+      name: "ArrowUp",
+      input: { key: "ArrowUp", code: "ArrowUp", virtualKeyCode: 38 },
+      offset: 0
+    },
+    {
+      name: "ArrowDown",
+      input: { key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40 },
+      offset: fixture.length
+    },
+    {
+      name: "Option-ArrowLeft",
+      input: { key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, modifiers: 1 },
+      offset: fixture.indexOf("* * *") + 4,
+      sourceControl: { value: "* * *", selection: 4 }
+    },
+    {
+      name: "Option-ArrowRight",
+      input: { key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 1 },
+      offset: fixture.indexOf("After.") + "After".length
+    }
+  ];
+
+  for (const scenario of scenarios) {
+    await startSession(fixture, "Before.");
+    await placeCaretInText("Before.", "Before.".length);
+    // Nine rendered Shift+Right motions traverse both CRLF gaps and the
+    // complete thematic-break source, yielding the physical [anchor, head]
+    // range above.
+    for (let step = 0; step < 9; step += 1) {
+      await dispatchKey({
+        key: "ArrowRight",
+        code: "ArrowRight",
+        virtualKeyCode: 39,
+        modifiers: 8
+      });
+    }
+    try {
+      await waitFor(
+        () => evaluate(`(() => {
+          const exact = document.querySelector(".ProseMirror")?.tetherGetActiveSourceSelection?.();
+          return exact?.fullSource === ${JSON.stringify(fixture)}
+            && exact.anchor === ${anchor}
+            && exact.head === ${head};
+        })()`),
+        `${scenario.name} setup did not establish the forward physical source selection`
+      );
+    } catch (error) {
+      throw new Error(`${error.message}; state: ${JSON.stringify(await editorState())}`);
+    }
+    await dispatchKey(scenario.input);
+    if (scenario.sourceControl) {
+      await waitForSourceControl(
+        (state) => state?.active
+          && state.value === scenario.sourceControl.value
+          && state.selectionStart === scenario.sourceControl.selection
+          && state.selectionEnd === scenario.sourceControl.selection,
+        `${scenario.name} did not collapse at physical source offset ${scenario.offset}`
+      );
+      await stopSession();
+      continue;
+    }
+    await cdp.send("Input.insertText", { text: "X" });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(
+      `${fixture.slice(0, scenario.offset)}X${fixture.slice(scenario.offset)}`
+    );
+    await stopSession();
+  }
+}
+
 async function verifyListItemCutPaste() {
   const visibleOffset = 2;
   const selectionStart = listFixture.indexOf("Alpha") + visibleOffset;
@@ -3602,6 +3679,11 @@ async function verifyCodeLanguagePickerSourceFidelity() {
 }
 
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "source-selection-movement") {
+    await verifySourceSelectionNativeMovement();
+    console.log("Verified source selections collapse and move like a native text editor.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "source-control-select-all") {
     await verifySourceControlSelectAllHistory();
     console.log("Verified temporary Markdown source Select All owns the complete physical document.");
@@ -3856,6 +3938,7 @@ async function run() {
   await verifyStructuralMarkerNavigation();
   await verifyBlockAtomTraversal();
   await verifyBlockAtomCutPasteHistory();
+  await verifySourceSelectionNativeMovement();
   await verifyListItemCutPaste();
   await verifyTaskCheckboxHistory();
   await verifyTableBoundaryCutPasteHistory();

@@ -101,6 +101,7 @@ import {
   sourceSelectionRangeAfterMotion,
   sourceSelectionTabEdit,
   sourceSelectionText,
+  sourceSelectionVerticalJump,
   sourceSelectionWordDelete,
   sourceSelectionWordJump,
   sourceVerticalOffset,
@@ -2173,7 +2174,7 @@ test("inline source vertical arrows always return a collapsed caret to the docum
   assert.equal(inlineSourceVerticalDirection("ArrowUp", 3, 3), "up");
   assert.equal(inlineSourceVerticalDirection("ArrowDown", 3, 3), "down");
   assert.equal(inlineSourceVerticalDirection("ArrowLeft", 3, 3), null);
-  assert.equal(inlineSourceVerticalDirection("ArrowUp", 1, 4), null);
+  assert.equal(inlineSourceVerticalDirection("ArrowUp", 1, 4), "up");
   assert.equal(inlineSourceVerticalDirection("ArrowDown", 3, 3, true), null);
 });
 
@@ -2183,6 +2184,8 @@ test("block source vertical arrows hand off only from the outer source lines", (
   assert.equal(blockSourceVerticalDirection("ArrowUp", 4, 4, source), null);
   assert.equal(blockSourceVerticalDirection("ArrowDown", 10, 10, source), null);
   assert.equal(blockSourceVerticalDirection("ArrowDown", source.length, source.length, source), "down");
+  assert.equal(blockSourceVerticalDirection("ArrowUp", 1, 10, source), "up");
+  assert.equal(blockSourceVerticalDirection("ArrowDown", 1, 10, source), "down");
   assert.equal(blockSourceVerticalDirection("ArrowLeft", 0, 0, source), null);
   assert.equal(blockSourceVerticalDirection("ArrowDown", source.length, source.length, source, true), null);
 });
@@ -2358,7 +2361,7 @@ test("source controls hand Option-word jumps across an outer boundary", () => {
   );
   assert.equal(
     sourceInputWordJumpDirection("ArrowLeft", 0, 4, 8, false, true, false, "backward"),
-    null
+    "backward"
   );
   assert.equal(sourceInputWordJumpDirection("ArrowLeft", 1, 1, 8, false, true), null);
   assert.equal(sourceInputWordJumpDirection("ArrowLeft", 0, 0, 8, false, false), null);
@@ -2621,8 +2624,8 @@ test("exact source selections own physical line and word jumps across CRLF gaps"
     head: wordStart
   }, "backward"), {
     ...sourceSelection,
-    anchor: afterFirst,
-    head: afterFirst,
+    anchor: nextLineCaret,
+    head: nextLineCaret,
     verticalColumn: null
   });
   assert.deepEqual(sourceSelectionWordJump({
@@ -3327,6 +3330,40 @@ test("source selections move vertically by physical source lines and preserve co
   const movedBackward = moveSourceSelectionHead(selection, "backward");
   assert.equal(movedBackward.head, secondLineColumn - 1);
   assert.equal(movedBackward.verticalColumn, null);
+
+  // Chromium's native textarea behavior for a backward selection from 8 to 2:
+  // Up/Down collapse to the relevant range edge and continue one source line,
+  // while Option-arrows move from the active head to a word boundary.
+  const nativeRange = {
+    anchor: 8,
+    head: 2,
+    fullSource: "ab cd\nef gh",
+    boundary: 4
+  };
+  assert.deepEqual(sourceSelectionVerticalJump(nativeRange, "up"), {
+    ...nativeRange,
+    anchor: 0,
+    head: 0,
+    verticalColumn: 2
+  });
+  assert.deepEqual(sourceSelectionVerticalJump(nativeRange, "down"), {
+    ...nativeRange,
+    anchor: 11,
+    head: 11,
+    verticalColumn: 2
+  });
+  assert.deepEqual(sourceSelectionWordJump(nativeRange, "backward"), {
+    ...nativeRange,
+    anchor: 0,
+    head: 0,
+    verticalColumn: null
+  });
+  assert.deepEqual(sourceSelectionWordJump(nativeRange, "forward"), {
+    ...nativeRange,
+    anchor: 5,
+    head: 5,
+    verticalColumn: null
+  });
 });
 
 test("block source Tab inserts at a collapsed caret and indents selected physical lines", () => {

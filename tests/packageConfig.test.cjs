@@ -47,6 +47,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /connectRendererTarget\(outgoingTargetId\)/);
   assert.match(verifier, /window\.remoteMarkdown\.resetEditorParity/);
   assert.match(verifier, /window\.localStorage\.clear\(\)/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "source-selection-movement"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-control-select-all"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-line-delete"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-word-delete"/);
@@ -473,7 +474,7 @@ test("temporary Markdown source controls hand document jumps back to the full so
 test("temporary Markdown source controls keep extended selections exact across their boundaries", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(syntax, /inlineSourceBoundarySelectionDirection\([\s\S]*editor\.selectionDirection/);
-  assert.match(syntax, /const localSelection = lineJumpEdge \|\| wordJumpDirection \|\| boundarySelectionDirection[\s\S]*sourceInputSelection\(/);
+  assert.match(syntax, /const localSelection = lineJumpEdge[\s\S]*\|\| wordJumpDirection[\s\S]*\|\| verticalDirection[\s\S]*\|\| boundarySelectionDirection[\s\S]*sourceInputSelection\(/);
   assert.match(syntax, /onBoundarySelect\([\s\S]*localSelection/);
   assert.match(syntax, /const selectFromBoundary = \(direction, localSelection, mapping = null\) =>/);
   assert.match(syntax, /sourceSelectionAcrossUnitBoundary\([\s\S]*action: "source-selection"/);
@@ -503,6 +504,8 @@ test("temporary Markdown source controls bridge pointer drags into rendered pros
 
 test("exact source-only selections own line and word jump commands", () => {
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(syntax, /const navigateExactSourceSelection = \(view, event\) =>/);
+  assert.match(syntax, /navigationWindow\?\.addEventListener\("keydown", captureExactNavigation, true\)/);
   assert.match(syntax, /const exactWordDirection = sourceSelection[\s\S]*sourceSelectionWordJump\(/);
   assert.match(syntax, /const lineJumpEdge = sourceLineJumpEdge\(event\);[\s\S]*sourceSelectionLineJump\(/);
   assert.match(syntax, /sourceSelectionWordJump\([\s\S]*activateDocumentSourceOffset\(/);

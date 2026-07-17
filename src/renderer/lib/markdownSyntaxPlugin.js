@@ -356,7 +356,16 @@ function activateDocumentSourceOffset(
   affinity,
   serializer
 ) {
-  const target = documentSourceTarget(view.state, sourceOffset, serializer, affinity);
+  // Directional affinity disambiguates shared unit boundaries, but the outer
+  // document edges only have a target on one side. Falling back there keeps an
+  // Up/Left move to offset zero and a Down/Right move to EOF actionable.
+  const target = documentSourceTarget(view.state, sourceOffset, serializer, affinity)
+    || documentSourceTarget(
+      view.state,
+      sourceOffset,
+      serializer,
+      affinity === "backward" ? "forward" : "backward"
+    );
   if (!target) return false;
   if (target.kind === "gap") {
     const gapSelection = documentGapSourceSelection(target, sourceOffset);
@@ -1598,7 +1607,7 @@ export function inlineSourceVerticalDirection(
   selectionEnd,
   hasModifier = false
 ) {
-  if (hasModifier || selectionStart !== selectionEnd) return null;
+  if (hasModifier) return null;
   if (key === "ArrowUp") return "up";
   if (key === "ArrowDown") return "down";
   return null;
@@ -1611,7 +1620,12 @@ export function blockSourceVerticalDirection(
   source,
   hasModifier = false
 ) {
-  if (hasModifier || selectionStart !== selectionEnd) return null;
+  if (hasModifier) return null;
+  if (selectionStart !== selectionEnd) {
+    if (key === "ArrowUp") return "up";
+    if (key === "ArrowDown") return "down";
+    return null;
+  }
   if (key === "ArrowUp" && !source.slice(0, selectionStart).includes("\n")) return "up";
   if (key === "ArrowDown" && !source.slice(selectionEnd).includes("\n")) return "down";
   return null;
@@ -1695,7 +1709,6 @@ export function sourceInputWordJumpDirection(
     selectionEnd,
     selectionDirection
   );
-  if (!shiftKey && localSelection.anchor !== localSelection.head) return null;
   if (key === "ArrowLeft" && localSelection.head === 0) return "backward";
   if (key === "ArrowRight" && localSelection.head === sourceLength) return "forward";
   return null;
@@ -3510,14 +3523,14 @@ export function sourceVerticalOffset(source, offset, direction, preferredColumn 
   const currentColumn = Math.max(0, Math.min(current.end, current.bounded) - current.start);
   const column = Number.isFinite(preferredColumn) ? Math.max(0, preferredColumn) : currentColumn;
   if (direction === "up") {
-    if (current.start === 0) return current.bounded;
+    if (current.start === 0) return current.start;
     const previousBreak = current.start - 1;
     const previousStart = source.lastIndexOf("\n", previousBreak - 1) + 1;
     let previousEnd = previousBreak;
     if (previousEnd > previousStart && source[previousEnd - 1] === "\r") previousEnd -= 1;
     return Math.min(previousStart + column, previousEnd);
   }
-  if (current.lineBreak < 0) return current.bounded;
+  if (current.lineBreak < 0) return current.end;
   const nextStart = current.lineBreak + 1;
   const nextBreak = source.indexOf("\n", nextStart);
   let nextEnd = nextBreak < 0 ? source.length : nextBreak;
@@ -3543,6 +3556,33 @@ export function moveSourceSelectionHead(sourceSelection, motion) {
       motion,
       verticalColumn
     ),
+    verticalColumn
+  };
+}
+
+export function sourceSelectionVerticalJump(sourceSelection, direction) {
+  if (!sourceSelection || !["up", "down"].includes(direction)) return null;
+  const collapsed = sourceSelection.anchor === sourceSelection.head;
+  const start = Math.min(sourceSelection.anchor, sourceSelection.head);
+  const end = Math.max(sourceSelection.anchor, sourceSelection.head);
+  // Native source editors collapse Up toward the range start and Down toward
+  // its end, then continue the vertical motion from that edge. Horizontal
+  // arrows only collapse, so this cannot share their path.
+  const base = collapsed ? sourceSelection.head : direction === "up" ? start : end;
+  const line = sourceLineBounds(sourceSelection.fullSource, base);
+  const verticalColumn = collapsed && Number.isFinite(sourceSelection.verticalColumn)
+    ? sourceSelection.verticalColumn
+    : Math.max(0, Math.min(line.end, line.bounded) - line.start);
+  const head = sourceVerticalOffset(
+    sourceSelection.fullSource,
+    base,
+    direction,
+    verticalColumn
+  );
+  return {
+    ...sourceSelection,
+    anchor: head,
+    head,
     verticalColumn
   };
 }
@@ -3590,12 +3630,7 @@ export function sourceLineSelectionAcrossUnitBoundary(
 
 export function sourceSelectionWordJump(sourceSelection, direction, extend = false) {
   if (!sourceSelection || !["backward", "forward"].includes(direction)) return null;
-  const collapsed = sourceSelection.anchor === sourceSelection.head;
-  const head = !extend && !collapsed
-    ? direction === "backward"
-      ? Math.min(sourceSelection.anchor, sourceSelection.head)
-      : Math.max(sourceSelection.anchor, sourceSelection.head)
-    : sourceWordOffset(sourceSelection.fullSource, sourceSelection.head, direction);
+  const head = sourceWordOffset(sourceSelection.fullSource, sourceSelection.head, direction);
   return {
     ...sourceSelection,
     anchor: extend ? sourceSelection.anchor : head,
@@ -4294,31 +4329,6 @@ function continuousSourceEditor(
     }
     return nearest;
   };
-  const caretTargetPoint = (direction) => {
-    const style = getComputedStyle(editor);
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("2d");
-    if (!context) return null;
-    context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-    const rect = editor.getBoundingClientRect();
-    const caret = editor.selectionStart ?? 0;
-    const beforeCaret = editor.value.slice(0, caret);
-    const lineStart = beforeCaret.lastIndexOf("\n") + 1;
-    const lineText = editor.value.slice(lineStart, caret);
-    const lineIndex = beforeCaret.slice(0, lineStart).split("\n").length - 1;
-    const textWidth = context.measureText(lineText).width;
-    const borderLeft = Number.parseFloat(style.borderLeftWidth || "0");
-    const paddingLeft = Number.parseFloat(style.paddingLeft || "0");
-    const borderTop = Number.parseFloat(style.borderTopWidth || "0");
-    const paddingTop = Number.parseFloat(style.paddingTop || "0");
-    const lineHeight = Number.parseFloat(style.lineHeight || "")
-      || Number.parseFloat(style.fontSize || "16") * 1.5;
-    const lineTop = rect.top + borderTop + paddingTop + lineIndex * lineHeight - editor.scrollTop;
-    return {
-      left: rect.left + borderLeft + paddingLeft + textWidth - editor.scrollLeft,
-      top: direction === "up" ? lineTop : lineTop + lineHeight
-    };
-  };
   let finished = false;
   let blurTimer = 0;
   let pointerDragAnchor = null;
@@ -4777,7 +4787,10 @@ function continuousSourceEditor(
           event.altKey || event.ctrlKey || event.metaKey,
           editor.selectionDirection
         );
-    const localSelection = lineJumpEdge || wordJumpDirection || boundarySelectionDirection
+    const localSelection = lineJumpEdge
+      || wordJumpDirection
+      || verticalDirection
+      || boundarySelectionDirection
       ? sourceInputSelection(
           editor.selectionStart ?? 0,
           editor.selectionEnd ?? editor.selectionStart ?? 0,
@@ -4794,7 +4807,6 @@ function continuousSourceEditor(
     ) {
       event.preventDefault();
       event.stopPropagation();
-      const targetPoint = verticalDirection ? caretTargetPoint(verticalDirection) : null;
       finishKeyboardHandoff(true, (mapping) => {
         if (lineJumpEdge) {
           onLineJump(
@@ -4812,7 +4824,7 @@ function continuousSourceEditor(
           );
         } else if (boundaryDirection) onBoundaryNavigate(boundaryDirection, mapping);
         else if (boundaryDeleteDirection) onBoundaryDelete(boundaryDeleteDirection, mapping);
-        else if (verticalDirection) onVerticalNavigate(verticalDirection, targetPoint, mapping);
+        else if (verticalDirection) onVerticalNavigate(verticalDirection, localSelection, mapping);
         else {
           onBoundarySelect(
             boundarySelectionDirection,
@@ -5071,47 +5083,6 @@ function textOffsetAtPoint(root, event) {
   } catch {
     return null;
   }
-}
-
-export function verticalDocumentPositionFromGeometry(view, point, direction) {
-  if (!point) return null;
-  const ownerDocument = view.dom.ownerDocument || document;
-  const walker = ownerDocument.createTreeWalker(view.dom, 4);
-  let best = null;
-
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    const parent = node.parentElement;
-    if (parent?.closest("button, input, textarea, .katex, .cm-editor, [contenteditable='false']")) continue;
-    const text = node.nodeValue || "";
-    for (let index = 0; index < text.length; index += 1) {
-      const range = ownerDocument.createRange();
-      range.setStart(node, index);
-      range.setEnd(node, index + 1);
-      const rect = range.getBoundingClientRect();
-      if (!rect.height) continue;
-      const verticalDistance = direction === "up"
-        ? point.top - rect.bottom
-        : rect.top - point.top;
-      if (verticalDistance < 1) continue;
-
-      const edges = [
-        { offset: index, x: rect.left, assoc: -1 },
-        { offset: index + 1, x: rect.right, assoc: 1 }
-      ];
-      for (const edge of edges) {
-        let position;
-        try {
-          position = view.posAtDOM(node, edge.offset, edge.assoc);
-        } catch {
-          continue;
-        }
-        const score = verticalDistance * 1000 + Math.abs(point.left - edge.x);
-        if (!best || score < best.score) best = { position, score };
-      }
-    }
-  }
-
-  return best?.position ?? null;
 }
 
 export function enclosingCodeBlock(doc, position) {
@@ -6102,6 +6073,119 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     return true;
   };
 
+  const navigateExactSourceSelection = (view, event) => {
+    if (!view?.editable || activeSourceControl?.element?.isConnected) return false;
+    const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+    if (!sourceSelection) return false;
+    const serializer = ctx.get(serializerCtx);
+
+    if (sourceDocumentJumpEdge(event)) {
+      return applyDocumentSourceJump(view, event, serializer);
+    }
+
+    const wordDirection = event.altKey
+      && !event.ctrlKey
+      && !event.metaKey
+      && ["ArrowLeft", "ArrowRight"].includes(event.key)
+      ? event.key === "ArrowLeft" ? "backward" : "forward"
+      : null;
+    if (wordDirection) {
+      const next = sourceSelectionWordJump(
+        sourceSelection,
+        wordDirection,
+        Boolean(event.shiftKey)
+      );
+      if (
+        next.anchor === next.head
+        && activateDocumentSourceOffset(
+          view,
+          next,
+          next.head,
+          wordDirection,
+          serializer
+        )
+      ) return true;
+      dispatchFocusedSourceSelection(
+        view,
+        view.state.tr.setMeta(markdownSyntaxKey, {
+          action: "source-selection",
+          sourceSelection: next
+        })
+      );
+      return true;
+    }
+
+    const lineEdge = sourceLineJumpEdge(event);
+    if (lineEdge) {
+      const next = sourceSelectionLineJump(
+        sourceSelection,
+        lineEdge,
+        Boolean(event.shiftKey)
+      );
+      const direction = lineEdge === "start" ? "backward" : "forward";
+      if (
+        next.anchor === next.head
+        && activateDocumentSourceOffset(view, next, next.head, direction, serializer)
+      ) return true;
+      dispatchFocusedSourceSelection(
+        view,
+        view.state.tr.setMeta(markdownSyntaxKey, {
+          action: "source-selection",
+          sourceSelection: next
+        })
+      );
+      return true;
+    }
+
+    if (
+      event.altKey
+      || event.ctrlKey
+      || event.metaKey
+      || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
+    ) return false;
+    const motion = event.key === "ArrowLeft"
+      ? "backward"
+      : event.key === "ArrowRight"
+        ? "forward"
+        : event.key === "ArrowUp" ? "up" : "down";
+    const direction = ["backward", "up"].includes(motion) ? "backward" : "forward";
+
+    if (event.shiftKey) {
+      const next = moveSourceSelectionHead(sourceSelection, motion);
+      if (
+        next.head === next.anchor
+        && activateDocumentSourceOffset(view, next, next.head, direction, serializer)
+      ) return true;
+      dispatchFocusedSourceSelection(
+        view,
+        view.state.tr.setMeta(markdownSyntaxKey, {
+          action: "source-selection",
+          sourceSelection: next
+        })
+      );
+      return true;
+    }
+
+    const collapsed = sourceSelection.anchor === sourceSelection.head;
+    const moved = ["up", "down"].includes(motion)
+      ? sourceSelectionVerticalJump(sourceSelection, motion)
+      : collapsed
+        ? moveSourceSelectionHead(sourceSelection, motion)
+        : null;
+    const offset = moved
+      ? moved.head
+      : direction === "backward"
+        ? Math.min(sourceSelection.anchor, sourceSelection.head)
+        : Math.max(sourceSelection.anchor, sourceSelection.head);
+    return activateDocumentSourceOffset(
+      view,
+      moved || sourceSelection,
+      offset,
+      direction,
+      serializer
+    );
+  };
+
   return new Plugin({
     key: markdownSyntaxKey,
     filterTransaction(transaction, state) {
@@ -6318,6 +6402,22 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         event.preventDefault();
         event.stopImmediatePropagation();
       };
+      const captureExactNavigation = (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        const currentView = editorView || view;
+        if (!target || !currentView.dom.contains(target)) return;
+        if (target?.closest("button, input, select, textarea, .cm-content, .tether-continuous-source")) {
+          return;
+        }
+        if (!navigateExactSourceSelection(currentView, event)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      };
+      // ProseMirror's virtual-cursor plugin can consume arrows during document
+      // capture before a listener on the editor root receives them. Own exact
+      // physical source ranges one level earlier so hidden Markdown bytes keep
+      // normal text-editor navigation semantics.
+      const navigationWindow = view.dom.ownerDocument?.defaultView;
       const captureSourceHandoff = (event) => {
         if (!view.editable) return;
         protectedExactSource = null;
@@ -6336,6 +6436,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         });
       };
       view.dom.addEventListener("keydown", captureExactDeletion, true);
+      navigationWindow?.addEventListener("keydown", captureExactNavigation, true);
       view.dom.addEventListener("copy", captureExactClipboard, true);
       view.dom.addEventListener("cut", captureExactClipboard, true);
       view.dom.addEventListener("mousedown", captureSourceHandoff, true);
@@ -6345,6 +6446,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         },
         destroy() {
           view.dom.removeEventListener("keydown", captureExactDeletion, true);
+          navigationWindow?.removeEventListener("keydown", captureExactNavigation, true);
           view.dom.removeEventListener("copy", captureExactClipboard, true);
           view.dom.removeEventListener("cut", captureExactClipboard, true);
           view.dom.removeEventListener("mousedown", captureSourceHandoff, true);
@@ -6674,15 +6776,21 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                   ? "up"
                   : "down";
             const direction = ["backward", "up"].includes(motion) ? "backward" : "forward";
-            const offset = sourceSelection.anchor === sourceSelection.head
-              ? moveSourceSelectionHead(sourceSelection, motion).head
+            const collapsed = sourceSelection.anchor === sourceSelection.head;
+            const moved = ["up", "down"].includes(motion)
+              ? sourceSelectionVerticalJump(sourceSelection, motion)
+              : collapsed
+                ? moveSourceSelectionHead(sourceSelection, motion)
+                : null;
+            const offset = moved
+              ? moved.head
               : direction === "backward"
                 ? Math.min(sourceSelection.anchor, sourceSelection.head)
                 : Math.max(sourceSelection.anchor, sourceSelection.head);
             event.preventDefault();
             activateDocumentSourceOffset(
               _view,
-              sourceSelection,
+              moved || sourceSelection,
               offset,
               direction,
               ctx.get(serializerCtx)
@@ -7295,27 +7403,42 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           }
           editorView.focus();
         };
-        const navigateVertically = (direction, point, mapping = null) => {
+        const navigateVertically = (direction, localSelection, mapping = null) => {
           if (!editorView?.dom.isConnected) return;
-          const assoc = direction === "up" ? -1 : 1;
-          const fallbackPosition = mappedPosition(
-            mapping,
-            direction === "up" ? unit.from : unit.to,
-            assoc
+          const mappedUnit = {
+            ...unit,
+            from: Math.max(
+              0,
+              Math.min(mappedPosition(mapping, unit.from, -1), editorView.state.doc.content.size)
+            ),
+            to: Math.max(
+              0,
+              Math.min(mappedPosition(mapping, unit.to, 1), editorView.state.doc.content.size)
+            )
+          };
+          const documentSource = documentSourceSegments(editorView.state, serializer);
+          const unitStart = documentSourceUnitStartOffset(
+            editorView.state,
+            mappedUnit,
+            serializer
           );
-          const geometryPosition = verticalDocumentPositionFromGeometry(editorView, point, direction);
-          const hit = geometryPosition == null && point ? editorView.posAtCoords(point) : null;
-          const position = Math.max(
-            0,
-            Math.min(geometryPosition ?? hit?.pos ?? fallbackPosition, editorView.state.doc.content.size)
+          const selection = documentSource && Number.isFinite(unitStart)
+            ? {
+                anchor: unitStart + localSelection.anchor,
+                head: unitStart + localSelection.head,
+                fullSource: documentSource.fullSource,
+                boundary: direction === "up" ? mappedUnit.from : mappedUnit.to
+              }
+            : null;
+          const next = sourceSelectionVerticalJump(selection, direction);
+          if (!next) return;
+          activateDocumentSourceOffset(
+            editorView,
+            next,
+            next.head,
+            direction === "up" ? "backward" : "forward",
+            serializer
           );
-          editorView.dispatch(
-            editorView.state.tr
-              .setSelection(Selection.near(editorView.state.doc.resolve(position), assoc))
-              .setMeta(markdownSyntaxKey, "close")
-              .scrollIntoView()
-          );
-          editorView.focus();
         };
         const selectFromBoundary = (direction, localSelection, mapping = null) => {
           if (!editorView?.dom.isConnected) return;
