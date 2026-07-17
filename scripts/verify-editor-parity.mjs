@@ -1531,6 +1531,91 @@ async function verifySourceLineDeletionHistory() {
   await stopSession();
 }
 
+async function verifySourceControlSelectAllHistory() {
+  const source = "**bold**";
+  const markdown = `Before ${source} after.\n`;
+  const editedMarkdown = "Before **boXld** after.\n";
+  const replacement = "Replacement";
+  const save = async (expected) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(expected);
+  };
+  const waitForFullSourceSelection = async (expected, message) => {
+    await waitFor(
+      () => evaluate(`(() => {
+        const selection = document.querySelector(".ProseMirror")?.tetherGetActiveSourceSelection?.();
+        return selection?.fullSource === ${JSON.stringify(expected)}
+          && Math.min(selection.anchor, selection.head) === 0
+          && Math.max(selection.anchor, selection.head) === ${expected.length};
+      })()`),
+      message
+    );
+  };
+
+  await startSession(markdown, "Before ");
+  await placeCaretInText("Before ", "Before ".length - 2);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === source,
+    "Strong source did not activate before Select All"
+  );
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(4, 4);
+    return Boolean(control);
+  })()`);
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "**boXld**",
+    "Inline source edit did not settle before Select All"
+  );
+  await dispatchKey({ key: "a", code: "KeyA", virtualKeyCode: 65, modifiers: 4 });
+  await waitForFullSourceSelection(
+    editedMarkdown,
+    "Inline-source Select All did not claim the edited physical Markdown document"
+  );
+  const copiedInline = await dispatchCopyAndCaptureText();
+  if (copiedInline !== editedMarkdown) {
+    throw new Error(
+      `Inline-source Select All Copy emitted ${JSON.stringify(copiedInline)} instead of ${JSON.stringify(editedMarkdown)}`
+    );
+  }
+  await waitForSaveState(false);
+  await save(editedMarkdown);
+  await cdp.send("Input.insertText", { text: replacement });
+  await waitForSaveState(false);
+  await save(replacement);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(editedMarkdown);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(replacement);
+  await stopSession();
+
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("start");
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource,
+    "Fenced source did not activate before Select All"
+  );
+  await dispatchKey({ key: "a", code: "KeyA", virtualKeyCode: 65, modifiers: 4 });
+  await waitForFullSourceSelection(
+    codeFixture,
+    "Block-source Select All did not claim the complete physical Markdown document"
+  );
+  const copiedBlock = await dispatchCopyAndCaptureText();
+  if (copiedBlock !== codeFixture) {
+    throw new Error(
+      `Block-source Select All Copy emitted ${JSON.stringify(copiedBlock)} instead of ${JSON.stringify(codeFixture)}`
+    );
+  }
+  await stopSession();
+}
+
 async function focusCodeBoundary(edge) {
   await waitFor(
     () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .cm-content"))`),
@@ -3508,6 +3593,11 @@ async function verifyCodeLanguagePickerSourceFidelity() {
 }
 
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "source-control-select-all") {
+    await verifySourceControlSelectAllHistory();
+    console.log("Verified temporary Markdown source Select All owns the complete physical document.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "source-line-delete") {
     await verifySourceLineDeletionHistory();
     console.log("Verified hidden line deletion follows exact physical Markdown line bounds.");
@@ -3739,6 +3829,7 @@ async function run() {
   await verifyInlineSourceTabHistory();
   await verifySourceWordDeletionHistory();
   await verifySourceLineDeletionHistory();
+  await verifySourceControlSelectAllHistory();
   await verifyCodeBoundaryNavigation();
   await verifyCodeBoundarySelection();
   await verifyCodeJumpNavigation();

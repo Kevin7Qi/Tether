@@ -17,6 +17,7 @@ import {
   codeContentOffsetAtSourceOffset,
   codeOuterHistoryDirection,
   isEditorHistoryShortcut,
+  isEditorSelectAllShortcut,
   tetherCodeViewForElement
 } from "./codeEditor.js";
 import { decodedMarkdownSourceOffset, sourceTabEdit } from "./sourceEditing.js";
@@ -4173,6 +4174,7 @@ function continuousSourceEditor(
   onWordJump,
   onLineJump,
   onDocumentJump,
+  onDocumentSelectAll,
   onSourceModifierDelete,
   onInlineEnter,
   onInlineMultilinePaste,
@@ -4660,6 +4662,12 @@ function continuousSourceEditor(
         event.stopImmediatePropagation();
         return;
       }
+    }
+    if (isEditorSelectAllShortcut(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      finishKeyboardHandoff(true, () => onDocumentSelectAll());
+      return;
     }
     const lineDeleteDirection = sourceLineDeleteDirection(event);
     const wordDeleteDirection = lineDeleteDirection ? null : sourceWordDeleteDirection(event);
@@ -7441,6 +7449,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             baseOffset + localSelection.anchor
           );
         };
+        const selectAllFromSource = () => {
+          if (!editorView?.dom.isConnected) return;
+          activateDocumentSourceSelection(
+            editorView,
+            new AllSelection(editorView.state.doc),
+            serializer
+          );
+        };
         const lineJumpFromSource = (
           edge,
           localSelection,
@@ -7789,6 +7805,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           wordJumpFromSource,
           lineJumpFromSource,
           jumpFromSource,
+          selectAllFromSource,
           deleteModifierFromSource,
           insertLineBreakFromInlineSource,
           pasteMultilineFromInlineSource,
