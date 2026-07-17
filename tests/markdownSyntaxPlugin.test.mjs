@@ -67,10 +67,14 @@ import {
   sourceControlInitialHistoryChange,
   sourceControlClipboardEdit,
   sourceControlInputHistoryStep,
+  sourceControlLineDeletionEdit,
   sourceControlSaveFocus,
   sourceControlWordDeletionEdit,
   sourceEditCaretOffset,
   sourceLineEndingAt,
+  sourceLineDeleteDirection,
+  sourceLineDeleteOffset,
+  sourceLineDeletionTargetEdit,
   sourceLineSelectionAcrossUnitBoundary,
   sourceOffsetAfterCharacter,
   sourceBoundarySelectionRange,
@@ -93,6 +97,7 @@ import {
   sourceSelectionHasAdjacentBlocks,
   sourceSelectionSpansDocumentUnits,
   sourceSelectionLineJump,
+  sourceSelectionLineDelete,
   sourceSelectionRangeAfterMotion,
   sourceSelectionTabEdit,
   sourceSelectionText,
@@ -101,6 +106,7 @@ import {
   sourceVerticalOffset,
   sourceWordJumpTarget,
   sourceWordDeleteDirection,
+  sourceWordDeleteOffset,
   sourceWordDeletionTargetEdit,
   sourceWordOffset,
   sourceWordSelectionRange,
@@ -2761,6 +2767,11 @@ test("word deletion shortcuts transform exact physical source ranges", () => {
   assert.equal(sourceWordDeleteDirection({ key: "Backspace", metaKey: true }), null);
   assert.equal(sourceWordDeleteDirection({ key: "Backspace", altKey: true, ctrlKey: true }), null);
   assert.equal(sourceWordDeleteDirection({ key: "Backspace" }), null);
+  assert.equal(sourceWordDeleteOffset("one two", 7, "backward"), 4);
+  assert.equal(sourceWordDeleteOffset("one ", 4, "backward"), 0);
+  assert.equal(sourceWordDeleteOffset("one  ", 5, "backward"), 3);
+  assert.equal(sourceWordDeleteOffset("one\r\ntwo", 5, "backward"), 3);
+  assert.equal(sourceWordDeleteOffset("one\r\ntwo", 3, "forward"), 5);
 
   const fullSource = "Before **bold** after.\n";
   const unitStart = fullSource.indexOf("**bold**");
@@ -2804,6 +2815,39 @@ test("word deletion shortcuts transform exact physical source ranges", () => {
   }, "backward").changed, false);
 });
 
+test("line deletion shortcuts retain physical line-ending boundaries", () => {
+  assert.equal(sourceLineDeleteDirection({ key: "Backspace", metaKey: true }), "backward");
+  assert.equal(sourceLineDeleteDirection({ key: "Delete", metaKey: true }), "forward");
+  assert.equal(sourceLineDeleteDirection({ key: "Backspace", ctrlKey: true }), null);
+  assert.equal(sourceLineDeleteDirection({ key: "Backspace", metaKey: true, shiftKey: true }), null);
+  assert.equal(sourceLineDeleteOffset("one two\r\nthree", 7, "backward"), 0);
+  assert.equal(sourceLineDeleteOffset("one two\r\nthree", 0, "backward"), 0);
+  assert.equal(sourceLineDeleteOffset("one two\r\nthree", 9, "backward"), 7);
+  assert.equal(sourceLineDeleteOffset("one two\r\nthree", 3, "forward"), 7);
+  assert.equal(sourceLineDeleteOffset("one two\r\nthree", 7, "forward"), 9);
+
+  const fullSource = "Before **bold** after.\r\nNext";
+  const caret = fullSource.indexOf("bold") + 2;
+  const backward = sourceSelectionLineDelete({
+    anchor: caret,
+    head: caret,
+    fullSource,
+    boundary: 8
+  }, "backward");
+  assert.equal(backward.afterSelection.fullSource, "ld** after.\r\nNext");
+  assert.equal(backward.afterSelection.head, 0);
+
+  const lineEnd = fullSource.indexOf("\r\n");
+  const forward = sourceSelectionLineDelete({
+    anchor: lineEnd,
+    head: lineEnd,
+    fullSource,
+    boundary: 8
+  }, "forward");
+  assert.equal(forward.afterSelection.fullSource, "Before **bold** after.Next");
+  assert.equal(forward.afterSelection.head, lineEnd);
+});
+
 test("word deletion enters and crosses rendered Markdown source units exactly", () => {
   const strong = schema.marks.strong.create();
   const doc = schema.node("doc", null, [schema.node("paragraph", null, [
@@ -2845,6 +2889,21 @@ test("word deletion enters and crosses rendered Markdown source units exactly", 
   assert.equal(fromControl.afterSelection.head, 0);
   assert.ok(fromControl.transaction?.docChanged);
 
+  const lineFromControl = sourceControlLineDeletionEdit(
+    state,
+    unit,
+    "**marked**",
+    "**marked**",
+    { anchor: 5, head: 5 },
+    "backward",
+    parser,
+    serializer
+  );
+  assert.equal(lineFromControl.changed, true);
+  assert.equal(lineFromControl.afterSelection.fullSource, "ked** after.\n");
+  assert.equal(lineFromControl.afterSelection.head, 0);
+  assert.ok(lineFromControl.transaction?.docChanged);
+
   const boundaryState = EditorState.create({
     doc,
     selection: TextSelection.create(doc, "Before ".length + 1)
@@ -2861,6 +2920,16 @@ test("word deletion enters and crosses rendered Markdown source units exactly", 
   );
   assert.equal(fromRenderedBoundary.afterSelection.head, "Before ".length);
   assert.ok(fromRenderedBoundary.transaction?.docChanged);
+
+  const lineFromRenderedBoundary = sourceLineDeletionTargetEdit(
+    boundaryState,
+    "forward",
+    parser,
+    serializer
+  );
+  assert.equal(lineFromRenderedBoundary.afterSelection.fullSource, "Before \n");
+  assert.equal(lineFromRenderedBoundary.afterSelection.head, "Before ".length);
+  assert.ok(lineFromRenderedBoundary.transaction?.docChanged);
 });
 
 test("an existing code selection keeps its source anchor while crossing fence lines", () => {

@@ -765,6 +765,64 @@ export function sourceWordOffset(source, offset, direction) {
   return next;
 }
 
+export function sourceWordDeleteOffset(source, offset, direction) {
+  const value = String(source ?? "");
+  const bounded = Math.max(0, Math.min(value.length, Number(offset) || 0));
+  if (!value || !["backward", "forward"].includes(direction)) return bounded;
+  const line = sourceLineBounds(value, bounded);
+  if (direction === "backward" && bounded === line.start) {
+    return sourceOffsetAfterCharacter(value, bounded, "backward");
+  }
+  if (direction === "forward" && bounded === line.end) {
+    return sourceOffsetAfterCharacter(value, bounded, "forward");
+  }
+
+  const boundaries = sourceCaretBoundaries(value)
+    .filter((boundary) => boundary >= line.start && boundary <= line.end);
+  const segments = boundaries.slice(0, -1).map((start, index) => {
+    const end = boundaries[index + 1];
+    const segment = value.slice(start, end);
+    return { start, end, value: segment, kind: sourceCharacterKind(segment) };
+  });
+  let position = bounded;
+  let kind = null;
+  if (direction === "backward") {
+    let index = segments.findLastIndex((segment) => segment.start < bounded);
+    while (index >= 0) {
+      const segment = segments[index];
+      if (kind != null && segment.kind !== kind) break;
+      if (segment.value !== " " || position !== bounded) kind = segment.kind;
+      position = segment.start;
+      index -= 1;
+    }
+    return position;
+  }
+  let index = segments.findIndex((segment) => segment.end > bounded);
+  while (index >= 0 && index < segments.length) {
+    const segment = segments[index];
+    if (kind != null && segment.kind !== kind) break;
+    if (segment.value !== " " || position !== bounded) kind = segment.kind;
+    position = segment.end;
+    index += 1;
+  }
+  return position;
+}
+
+export function sourceLineDeleteOffset(source, offset, direction) {
+  const value = String(source ?? "");
+  const bounded = Math.max(0, Math.min(value.length, Number(offset) || 0));
+  if (!value || !["backward", "forward"].includes(direction)) return bounded;
+  const line = sourceLineBounds(value, bounded);
+  if (direction === "backward") {
+    return bounded > line.start
+      ? line.start
+      : sourceOffsetAfterCharacter(value, bounded, "backward");
+  }
+  return bounded < line.end
+    ? line.end
+    : sourceOffsetAfterCharacter(value, bounded, "forward");
+}
+
 export function sourceWordSelectionRange(anchor, head) {
   return {
     start: Math.min(anchor, head),
@@ -904,6 +962,49 @@ export function sourceWordDeletionTargetEdit(
     historySelection,
     editSelection: wordEdit.deletionSelection,
     afterSelection: wordEdit.afterSelection
+  } : null;
+}
+
+export function sourceLineDeletionTargetEdit(
+  state,
+  direction,
+  parser,
+  serializer
+) {
+  if (
+    !state?.selection?.empty
+    || !["backward", "forward"].includes(direction)
+    || typeof parser !== "function"
+    || typeof serializer !== "function"
+  ) return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const currentOffset = documentSourceOffsetAtPosition(
+    state,
+    state.selection.head,
+    serializer,
+    direction === "backward" ? "forward" : "backward"
+  );
+  if (!documentSource || !Number.isFinite(currentOffset)) return null;
+  const historySelection = {
+    anchor: currentOffset,
+    head: currentOffset,
+    fullSource: documentSource.fullSource,
+    boundary: state.selection.head
+  };
+  const lineEdit = sourceSelectionLineDelete(historySelection, direction);
+  if (!lineEdit?.changed) return null;
+  const transaction = replaceSourceSelectionTransaction(
+    state,
+    lineEdit.deletionSelection,
+    "",
+    parser,
+    lineEdit.afterSelection.head
+  );
+  return transaction ? {
+    transaction,
+    historySelection,
+    editSelection: lineEdit.deletionSelection,
+    afterSelection: lineEdit.afterSelection
   } : null;
 }
 
@@ -1608,6 +1709,18 @@ export function sourceWordDeleteDirection(event) {
   ) return null;
   const wordModifier = Boolean(event.altKey) !== Boolean(event.ctrlKey);
   if (!wordModifier) return null;
+  return event.key === "Backspace" ? "backward" : "forward";
+}
+
+export function sourceLineDeleteDirection(event) {
+  if (
+    !event
+    || !event.metaKey
+    || event.altKey
+    || event.ctrlKey
+    || event.shiftKey
+    || !["Backspace", "Delete"].includes(event.key)
+  ) return null;
   return event.key === "Backspace" ? "backward" : "forward";
 }
 
@@ -3490,15 +3603,16 @@ export function sourceSelectionWordJump(sourceSelection, direction, extend = fal
   };
 }
 
-export function sourceSelectionWordDelete(sourceSelection, direction) {
+function sourceSelectionModifierDelete(sourceSelection, direction, offsetAtCaret) {
   if (
     !sourceSelection
     || typeof sourceSelection.fullSource !== "string"
     || !["backward", "forward"].includes(direction)
+    || typeof offsetAtCaret !== "function"
   ) return null;
   const collapsed = sourceSelection.anchor === sourceSelection.head;
   const target = collapsed
-    ? sourceWordOffset(sourceSelection.fullSource, sourceSelection.head, direction)
+    ? offsetAtCaret(sourceSelection.fullSource, sourceSelection.head, direction)
     : null;
   const deletionSelection = collapsed
     ? {
@@ -3536,6 +3650,22 @@ export function sourceSelectionWordDelete(sourceSelection, direction) {
       verticalColumn: null
     }
   };
+}
+
+export function sourceSelectionWordDelete(sourceSelection, direction) {
+  return sourceSelectionModifierDelete(
+    sourceSelection,
+    direction,
+    sourceWordDeleteOffset
+  );
+}
+
+export function sourceSelectionLineDelete(sourceSelection, direction) {
+  return sourceSelectionModifierDelete(
+    sourceSelection,
+    direction,
+    sourceLineDeleteOffset
+  );
 }
 
 export function sourceSelectionTabEdit(sourceSelection, outdent = false) {
@@ -3779,7 +3909,7 @@ export function inlineSourceTabEdit(
   };
 }
 
-export function sourceControlWordDeletionEdit(
+function sourceControlModifierDeletionEdit(
   state,
   unit,
   originalSource,
@@ -3787,7 +3917,8 @@ export function sourceControlWordDeletionEdit(
   localSelection,
   direction,
   parser,
-  serializer
+  serializer,
+  mode
 ) {
   if (
     !state?.doc
@@ -3796,6 +3927,7 @@ export function sourceControlWordDeletionEdit(
     || typeof value !== "string"
     || !localSelection
     || !["backward", "forward"].includes(direction)
+    || !["word", "line"].includes(mode)
     || typeof parser !== "function"
     || typeof serializer !== "function"
   ) return null;
@@ -3820,10 +3952,12 @@ export function sourceControlWordDeletionEdit(
     boundary: unit.from,
     verticalColumn: null
   };
-  const wordEdit = sourceSelectionWordDelete(currentSelection, direction);
-  if (!wordEdit) return null;
+  const modifierEdit = mode === "line"
+    ? sourceSelectionLineDelete(currentSelection, direction)
+    : sourceSelectionWordDelete(currentSelection, direction);
+  if (!modifierEdit) return null;
   const afterSelection = {
-    ...wordEdit.afterSelection,
+    ...modifierEdit.afterSelection,
     boundary: unit.from
   };
   if (afterSelection.fullSource === documentSource.fullSource) {
@@ -3850,6 +3984,14 @@ export function sourceControlWordDeletionEdit(
     editSelection: historySelection,
     afterSelection
   };
+}
+
+export function sourceControlWordDeletionEdit(...args) {
+  return sourceControlModifierDeletionEdit(...args, "word");
+}
+
+export function sourceControlLineDeletionEdit(...args) {
+  return sourceControlModifierDeletionEdit(...args, "line");
 }
 
 export function sourceClipboardEdit(
@@ -4031,7 +4173,7 @@ function continuousSourceEditor(
   onWordJump,
   onLineJump,
   onDocumentJump,
-  onSourceWordDelete,
+  onSourceModifierDelete,
   onInlineEnter,
   onInlineMultilinePaste,
   onInlineTab,
@@ -4519,8 +4661,10 @@ function continuousSourceEditor(
         return;
       }
     }
-    const wordDeleteDirection = sourceWordDeleteDirection(event);
-    if (wordDeleteDirection) {
+    const lineDeleteDirection = sourceLineDeleteDirection(event);
+    const wordDeleteDirection = lineDeleteDirection ? null : sourceWordDeleteDirection(event);
+    const modifierDeleteDirection = lineDeleteDirection || wordDeleteDirection;
+    if (modifierDeleteDirection) {
       const localSelection = sourceInputSelection(
         editor.selectionStart ?? 0,
         editor.selectionEnd ?? editor.selectionStart ?? 0,
@@ -4531,7 +4675,12 @@ function continuousSourceEditor(
       event.stopPropagation();
       finishKeyboardHandoff(
         false,
-        () => onSourceWordDelete(value, localSelection, wordDeleteDirection)
+        () => onSourceModifierDelete(
+          value,
+          localSelection,
+          modifierDeleteDirection,
+          lineDeleteDirection ? "line" : "word"
+        )
       );
       return;
     }
@@ -4722,6 +4871,21 @@ function continuousSourceEditor(
   requestAnimationFrame(() => {
     if (finished || !editor.isConnected) return;
     resize();
+    // The originating key event publishes this draft immediately, but a
+    // decoration replacement can race the host's draft reconciliation. Once
+    // the surviving control is mounted, publish its current value over a short
+    // bounded settling window so the visible source and saved document cannot
+    // diverge even when reconciliation spans several animation frames.
+    if (initialDeletionHistory) {
+      let remainingDraftFrames = 4;
+      const republishInitialDraft = () => {
+        if (finished || !editor.isConnected || remainingDraftFrames <= 0) return;
+        remainingDraftFrames -= 1;
+        onDraftChange?.(editor.value);
+        if (remainingDraftFrames > 0) requestAnimationFrame(republishInitialDraft);
+      };
+      republishInitialDraft();
+    }
     if (!shouldFocus()) return;
     editor.focus();
     const caret = Math.max(0, Math.min(editor.value.length, startingCaret));
@@ -5731,7 +5895,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     focusExactEditSelection(view);
   };
 
-  const deleteExactSource = (view, direction, word = false) => {
+  const deleteExactSource = (view, direction, mode = "character") => {
     if (
       !view?.editable
       || !["backward", "forward"].includes(direction)
@@ -5747,11 +5911,13 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       : plainTextMarkdownSourceSelection(view.state, serializer);
     const exactSelection = sourceSelection || documentSelection || plainSelection;
     if (exactSelection || sourceNewlineSelectionInfo(view.state)) {
-      const wordEdit = word && exactSelection
+      const modifierEdit = exactSelection && mode === "word"
         ? sourceSelectionWordDelete(exactSelection, direction)
-        : null;
-      if (word && exactSelection && !wordEdit?.changed) return false;
-      const deletionSelection = wordEdit?.deletionSelection || (exactSelection
+        : exactSelection && mode === "line"
+          ? sourceSelectionLineDelete(exactSelection, direction)
+          : null;
+      if (mode !== "character" && exactSelection && !modifierEdit?.changed) return false;
+      const deletionSelection = modifierEdit?.deletionSelection || (exactSelection
         && exactSelection.anchor === exactSelection.head
         ? extendSourceSelection(exactSelection, direction)
         : exactSelection);
@@ -5774,19 +5940,26 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         transaction,
         exactSelection,
         deletionSelection || exactSelection,
-        wordEdit?.afterSelection || null,
+        modifierEdit?.afterSelection || null,
         { isolatedHistory: true }
       );
       return true;
     }
 
-    if (word) {
-      const edit = sourceWordDeletionTargetEdit(
-        view.state,
-        direction,
-        ctx.get(parserCtx),
-        serializer
-      );
+    if (mode === "word" || mode === "line") {
+      const edit = mode === "line"
+        ? sourceLineDeletionTargetEdit(
+            view.state,
+            direction,
+            ctx.get(parserCtx),
+            serializer
+          )
+        : sourceWordDeletionTargetEdit(
+            view.state,
+            direction,
+            ctx.get(parserCtx),
+            serializer
+          );
       if (!edit) return false;
       dispatchExactEdit(
         view,
@@ -6118,20 +6291,22 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         }
       };
       const captureExactDeletion = (event) => {
-        const wordDirection = sourceWordDeleteDirection(event);
+        const lineDirection = sourceLineDeleteDirection(event);
+        const wordDirection = lineDirection ? null : sourceWordDeleteDirection(event);
         const plainDeletion = !event.altKey
           && !event.ctrlKey
           && !event.metaKey
           && !event.shiftKey
           && ["Backspace", "Delete"].includes(event.key);
-        if (!wordDirection && !plainDeletion) return;
+        if (!lineDirection && !wordDirection && !plainDeletion) return;
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest("button, input, select, textarea, .cm-content, .tether-continuous-source")) {
           return;
         }
-        const direction = wordDirection
+        const direction = lineDirection || wordDirection
           || (event.key === "Backspace" ? "backward" : "forward");
-        if (!deleteExactSource(view, direction, Boolean(wordDirection))) return;
+        const mode = lineDirection ? "line" : wordDirection ? "word" : "character";
+        if (!deleteExactSource(view, direction, mode)) return;
         event.preventDefault();
         event.stopImmediatePropagation();
       };
@@ -7517,9 +7692,9 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             { isolatedHistory: true }
           );
         };
-        const deleteWordFromSource = (value, localSelection, direction) => {
+        const deleteModifierFromSource = (value, localSelection, direction, mode) => {
           if (!editorView?.dom.isConnected) return;
-          const edit = sourceControlWordDeletionEdit(
+          const edit = sourceControlModifierDeletionEdit(
             editorView.state,
             unit,
             source,
@@ -7527,7 +7702,8 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             localSelection,
             direction,
             ctx.get(parserCtx),
-            serializer
+            serializer,
+            mode
           );
           if (!edit) return;
           if (!edit.changed) {
@@ -7613,7 +7789,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           wordJumpFromSource,
           lineJumpFromSource,
           jumpFromSource,
-          deleteWordFromSource,
+          deleteModifierFromSource,
           insertLineBreakFromInlineSource,
           pasteMultilineFromInlineSource,
           tabFromInlineSource,

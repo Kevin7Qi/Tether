@@ -102,7 +102,7 @@ let remoteDebugPort = null;
 let cdpTargetId = null;
 let electronOutput = "";
 let sessionWindowCount = 0;
-const maxWindowsPerElectronSession = 8;
+const maxWindowsPerElectronSession = 1;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -553,9 +553,9 @@ async function connectRendererTarget(excludedTargetId = null) {
 
 async function startSession(fixture, visibleText) {
   // Chromium retains renderer/process caches even after an offscreen window is
-  // destroyed. Rotate the already background-only Electron executable before
-  // enough fixtures accumulate to leak line-ending or render state across
-  // otherwise fresh windows. LSBackgroundOnly keeps these launches invisible.
+  // destroyed. Give every fixture an isolated background-only Electron process
+  // so newline, clipboard, and decoration state cannot leak between checks.
+  // LSBackgroundOnly keeps these launches invisible.
   if (child && sessionWindowCount >= maxWindowsPerElectronSession) {
     await stopSession(true);
   }
@@ -607,9 +607,9 @@ async function startSession(fixture, visibleText) {
     await connectRendererTarget(outgoingTargetId);
   }
 
-  // Reuse each background Electron process for a bounded fixture batch. Every
-  // fixture still gets a fresh offscreen BrowserWindow and editor history;
-  // process rotations use the background-only bundle and never activate macOS.
+  // Every fixture gets a clean offscreen BrowserWindow, renderer process, and
+  // editor history. Process rotations use the background-only bundle and never
+  // activate macOS.
   await waitFor(
     () => evaluate(`typeof window.remoteMarkdown?.saveLocalSample === "function"`),
     "Tether native sample API did not become ready"
@@ -638,8 +638,8 @@ async function startSession(fixture, visibleText) {
 
 async function stopSession(force = false) {
   // Individual checks call stopSession to document their isolation boundary.
-  // A fresh BrowserWindow supplies ordinary isolation; forced cleanup is used
-  // only for bounded background-process rotation and the outermost teardown.
+  // startSession performs the forced cleanup immediately before the next
+  // fixture, while the outermost teardown cleans up the final process.
   if (!force) return;
   const sessionCdp = cdp;
   const sessionChild = child;
@@ -1444,6 +1444,93 @@ async function verifySourceWordDeletionHistory() {
   await stopSession();
 }
 
+async function verifySourceLineDeletionHistory() {
+  const source = "**bold**";
+  const markdown = `Before ${source} after.\n`;
+  const save = async (expected) => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(expected);
+  };
+  const activateInline = async () => {
+    await startSession(markdown, "Before ");
+    await placeCaretInText("Before ", "Before ".length - 2);
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === source,
+      "Strong source did not activate before line deletion"
+    );
+  };
+
+  await activateInline();
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(4, 4);
+    return Boolean(control);
+  })()`);
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8, modifiers: 4 });
+  await waitForSaveState(false);
+  const linePrefixDeleted = "ld** after.\n";
+  await save(linePrefixDeleted);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(markdown);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(linePrefixDeleted);
+  await stopSession();
+
+  await startSession(markdown, "Before ");
+  await placeCaretInText("Before ", 3);
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46, modifiers: 4 });
+  await waitForSaveState(false);
+  await save("Bef\n");
+  await stopSession();
+
+  const contentStart = codeBlockSource.indexOf("\n") + 1;
+  const lineCaret = contentStart + "const ".length;
+  const lineDeletedBlock = `${codeBlockSource.slice(0, contentStart)}${
+    codeBlockSource.slice(lineCaret)
+  }`;
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("start");
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource,
+    "Fenced source did not activate before line deletion"
+  );
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(${lineCaret}, ${lineCaret});
+    return Boolean(control);
+  })()`);
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(codeFixture.replace(codeBlockSource, lineDeletedBlock));
+  await stopSession();
+
+  const withoutOpeningNewline = `${codeBlockSource.slice(0, contentStart - 1)}${
+    codeBlockSource.slice(contentStart)
+  }`;
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("start");
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource,
+    "Fenced source did not reactivate before boundary word deletion"
+  );
+  await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.setSelectionRange(${contentStart}, ${contentStart});
+    return Boolean(control);
+  })()`);
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8, modifiers: 1 });
+  await waitForSaveState(false);
+  await save(codeFixture.replace(codeBlockSource, withoutOpeningNewline));
+  await stopSession();
+}
+
 async function focusCodeBoundary(edge) {
   await waitFor(
     () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .cm-content"))`),
@@ -1636,7 +1723,15 @@ async function verifyCodeSelectAllEditing() {
   const selectAllFromCode = async () => {
     await focusCodeBoundary("end");
     await dispatchKey({ key: "a", code: "KeyA", virtualKeyCode: 65, modifiers: 4 });
-    await delay(120);
+    await waitFor(
+      () => evaluate(`(() => {
+        const selection = document.querySelector(".ProseMirror")?.tetherGetActiveSourceSelection?.();
+        return selection?.fullSource === ${JSON.stringify(selectAllCodeFixture)}
+          && Math.min(selection.anchor, selection.head) === 0
+          && Math.max(selection.anchor, selection.head) === ${selectAllCodeFixture.length};
+      })()`),
+      "Code-focused Select All did not claim the complete physical Markdown source"
+    );
   };
 
   await startSession(selectAllCodeFixture, codeContent);
@@ -1694,12 +1789,16 @@ async function verifyProseSelectAllEditing() {
   const selectAllFromProse = async () => {
     await placeCaretInText("Intro ", 3);
     await dispatchKey({ key: "a", code: "KeyA", virtualKeyCode: 65, modifiers: 4 });
-    await delay(120);
+    let copiedText = null;
+    await waitFor(async () => {
+      copiedText = await dispatchCopyAndCaptureText();
+      return copiedText === proseSelectAllFixture;
+    }, "Prose-focused Select All did not expose the complete physical Markdown source");
+    return copiedText;
   };
 
   await startSession(proseSelectAllFixture, "Intro bold and *literal*.");
-  await selectAllFromProse();
-  const copiedText = await dispatchCopyAndCaptureText();
+  const copiedText = await selectAllFromProse();
   if (copiedText !== proseSelectAllFixture) {
     throw new Error(
       `Prose-focused Select All Copy emitted ${JSON.stringify(copiedText)} instead of ${JSON.stringify(proseSelectAllFixture)}`
@@ -3409,6 +3508,11 @@ async function verifyCodeLanguagePickerSourceFidelity() {
 }
 
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "source-line-delete") {
+    await verifySourceLineDeletionHistory();
+    console.log("Verified hidden line deletion follows exact physical Markdown line bounds.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "source-word-delete") {
     await verifySourceWordDeletionHistory();
     console.log("Verified hidden word deletion follows exact Markdown source across rendered boundaries.");
@@ -3634,6 +3738,7 @@ async function run() {
   await verifyInlineSourceLineJumps();
   await verifyInlineSourceTabHistory();
   await verifySourceWordDeletionHistory();
+  await verifySourceLineDeletionHistory();
   await verifyCodeBoundaryNavigation();
   await verifyCodeBoundarySelection();
   await verifyCodeJumpNavigation();

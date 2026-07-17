@@ -78,9 +78,24 @@ function sourceSuffix(context, fallbackSource = null) {
 // final newline, CRLF, and deliberate trailing blank lines—stay untouched.
 export function normalizeSerializedMarkdown(markdown, context = null, fallbackSource = null) {
   if (!markdown) return markdown;
-  return sourceSuffix(context, fallbackSource) === "" && markdown.endsWith("\n")
+  const contextSuffix = sourceSuffix(context, fallbackSource);
+  let normalized = contextSuffix === "" && markdown.endsWith("\n")
     ? markdown.slice(0, -1)
     : markdown;
+  if (context && typeof fallbackSource === "string") {
+    const fallbackSuffix = sourceSuffix(fallbackSource);
+    const normalizedContextSuffix = contextSuffix?.replace(/\r\n|\r/g, "\n");
+    const normalizedFallbackSuffix = fallbackSuffix.replace(/\r\n|\r/g, "\n");
+    if (
+      contextSuffix
+      && contextSuffix !== fallbackSuffix
+      && normalizedContextSuffix === normalizedFallbackSuffix
+      && normalized.endsWith(contextSuffix)
+    ) {
+      normalized = `${normalized.slice(0, -contextSuffix.length)}${fallbackSuffix}`;
+    }
+  }
+  return normalized;
 }
 
 export function tetherStringifyOptions(options = {}) {

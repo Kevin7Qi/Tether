@@ -143,6 +143,21 @@ test("serialized edits preserve the source file's exact terminal newline convent
     normalizeSerializedMarkdown(serialize(edited), edited, source),
     "~~~js\nchanged\n~~~\nAfter"
   );
+
+  const softLineSource = "Alpha\r\nBeta\r\n";
+  const normalizedSoftLineDoc = {
+    attrs: { markdownBlockGaps: JSON.stringify(["", "\n"]) },
+    childCount: 1,
+    lastChild: null
+  };
+  assert.equal(
+    normalizeSerializedMarkdown(
+      "AlXpha\r\nBeta\n",
+      normalizedSoftLineDoc,
+      softLineSource
+    ),
+    "AlXpha\r\nBeta\r\n"
+  );
 });
 
 test("root serialization preserves a single source newline through a block edit", () => {
