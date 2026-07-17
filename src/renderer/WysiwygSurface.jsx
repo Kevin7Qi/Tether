@@ -27,6 +27,7 @@ import {
   codeBoundaryNavigationKeyDirection,
   codeBoundarySelectionKeyDirection,
   codeBoundarySourcePosition,
+  codeBoundaryWordJumpDirection,
   codeContentSourcePosition,
   codeDragDocumentRange,
   codeToCodeDragRange,
@@ -641,20 +642,16 @@ export default function WysiwygSurface({
     };
     const handleCodeWordJump = (event) => {
       if (readOnlyRef.current || isSourceInputComposing(event)) return;
-      if (
-        !event.altKey
-        || event.ctrlKey
-        || event.metaKey
-        || !["ArrowLeft", "ArrowRight"].includes(event.key)
-      ) return;
       const target = event.target instanceof Element ? event.target : null;
       const codeView = tetherCodeViewForElement(target);
       const selection = codeView?.state.selection.main;
-      const direction = event.key === "ArrowLeft" ? "backward" : "forward";
-      const atBoundary = direction === "backward"
-        ? selection?.head === 0
-        : selection?.head === codeView?.state.doc.length;
-      if (!codeView || !selection || !atBoundary || (!selection.empty && !event.shiftKey)) return;
+      const direction = codeView
+        ? codeBoundaryWordJumpDirection(codeView.state, event)
+        : null;
+      // Native source editors continue an Option-arrow from the active end of
+      // an existing selection. Do the same when that end is at the visible
+      // code boundary instead of letting CodeMirror merely collapse the range.
+      if (!codeView || !selection || !direction) return;
 
       const block = target?.closest(".milkdown-code-block");
       const view = crepeRef.current?.editor.action((ctx) => ctx.get(editorViewCtx));

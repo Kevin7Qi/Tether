@@ -48,6 +48,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /window\.remoteMarkdown\.resetEditorParity/);
   assert.match(verifier, /window\.localStorage\.clear\(\)/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-selection-movement"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "code-extended-word-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-control-select-all"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-line-delete"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-word-delete"/);
@@ -197,6 +198,7 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(surface, /renderLanguage: tetherCodeLanguageLabel/);
   assert.match(surface, /labelNode\.nodeValue = renderedLanguage/);
   assert.match(surface, /codeBoundaryNavigationKeyDirection/);
+  assert.match(surface, /codeBoundaryWordJumpDirection/);
   assert.match(surface, /codeBoundaryDeletionKeyDirection/);
   assert.match(surface, /codeTabEdit/);
   assert.match(surface, /emptyCodeEnterSource/);
@@ -378,7 +380,8 @@ test("CodeMirror plain-text paste uses canonical Markdown source history", () =>
 
 test("extended CodeMirror selections continue through physical fence source", () => {
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
-  assert.match(surface, /!selection\.empty && !event\.shiftKey/);
+  assert.match(surface, /codeBoundaryWordJumpDirection\(codeView\.state, event\)/);
+  assert.doesNotMatch(surface, /!selection\.empty && !event\.shiftKey/);
   assert.match(surface, /codeContentSourcePosition\(codeBlock\.position, selection\.anchor\)/);
   assert.match(surface, /if \(!codeSelection\.empty\)[\s\S]*sourceSelectionRangeAfterMotion\(/);
   assert.match(surface, /initialSourceSelection[\s\S]*activateMarkdownSourceAt/);

@@ -1782,6 +1782,61 @@ async function verifyCodeJumpNavigation() {
   await stopSession();
 }
 
+async function verifyCodeExtendedWordNavigation() {
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("start");
+  for (let step = 0; step < 4; step += 1) {
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  }
+  for (let step = 0; step < 4; step += 1) {
+    await dispatchKey({
+      key: "ArrowLeft",
+      code: "ArrowLeft",
+      virtualKeyCode: 37,
+      modifiers: 8
+    });
+  }
+  await dispatchKey({
+    key: "ArrowLeft",
+    code: "ArrowLeft",
+    virtualKeyCode: 37,
+    modifiers: 1
+  });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource
+      && state.selectionStart === 3 && state.selectionEnd === 3,
+    "Option-ArrowLeft from an extended code selection did not continue into the opening fence"
+  );
+  await stopSession();
+
+  await startSession(codeFixture, codeContent);
+  await focusCodeBoundary("end");
+  for (let step = 0; step < 4; step += 1) {
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  }
+  for (let step = 0; step < 4; step += 1) {
+    await dispatchKey({
+      key: "ArrowRight",
+      code: "ArrowRight",
+      virtualKeyCode: 39,
+      modifiers: 8
+    });
+  }
+  await dispatchKey({
+    key: "ArrowRight",
+    code: "ArrowRight",
+    virtualKeyCode: 39,
+    modifiers: 1
+  });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === codeBlockSource
+      && state.selectionStart === codeBlockSource.length
+      && state.selectionEnd === codeBlockSource.length,
+    "Option-ArrowRight from an extended code selection did not continue through the closing fence"
+  );
+  await stopSession();
+}
+
 async function verifyCodeDocumentJumpReplacement() {
   const contentStart = codeBlockSource.indexOf("\n") + 1;
   const contentEnd = contentStart + codeContent.length;
@@ -3729,6 +3784,11 @@ async function run() {
     console.log("Verified code line, word, and document jumps traverse physical fence source.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "code-extended-word-navigation") {
+    await verifyCodeExtendedWordNavigation();
+    console.log("Verified extended code selections continue word navigation through fence source.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-document-jump-replacement") {
     await verifyCodeDocumentJumpReplacement();
     console.log("Verified code document-jump replacement retains exact terminal source and history.");
@@ -3924,6 +3984,7 @@ async function run() {
   await verifyCodeBoundaryNavigation();
   await verifyCodeBoundarySelection();
   await verifyCodeJumpNavigation();
+  await verifyCodeExtendedWordNavigation();
   await verifyCodeDocumentJumpReplacement();
   await verifyCodeSelectAllEditing();
   await verifyProseSelectAllEditing();

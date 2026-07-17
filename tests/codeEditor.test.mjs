@@ -13,6 +13,7 @@ import {
   codeBoundarySelectionKeyDirection,
   codeBoundarySelectionDirection,
   codeBoundarySourcePosition,
+  codeBoundaryWordJumpDirection,
   codeContentSourcePosition,
   codeToCodeDragRange,
   codeDragDocumentRange,
@@ -462,6 +463,38 @@ test("CodeMirror boundary navigation ignores shifted and command-modified arrows
   );
   assert.equal(
     codeBoundaryNavigationKeyDirection(codeState(0), { key: "ArrowLeft", shiftKey: false, metaKey: true }),
+    null
+  );
+});
+
+test("CodeMirror word jumps continue from an extended selection head into fence source", () => {
+  assert.equal(
+    codeBoundaryWordJumpDirection(codeState(0, 10, false), {
+      key: "ArrowLeft",
+      altKey: true
+    }),
+    "backward"
+  );
+  assert.equal(
+    codeBoundaryWordJumpDirection(codeState(10, 10, false), {
+      key: "ArrowRight",
+      altKey: true
+    }),
+    "forward"
+  );
+  assert.equal(
+    codeBoundaryWordJumpDirection(codeState(1, 10, false), {
+      key: "ArrowLeft",
+      altKey: true
+    }),
+    null
+  );
+  assert.equal(
+    codeBoundaryWordJumpDirection(codeState(0), {
+      key: "ArrowLeft",
+      altKey: true,
+      metaKey: true
+    }),
     null
   );
 });

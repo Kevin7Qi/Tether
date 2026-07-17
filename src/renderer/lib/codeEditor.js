@@ -106,6 +106,21 @@ export function codeBoundaryNavigationKeyDirection(state, event) {
   return codeBoundaryNavigationDirection(state, event.key);
 }
 
+export function codeBoundaryWordJumpDirection(state, event) {
+  if (
+    !event?.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || !["ArrowLeft", "ArrowRight"].includes(event.key)
+  ) return null;
+  const ranges = state?.selection?.ranges || [];
+  if (ranges.length !== 1) return null;
+  const head = ranges[0].head;
+  if (event.key === "ArrowLeft" && head === 0) return "backward";
+  if (event.key === "ArrowRight" && head === state.doc.length) return "forward";
+  return null;
+}
+
 export function codeBoundaryDeletionDirection(state, key) {
   const ranges = state?.selection?.ranges || [];
   if (ranges.length !== 1 || !ranges[0].empty) return null;
