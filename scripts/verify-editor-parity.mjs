@@ -102,7 +102,18 @@ let remoteDebugPort = null;
 let cdpTargetId = null;
 let electronOutput = "";
 let sessionWindowCount = 0;
-const maxWindowsPerElectronSession = 1;
+const requestedWindowsPerProcess = Number.parseInt(
+  process.env.TETHER_PARITY_WINDOWS_PER_PROCESS || "0",
+  10
+);
+// A fixture reset destroys the old renderer and creates a fresh offscreen
+// BrowserWindow, which is enough isolation for the normal suite. Keeping the
+// background-only Electron host alive avoids asking macOS to launch an app 95
+// times during one verification run. Set TETHER_PARITY_WINDOWS_PER_PROCESS=1
+// when diagnosing state that may genuinely be process-global.
+const maxWindowsPerElectronSession = requestedWindowsPerProcess > 0
+  ? requestedWindowsPerProcess
+  : Number.POSITIVE_INFINITY;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -552,10 +563,9 @@ async function connectRendererTarget(excludedTargetId = null) {
 }
 
 async function startSession(fixture, visibleText) {
-  // Chromium retains renderer/process caches even after an offscreen window is
-  // destroyed. Give every fixture an isolated background-only Electron process
-  // so newline, clipboard, and decoration state cannot leak between checks.
-  // LSBackgroundOnly keeps these launches invisible.
+  // Rotate the background-only Electron host only when explicitly requested.
+  // Normal runs keep one macOS application process and replace just the hidden
+  // BrowserWindow between fixtures, avoiding repeated launch-time flashes.
   if (child && sessionWindowCount >= maxWindowsPerElectronSession) {
     await stopSession(true);
   }
@@ -608,8 +618,7 @@ async function startSession(fixture, visibleText) {
   }
 
   // Every fixture gets a clean offscreen BrowserWindow, renderer process, and
-  // editor history. Process rotations use the background-only bundle and never
-  // activate macOS.
+  // editor history even when the background host is reused.
   await waitFor(
     () => evaluate(`typeof window.remoteMarkdown?.saveLocalSample === "function"`),
     "Tether native sample API did not become ready"
@@ -638,8 +647,8 @@ async function startSession(fixture, visibleText) {
 
 async function stopSession(force = false) {
   // Individual checks call stopSession to document their isolation boundary.
-  // startSession performs the forced cleanup immediately before the next
-  // fixture, while the outermost teardown cleans up the final process.
+  // startSession performs forced cleanup only for an explicit process-rotation
+  // interval; the outermost teardown cleans up the normal single host process.
   if (!force) return;
   const sessionCdp = cdp;
   const sessionChild = child;

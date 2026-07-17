@@ -35,7 +35,8 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(main, /offscreen:\s*editorParityRun/);
   assert.match(verifier, /TETHER_EDITOR_PARITY:\s*"1"/);
   assert.match(verifier, /prepareBackgroundElectron\(electronPath\)/);
-  assert.match(verifier, /const maxWindowsPerElectronSession = 1/);
+  assert.match(verifier, /TETHER_PARITY_WINDOWS_PER_PROCESS \|\| "0"/);
+  assert.match(verifier, /Number\.POSITIVE_INFINITY/);
   assert.match(verifier, /sessionWindowCount >= maxWindowsPerElectronSession/);
   assert.match(verifier, /async function stopSession\(force = false\)/);
   assert.match(verifier, /await stopSession\(true\)/);
