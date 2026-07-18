@@ -214,6 +214,22 @@ test("CodeMirror boundary selection ignores unshifted and command-modified arrow
     codeBoundarySelectionKeyDirection(codeState(0), { key: "ArrowLeft", shiftKey: true, metaKey: true }),
     null
   );
+  assert.equal(
+    codeBoundarySelectionKeyDirection(codeState(0), {
+      key: "ArrowUp",
+      shiftKey: true,
+      altKey: true
+    }),
+    "backward"
+  );
+  assert.equal(
+    codeBoundarySelectionKeyDirection(codeState(0), {
+      key: "ArrowLeft",
+      shiftKey: true,
+      altKey: true
+    }),
+    null
+  );
 });
 
 test("CodeMirror ordinary arrows leave a fenced block at its source boundaries", () => {
@@ -515,6 +531,16 @@ test("Option-Up and Option-Down navigate code without reordering source lines", 
     key: "ArrowDown",
     altKey: true
   }), { anchor: 13, head: 13 });
+  assert.deepEqual(codeOptionVerticalSelection(state, {
+    key: "ArrowUp",
+    altKey: true,
+    shiftKey: true
+  }), { anchor: 8, head: 2 });
+  assert.deepEqual(codeOptionVerticalSelection(state, {
+    key: "ArrowDown",
+    altKey: true,
+    shiftKey: true
+  }), { anchor: 8, head: 13 });
   assert.equal(state.doc.toString(), source);
 
   const extended = EditorState.create({
