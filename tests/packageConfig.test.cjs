@@ -52,6 +52,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /TETHER_PARITY_CASE === "code-extended-vertical-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-option-vertical-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-shift-option-vertical-selection"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "code-native-noop-shortcuts"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-control-select-all"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-line-delete"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-word-delete"/);

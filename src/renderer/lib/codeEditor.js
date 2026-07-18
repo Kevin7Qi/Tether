@@ -57,6 +57,12 @@ export function isEditorSelectAllShortcut(event) {
     && String(event.key || "").toLowerCase() === "a";
 }
 
+export function isCodeSourceNativeNoopShortcut(event) {
+  if (!event || event.shiftKey || event.metaKey === event.ctrlKey) return false;
+  if (event.key === "Enter") return !event.altKey;
+  return Boolean(event.altKey) && ["ArrowUp", "ArrowDown"].includes(event.key);
+}
+
 export function codeTabEdit(state, outdent = false) {
   const ranges = state?.selection?.ranges || [];
   if (ranges.length !== 1 || !state?.doc) return null;

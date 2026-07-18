@@ -41,6 +41,7 @@ import {
   documentDragIntoCodeRange,
   emptyCodeClosingFenceSourceOffset,
   emptyCodeEnterSource,
+  isCodeSourceNativeNoopShortcut,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
   shouldRestoreEditorHistoryFocus,
@@ -1034,6 +1035,14 @@ export default function WysiwygSurface({
       if (isSourceInputComposing(event)) return;
       const target = event.target instanceof Element ? event.target : null;
       const codeView = tetherCodeViewForElement(target);
+      if (codeView && isCodeSourceNativeNoopShortcut(event)) {
+        // CodeMirror assigns structural editing commands to shortcuts that a
+        // native source control leaves inert. Do not create extra cursors,
+        // insert blank lines, or move focus away from the physical caret.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       if (codeView && isEditorHistoryShortcut(event)) {
         const direction = codeOuterHistoryDirection(event);
         const view = direction

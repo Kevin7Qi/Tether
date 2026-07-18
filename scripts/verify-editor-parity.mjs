@@ -3941,7 +3941,51 @@ async function verifyCodeShiftOptionVerticalSelection() {
   await stopSession();
 }
 
+async function verifyCodeNativeNoopShortcuts() {
+  const content = "alpha\nbeta\ngamma";
+  const fixture = `Before.\n\n\`\`\`text\n${content}\n\`\`\`\n\nAfter.\n`;
+  const verify = async (shortcut, insertion, expectedContent, message) => {
+    await startSession(fixture, "alpha");
+    await clickElement(".milkdown-code-block .cm-line:nth-child(2)");
+    await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey(shortcut);
+    await cdp.send("Input.insertText", { text: insertion });
+    await waitForSaveState(false).catch(async (error) => {
+      throw new Error(`${message}: ${error.message}`);
+    });
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(fixture.replace(content, expectedContent));
+    await stopSession();
+  };
+
+  await verify(
+    { key: "ArrowUp", code: "ArrowUp", virtualKeyCode: 38, modifiers: 5 },
+    "X",
+    "alpha\nbeXta\ngamma",
+    "Command-Option-Up created an extra code caret"
+  );
+  await verify(
+    { key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 5 },
+    "Y",
+    "alpha\nbeYta\ngamma",
+    "Command-Option-Down created an extra code caret"
+  );
+  await verify(
+    { key: "Enter", code: "Enter", virtualKeyCode: 13, modifiers: 4 },
+    "Z",
+    "alpha\nbeZta\ngamma",
+    "Command-Enter changed code structure or moved the source caret"
+  );
+}
+
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "code-native-noop-shortcuts") {
+    await verifyCodeNativeNoopShortcuts();
+    console.log("Verified native no-op shortcuts do not invoke CodeMirror structural commands.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-option-vertical-navigation") {
     await verifyCodeOptionVerticalNavigation();
     console.log("Verified Option-Up/Down navigate fenced source without reordering code lines.");
@@ -4211,6 +4255,7 @@ async function run() {
   await verifyCodeExtendedVerticalNavigation();
   await verifyCodeOptionVerticalNavigation();
   await verifyCodeShiftOptionVerticalSelection();
+  await verifyCodeNativeNoopShortcuts();
   await verifyCodeDocumentJumpReplacement();
   await verifyCodeSelectAllEditing();
   await verifyProseSelectAllEditing();

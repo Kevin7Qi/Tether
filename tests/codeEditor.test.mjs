@@ -27,6 +27,7 @@ import {
   documentDragIntoCodeRange,
   emptyCodeClosingFenceSourceOffset,
   emptyCodeEnterSource,
+  isCodeSourceNativeNoopShortcut,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
   restoreCodeViewFocusAfterHistory,
@@ -119,6 +120,29 @@ test("editor Select All shortcuts escalate from CodeMirror to the Markdown docum
   assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true, altKey: true }), false);
   assert.equal(isEditorSelectAllShortcut({ key: "a" }), false);
   assert.equal(isEditorSelectAllShortcut({ key: "z", metaKey: true }), false);
+});
+
+test("CodeMirror-only structural shortcuts stay inert like native source controls", () => {
+  assert.equal(isCodeSourceNativeNoopShortcut({
+    key: "ArrowUp",
+    metaKey: true,
+    altKey: true
+  }), true);
+  assert.equal(isCodeSourceNativeNoopShortcut({
+    key: "ArrowDown",
+    ctrlKey: true,
+    altKey: true
+  }), true);
+  assert.equal(isCodeSourceNativeNoopShortcut({ key: "Enter", metaKey: true }), true);
+  assert.equal(isCodeSourceNativeNoopShortcut({ key: "Enter", ctrlKey: true }), true);
+  assert.equal(isCodeSourceNativeNoopShortcut({
+    key: "ArrowUp",
+    metaKey: true,
+    altKey: true,
+    shiftKey: true
+  }), false);
+  assert.equal(isCodeSourceNativeNoopShortcut({ key: "Enter", metaKey: true, altKey: true }), false);
+  assert.equal(isCodeSourceNativeNoopShortcut({ key: "Enter" }), false);
 });
 
 test("CodeMirror Tab edits preserve the source editor's literal bytes and selection", () => {
