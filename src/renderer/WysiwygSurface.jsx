@@ -35,6 +35,7 @@ import {
   codeLineEndSourceOffset,
   codeLineStartSourceOffset,
   codeOuterHistoryDirection,
+  codeOptionVerticalSelection,
   codeTabEdit,
   codeSourceOnlyHistoryDirection,
   documentDragIntoCodeRange,
@@ -701,6 +702,23 @@ export default function WysiwygSurface({
           ? sourceWordSelectionRange(anchorOffset, targetOffset)
           : null
       });
+    };
+    const handleCodeOptionVertical = (event) => {
+      if (readOnlyRef.current || isSourceInputComposing(event)) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const codeView = tetherCodeViewForElement(target);
+      const selection = codeView
+        ? codeOptionVerticalSelection(codeView.state, event)
+        : null;
+      if (!codeView || !selection) return;
+
+      // CodeMirror maps Option-Up/Down to line reordering. A normal Markdown
+      // source surface treats these as caret navigation, so preserve the file
+      // bytes and move vertically within visible code instead. At the outer
+      // line this yields to the fence-boundary handoff below.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      codeView.dispatch({ selection, scrollIntoView: true });
     };
     const handleCodeDocumentJump = (event) => {
       if (readOnlyRef.current || isSourceInputComposing(event)) return;
@@ -1784,6 +1802,7 @@ export default function WysiwygSurface({
     host.addEventListener("beforeinput", ensureSyntheticTrailing, true);
     host.addEventListener("paste", ensureSyntheticTrailing, true);
     host.addEventListener("drop", ensureSyntheticTrailing, true);
+    host.addEventListener("keydown", handleCodeOptionVertical, true);
     host.addEventListener("keydown", handleCodeWordJump, true);
     host.addEventListener("keydown", handleCodeDocumentJump, true);
     host.addEventListener("keydown", handleCodeLineJump, true);
@@ -1997,6 +2016,7 @@ export default function WysiwygSurface({
       host.removeEventListener("beforeinput", ensureSyntheticTrailing, true);
       host.removeEventListener("paste", ensureSyntheticTrailing, true);
       host.removeEventListener("drop", ensureSyntheticTrailing, true);
+      host.removeEventListener("keydown", handleCodeOptionVertical, true);
       host.removeEventListener("keydown", handleCodeWordJump, true);
       host.removeEventListener("keydown", handleCodeDocumentJump, true);
       host.removeEventListener("keydown", handleCodeLineJump, true);

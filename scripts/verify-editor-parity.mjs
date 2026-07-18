@@ -3778,7 +3778,91 @@ async function verifyCodeLanguagePickerSourceFidelity() {
   await stopSession();
 }
 
+async function verifyCodeOptionVerticalNavigation() {
+  const content = "alpha\nbeta\ngamma";
+  const block = `\`\`\`text\n${content}\n\`\`\``;
+  const fixture = `Before.\n\n${block}\n\nAfter.\n`;
+  const save = async (source) => {
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(source);
+  };
+
+  await startSession(fixture, "alpha");
+  await clickElement(".milkdown-code-block .cm-line:nth-child(2)");
+  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowUp", code: "ArrowUp", virtualKeyCode: 38, modifiers: 1 });
+  await waitFor(
+    () => evaluate(`(() => {
+      const selection = getSelection();
+      const lines = Array.from(document.querySelectorAll(".milkdown-code-block .cm-line"));
+      return lines.map((line) => line.textContent).join("\\n") === ${JSON.stringify(content)}
+        && selection?.anchorNode?.data === "alpha"
+        && selection.anchorOffset === 2;
+    })()`),
+    "Option-ArrowUp reordered code instead of navigating to the previous source line"
+  );
+  await cdp.send("Input.insertText", { text: "X" });
+  await save(fixture.replace(content, "alXpha\nbeta\ngamma"));
+  await stopSession();
+
+  await startSession(fixture, "alpha");
+  await clickElement(".milkdown-code-block .cm-line:nth-child(2)");
+  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 1 });
+  await waitFor(
+    () => evaluate(`(() => {
+      const selection = getSelection();
+      const lines = Array.from(document.querySelectorAll(".milkdown-code-block .cm-line"));
+      return lines.map((line) => line.textContent).join("\\n") === ${JSON.stringify(content)}
+        && selection?.anchorNode?.data === "gamma"
+        && selection.anchorOffset === 2;
+    })()`),
+    "Option-ArrowDown reordered code instead of navigating to the next source line"
+  );
+  await cdp.send("Input.insertText", { text: "Y" });
+  await save(fixture.replace(content, "alpha\nbeta\ngaYmma"));
+  await stopSession();
+
+  await startSession(fixture, "alpha");
+  await clickElement(".milkdown-code-block .cm-line:first-child");
+  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowUp", code: "ArrowUp", virtualKeyCode: 38, modifiers: 1 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === block
+      && state.selectionStart === 2 && state.selectionEnd === 2,
+    "Option-ArrowUp did not continue onto the physical opening-fence line"
+  );
+  await stopSession();
+
+  const closingStart = block.lastIndexOf("\n") + 1;
+  await startSession(fixture, "alpha");
+  await clickElement(".milkdown-code-block .cm-line:last-child");
+  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 1 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === block
+      && state.selectionStart === closingStart + 2
+      && state.selectionEnd === closingStart + 2,
+    "Option-ArrowDown did not continue onto the physical closing-fence line"
+  );
+  await stopSession();
+}
+
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "code-option-vertical-navigation") {
+    await verifyCodeOptionVerticalNavigation();
+    console.log("Verified Option-Up/Down navigate fenced source without reordering code lines.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "source-selection-movement") {
     await verifySourceSelectionNativeMovement();
     console.log("Verified source selections collapse and move like a native text editor.");
@@ -4036,6 +4120,7 @@ async function run() {
   await verifyCodeJumpNavigation();
   await verifyCodeExtendedWordNavigation();
   await verifyCodeExtendedVerticalNavigation();
+  await verifyCodeOptionVerticalNavigation();
   await verifyCodeDocumentJumpReplacement();
   await verifyCodeSelectAllEditing();
   await verifyProseSelectAllEditing();

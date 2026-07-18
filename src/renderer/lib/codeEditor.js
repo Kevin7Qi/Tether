@@ -120,8 +120,34 @@ export function codeBoundaryNavigationPosition(state, key) {
 }
 
 export function codeBoundaryNavigationKeyDirection(state, event) {
-  if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return null;
+  if (event.shiftKey || event.ctrlKey || event.metaKey) return null;
+  if (event.altKey && !["ArrowUp", "ArrowDown"].includes(event.key)) return null;
   return codeBoundaryNavigationDirection(state, event.key);
+}
+
+export function codeOptionVerticalSelection(state, event) {
+  if (
+    !event?.altKey
+    || event.shiftKey
+    || event.ctrlKey
+    || event.metaKey
+    || !["ArrowUp", "ArrowDown"].includes(event.key)
+  ) return null;
+  const ranges = state?.selection?.ranges || [];
+  if (ranges.length !== 1) return null;
+  const selection = ranges[0];
+  const anchor = Number.isFinite(selection.anchor) ? selection.anchor : selection.head;
+  const base = selection.empty
+    ? selection.head
+    : event.key === "ArrowUp"
+      ? Math.min(anchor, selection.head)
+      : Math.max(anchor, selection.head);
+  const line = state.doc.lineAt(base);
+  const targetNumber = line.number + (event.key === "ArrowUp" ? -1 : 1);
+  if (targetNumber < 1 || targetNumber > state.doc.lines) return null;
+  const target = state.doc.line(targetNumber);
+  const head = target.from + Math.min(base - line.from, target.length);
+  return { anchor: head, head };
 }
 
 export function codeBoundaryWordJumpDirection(state, event) {

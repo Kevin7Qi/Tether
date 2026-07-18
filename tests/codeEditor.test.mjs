@@ -21,6 +21,7 @@ import {
   codeLineEndSourceOffset,
   codeLineStartSourceOffset,
   codeOuterHistoryDirection,
+  codeOptionVerticalSelection,
   codeSourceOnlyHistoryDirection,
   codeTabEdit,
   documentDragIntoCodeRange,
@@ -490,6 +491,44 @@ test("CodeMirror boundary navigation ignores shifted and command-modified arrows
     codeBoundaryNavigationKeyDirection(codeState(0), { key: "ArrowLeft", shiftKey: false, metaKey: true }),
     null
   );
+  assert.equal(
+    codeBoundaryNavigationKeyDirection(codeState(0), { key: "ArrowUp", altKey: true }),
+    "backward"
+  );
+  assert.equal(
+    codeBoundaryNavigationKeyDirection(codeState(0), { key: "ArrowLeft", altKey: true }),
+    null
+  );
+});
+
+test("Option-Up and Option-Down navigate code without reordering source lines", () => {
+  const source = "alpha\nbeta\ngamma";
+  const state = EditorState.create({
+    doc: source,
+    selection: { anchor: 8 }
+  });
+  assert.deepEqual(codeOptionVerticalSelection(state, {
+    key: "ArrowUp",
+    altKey: true
+  }), { anchor: 2, head: 2 });
+  assert.deepEqual(codeOptionVerticalSelection(state, {
+    key: "ArrowDown",
+    altKey: true
+  }), { anchor: 13, head: 13 });
+  assert.equal(state.doc.toString(), source);
+
+  const extended = EditorState.create({
+    doc: source,
+    selection: { anchor: 1, head: 8 }
+  });
+  assert.equal(codeOptionVerticalSelection(extended, {
+    key: "ArrowUp",
+    altKey: true
+  }), null);
+  assert.deepEqual(codeOptionVerticalSelection(extended, {
+    key: "ArrowDown",
+    altKey: true
+  }), { anchor: 13, head: 13 });
 });
 
 test("CodeMirror word jumps continue from an extended selection head into fence source", () => {
