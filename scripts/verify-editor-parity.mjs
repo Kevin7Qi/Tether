@@ -451,6 +451,18 @@ async function dispatchKey({ key, code, virtualKeyCode, modifiers = 0 }) {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...common });
 }
 
+async function dispatchTextKey(text, code, virtualKeyCode) {
+  const common = {
+    key: text,
+    code,
+    text,
+    unmodifiedText: text,
+    windowsVirtualKeyCode: virtualKeyCode
+  };
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...common });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...common });
+}
+
 async function dispatchNativeKey(keyCode, modifiers = []) {
   const handled = await evaluate(
     `window.remoteMarkdown.sendNativeKeyForTest(${JSON.stringify(keyCode)}, ${JSON.stringify(modifiers)})`
@@ -4077,7 +4089,41 @@ async function verifyCodeNativeControlShortcuts() {
     { keyCode: "D", name: "Control-D" },
     { keyCode: "K", name: "Control-K" },
     { keyCode: "O", name: "Control-O" },
-    { keyCode: "T", name: "Control-T" }
+    { keyCode: "T", name: "Control-T" },
+    { keyCode: "V", name: "Control-V" },
+    { keyCode: "L", name: "Control-L" },
+    ...["A", "E", "B", "F", "P", "N", "D", "H", "K", "O", "T", "V", "L"].map((keyCode) => ({
+      keyCode,
+      name: `Shift-Control-${keyCode}`,
+      nativeModifiers: ["shift", "control"],
+      modifiers: 10
+    })),
+    ...[
+      ["Up", 38],
+      ["Down", 40],
+      ["Left", 37],
+      ["Right", 39]
+    ].map(([keyCode, virtualKeyCode]) => ({
+      keyCode,
+      name: `Control-Arrow${keyCode}`,
+      key: `Arrow${keyCode}`,
+      code: `Arrow${keyCode}`,
+      virtualKeyCode
+    })),
+    ...[
+      ["Up", 38],
+      ["Down", 40],
+      ["Left", 37],
+      ["Right", 39]
+    ].map(([keyCode, virtualKeyCode]) => ({
+      keyCode,
+      name: `Shift-Control-Arrow${keyCode}`,
+      key: `Arrow${keyCode}`,
+      code: `Arrow${keyCode}`,
+      virtualKeyCode,
+      nativeModifiers: ["shift", "control"],
+      modifiers: 10
+    }))
   ];
 
   await startSession(fixture, "alpha");
@@ -4097,7 +4143,7 @@ async function verifyCodeNativeControlShortcuts() {
       control.setSelectionRange(${caret}, ${caret});
       return true;
     })()`);
-    await dispatchNativeKey(shortcut.keyCode, ["control"]);
+    await dispatchNativeKey(shortcut.keyCode, shortcut.nativeModifiers || ["control"]);
     nativeResults.push(await evaluate(`(() => {
       const control = document.querySelector("#tether-native-control-shortcut");
       return {
@@ -4124,13 +4170,18 @@ async function verifyCodeNativeControlShortcuts() {
     await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
     await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
     await dispatchKey({
-      key: shortcut.keyCode.toLowerCase(),
-      code: `Key${shortcut.keyCode}`,
-      virtualKeyCode: shortcut.keyCode.charCodeAt(0),
-      modifiers: 2
+      key: shortcut.key || shortcut.keyCode.toLowerCase(),
+      code: shortcut.code || `Key${shortcut.keyCode}`,
+      virtualKeyCode: shortcut.virtualKeyCode || shortcut.keyCode.charCodeAt(0),
+      modifiers: shortcut.modifiers || 2
     });
-    await cdp.send("Input.insertText", { text: "X" });
-    await waitForSaveState(false);
+    await delay(25);
+    await dispatchTextKey("X", "KeyX", 88);
+    try {
+      await waitForSaveState(false);
+    } catch (error) {
+      throw new Error(`${shortcut.name} did not synchronize its marker insertion`, { cause: error });
+    }
     await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
     await waitFor(
       async () => (await readFile(samplePath, "utf8").catch(() => fixture)) !== fixture,

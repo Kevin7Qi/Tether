@@ -17,6 +17,13 @@ export function clampPageWidth(value) {
 export const IS_MAC =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || "");
 
+export function isPrimaryShortcutModifier(event, isMac = IS_MAC) {
+  if (!event) return false;
+  return isMac
+    ? Boolean(event.metaKey) && !event.ctrlKey
+    : Boolean(event.ctrlKey) && !event.metaKey;
+}
+
 export function hotkey(key, { shift = false } = {}) {
   const label = String(key).toUpperCase();
   if (IS_MAC) return `${shift ? "⌘⇧" : "⌘"}${label}`;

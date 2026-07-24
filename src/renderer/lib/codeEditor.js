@@ -65,10 +65,12 @@ const macNativeNoopControlKeys = new Set([
   "f",
   "h",
   "k",
+  "l",
   "n",
   "o",
   "p",
-  "t"
+  "t",
+  "v"
 ]);
 
 export function isCodeSourceNativeNoopShortcut(
@@ -77,14 +79,19 @@ export function isCodeSourceNativeNoopShortcut(
     || globalThis.navigator?.platform
     || ""
 ) {
-  if (!event || event.shiftKey || event.metaKey === event.ctrlKey) return false;
+  if (!event || event.metaKey === event.ctrlKey) return false;
+  const isMacPlatform = /^(?:mac|iphone|ipad|ipod)/i.test(String(platform));
   if (
     event.ctrlKey
     && !event.metaKey
     && !event.altKey
-    && /^(?:mac|iphone|ipad|ipod)/i.test(String(platform))
-    && macNativeNoopControlKeys.has(String(event.key || "").toLowerCase())
+    && isMacPlatform
+    && (
+      macNativeNoopControlKeys.has(String(event.key || "").toLowerCase())
+      || ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)
+    )
   ) return true;
+  if (event.shiftKey) return false;
   if (event.key === "Enter") return !event.altKey;
   return Boolean(event.altKey) && ["ArrowUp", "ArrowDown"].includes(event.key);
 }

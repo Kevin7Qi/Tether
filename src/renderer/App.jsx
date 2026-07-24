@@ -75,7 +75,12 @@ import {
   statusTextForLoading
 } from "./lib/format.js";
 import { createDocumentState, documentReducer } from "./lib/documentState.js";
-import { PAGE_WIDTH_DEFAULT, clampPageWidth, hotkey } from "./lib/constants.js";
+import {
+  PAGE_WIDTH_DEFAULT,
+  clampPageWidth,
+  hotkey,
+  isPrimaryShortcutModifier
+} from "./lib/constants.js";
 import { EDITOR_MODE_READING, EDITOR_MODE_SOURCE, EDITOR_MODE_WYSIWYG, normalizeEditorMode } from "./lib/editorModes.js";
 import { parseOutline } from "./lib/outline.js";
 import { isConnectionLostError, connectionLostMessage } from "./lib/connection.js";
@@ -793,8 +798,9 @@ export default function App() {
     function onKeyDown(event) {
       if (event.isComposing) return;
       const key = event.key ? event.key.toLowerCase() : "";
+      const primaryShortcut = isPrimaryShortcutModifier(event);
 
-      if ((event.ctrlKey || event.metaKey) && key === "f") {
+      if (primaryShortcut && key === "f") {
         event.preventDefault();
         if (documentSourceRef.current === "none") return;
         if (findOpen) {
@@ -808,19 +814,19 @@ export default function App() {
       }
 
       // Cmd/Ctrl+G and F3 both step through matches (Shift reverses).
-      if ((event.key === "F3" || ((event.ctrlKey || event.metaKey) && key === "g")) && findOpen) {
+      if ((event.key === "F3" || (primaryShortcut && key === "g")) && findOpen) {
         event.preventDefault();
         setFindActiveIndex((current) => current + (event.shiftKey ? -1 : 1));
         return;
       }
 
-      if ((event.ctrlKey || event.metaKey) && key === "k") {
+      if (primaryShortcut && key === "k") {
         event.preventDefault();
         setConnectionPaletteOpen((open) => !open);
         return;
       }
 
-      if ((event.ctrlKey || event.metaKey) && key === "s") {
+      if (primaryShortcut && key === "s") {
         event.preventDefault();
         saveActionRef.current?.();
         return;
@@ -828,13 +834,13 @@ export default function App() {
 
       // Open folder on Ctrl/Cmd+Shift+O (must be checked before the no-Shift
       // open-file branch below).
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && (key === "o" || event.code === "KeyO")) {
+      if (primaryShortcut && event.shiftKey && (key === "o" || event.code === "KeyO")) {
         event.preventDefault();
         openFolderFromShortcut();
         return;
       }
 
-      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && (key === "o" || event.code === "KeyO")) {
+      if (primaryShortcut && !event.shiftKey && (key === "o" || event.code === "KeyO")) {
         event.preventDefault();
         openFileActionRef.current?.();
         return;
@@ -885,7 +891,7 @@ export default function App() {
     // Fallback for platforms where the key-down above is intercepted before it
     // reaches the app; coalesced with the key-down path so it never double-fires.
     function onKeyUp(event) {
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.code === "KeyO") {
+      if (isPrimaryShortcutModifier(event) && event.shiftKey && event.code === "KeyO") {
         event.preventDefault();
         openFolderFromShortcut();
       }
