@@ -98,6 +98,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /TETHER_PARITY_CASE === "inline-source-enter"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-boundary-deletion"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "platform-native-code-boundary-deletion"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "structural-enter-editing"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "prose-select-all-editing"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "structural-marker-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "block-atom-traversal"/);
@@ -591,13 +592,17 @@ test("exact source edits preserve source-only carets or refocus the rendered sur
   assert.match(syntax, /view\.nodeDOM\(position\)/);
   assert.match(syntax, /requestAnimationFrame\(\(\) => pruneStaleCodeBlockDom\(view\)\)/);
   assert.match(syntax, /const dispatchExactEdit = \(/);
-  assert.match(syntax, /const preserveSourcePosition = afterTarget\?\.kind === "gap"/);
+  assert.match(syntax, /const preserveSourcePosition = !renderedCaret && \(/);
   assert.match(syntax, /afterTarget\.node\.type\.name === "code_block"/);
   assert.match(syntax, /preserveSourcePosition[\s\S]*activateDocumentSourceOffset\(/);
   assert.match(syntax, /focusExactEditSelection\(view\);/);
   assert.match(syntax, /const captureExactTyping = \(event\) =>/);
   assert.match(syntax, /const captureExactDeletion = \(event\) => \{[\s\S]*isMacSourceNativeNoopShortcut\(event\)/);
   assert.match(syntax, /const collapsedParagraphSelection = \(/);
+  assert.match(syntax, /structuralEnterEdit\(/);
+  assert.match(syntax, /\{ renderedCaret: true \}/);
+  assert.match(syntax, /pendingRenderedTypingSelection = sourceSelection/);
+  assert.match(syntax, /\{ renderedCaret: renderedTyping \|\| !sourceSelection \}/);
   assert.match(syntax, /\$from\.depth !== 1/);
   assert.match(syntax, /\$from\.parent\.type\.name !== "paragraph"/);
   assert.match(syntax, /addEventListener\("keydown", captureExactTyping, true\)/);

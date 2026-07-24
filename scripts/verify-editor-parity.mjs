@@ -248,10 +248,16 @@ async function editorState() {
   return evaluate(`(() => {
     const root = document.querySelector(".ProseMirror");
     const selection = getSelection();
+    const anchorNode = selection?.anchorNode || null;
+    const anchorOffset = selection?.anchorOffset ?? null;
+    const followingText = anchorNode?.nodeType === Node.TEXT_NODE
+      ? anchorNode.data.slice(anchorOffset)
+      : anchorNode?.childNodes?.[anchorOffset]?.textContent ?? "";
     return {
       activeElement: document.activeElement?.className || document.activeElement?.tagName || null,
-      anchorText: selection?.anchorNode?.data || null,
-      anchorOffset: selection?.anchorOffset ?? null,
+      anchorText: anchorNode?.data || null,
+      anchorOffset,
+      followingText,
       dirty: Boolean(document.querySelector(".dirty-dot")),
       saveDisabled: document.querySelector(".save-button")?.disabled ?? null,
       status: document.querySelector(".status-copy")?.textContent || null,
@@ -3654,6 +3660,128 @@ async function verifySoftLineEditing() {
   await stopSession();
 }
 
+async function verifyStructuralEnterEditing() {
+  const cases = [
+    {
+      name: "ATX heading interior",
+      markdown: "## Alpha Beta\n",
+      text: "Alpha Beta",
+      offset: "Alpha".length,
+      splitSource: "## Alpha\n\nBeta\n",
+      typedSource: "## Alpha\n\nxBeta\n",
+      history: true
+    },
+    {
+      name: "setext heading interior",
+      markdown: "Alpha Beta\n---\n",
+      text: "Alpha Beta",
+      offset: "Alpha".length,
+      splitSource: "Alpha\n---\n\nBeta\n",
+      typedSource: "Alpha\n---\n\nxBeta\n"
+    },
+    {
+      name: "bullet item interior",
+      markdown: "+ Alpha Beta\n",
+      text: "Alpha Beta",
+      offset: "Alpha".length,
+      splitSource: "+ Alpha\n+ Beta\n",
+      typedSource: "+ Alpha\n+ xBeta\n"
+    },
+    {
+      name: "ordered item interior",
+      markdown: "3) Alpha Beta\n7) Keep\n",
+      text: "Alpha Beta",
+      offset: "Alpha".length,
+      splitSource: "3) Alpha\n4) Beta\n7) Keep\n",
+      typedSource: "3) Alpha\n4) xBeta\n7) Keep\n",
+      history: true
+    },
+    {
+      name: "CRLF ordered item interior",
+      markdown: "10. Alpha Beta\r\n20. Keep\r\n",
+      text: "Alpha Beta",
+      offset: "Alpha".length,
+      splitSource: "10. Alpha\r\n11. Beta\r\n20. Keep\r\n",
+      typedSource: "10. Alpha\r\n11. xBeta\r\n20. Keep\r\n"
+    },
+    {
+      name: "task item interior",
+      markdown: "- [X] Alpha Beta\n",
+      text: "Alpha Beta",
+      offset: "Alpha".length,
+      splitSource: "- [X] Alpha\n- [ ] Beta\n",
+      typedSource: "- [X] Alpha\n- [ ] xBeta\n"
+    },
+    {
+      name: "no-space quote interior",
+      markdown: ">Alpha Beta\n",
+      text: "Alpha Beta",
+      offset: "Alpha".length,
+      splitSource: ">Alpha\n>Beta\n",
+      typedSource: ">Alpha\n>xBeta\n"
+    },
+    {
+      name: "nested bullet interior",
+      markdown: "- Parent\n  * Alpha Beta\n",
+      text: "Alpha Beta",
+      offset: "Alpha".length,
+      splitSource: "- Parent\n  * Alpha\n  * Beta\n",
+      typedSource: "- Parent\n  * Alpha\n  * xBeta\n"
+    }
+  ];
+  const selectedCases = process.env.TETHER_PARITY_SCENARIO
+    ? cases.filter(({ name }) => name.includes(process.env.TETHER_PARITY_SCENARIO))
+    : cases;
+  for (const testCase of selectedCases) {
+    await startSession(testCase.markdown, testCase.text);
+    await placeCaretInText(testCase.text, testCase.offset);
+    await dispatchEnterKey();
+    await waitForSaveState(false);
+    const splitState = await editorState();
+    if (splitState.followingText !== "Beta") {
+      throw new Error(
+        `${testCase.name} did not place the rendered caret before its retained tail: ${
+          JSON.stringify(splitState)
+        }`
+      );
+    }
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(testCase.splitSource);
+    if (testCase.history) {
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.markdown);
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.splitSource);
+    }
+    await dispatchTextKey("x", "KeyX", 88);
+    await waitForSaveState(false);
+    const typedState = await editorState();
+    if (typedState.followingText !== "Beta") {
+      throw new Error(
+        `${testCase.name} did not advance one rendered character after typing: ${
+          JSON.stringify(typedState)
+        }`
+      );
+    }
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(testCase.typedSource);
+    await delay(500);
+    const state = await editorState();
+    if (state.dirty || state.anchorOffset !== 1 || state.anchorText !== "xBeta") {
+      throw new Error(
+        `${testCase.name} did not retain its clean rendered continuation caret: ${
+          JSON.stringify(state)
+        }`
+      );
+    }
+    await stopSession();
+  }
+}
+
 async function verifyProseToCodeReplacement() {
   const anchor = "Bef".length;
   const codeStart = codeFixture.indexOf(codeBlockSource);
@@ -5575,6 +5703,11 @@ async function run() {
     console.log("Verified edited soft lines retain physical CRLF source and history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "structural-enter-editing") {
+    await verifyStructuralEnterEditing();
+    console.log("Verified structural Return preserves heading, list, task, quote, and nested source.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "closing-fence-replacement") {
     await verifyClosingFenceReplacement();
     console.log("Verified real Electron closing-fence replacement history.");
@@ -5651,6 +5784,7 @@ async function run() {
   await verifyTableBoundaryCutPasteHistory();
   await verifyHardBreakCutPasteHistory();
   await verifySoftLineEditing();
+  await verifyStructuralEnterEditing();
   await verifyProseToCodeReplacement();
   await verifyProseToCodeCutPaste();
   await verifyCodeBoundaryDeletion();

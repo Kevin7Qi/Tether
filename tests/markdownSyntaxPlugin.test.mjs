@@ -115,6 +115,7 @@ import {
   shouldRejectStaleExactSourceReplacement,
   serializedDocumentGaps,
   structuralBoundarySourceTarget,
+  structuralEnterContinuation,
   structuralSourceHandoffTarget,
   sourceFaithfulHeadingKeymapConfig,
   sourceFaithfulListItemKeymapConfig,
@@ -235,6 +236,52 @@ test("collapsed source carets retain marked inline boundary offsets", () => {
     collapsedDocumentSourceSelection(after, serialize)?.head,
     "Before **bold**".length
   );
+});
+
+test("structural Enter continues physical list, task, ordered, and quote prefixes", () => {
+  const cases = [
+    {
+      source: "+ Alpha Beta\n",
+      caret: "+ Alpha".length,
+      expected: "+ Alpha\n+ Beta\n",
+      nextCaret: "+ Alpha\n+ ".length
+    },
+    {
+      source: "3) Alpha Beta\n7) Keep\n",
+      caret: "3) Alpha".length,
+      expected: "3) Alpha\n4) Beta\n7) Keep\n",
+      nextCaret: "3) Alpha\n4) ".length
+    },
+    {
+      source: "- [X] Alpha Beta\n",
+      caret: "- [X] Alpha".length,
+      expected: "- [X] Alpha\n- [ ] Beta\n",
+      nextCaret: "- [X] Alpha\n- [ ] ".length
+    },
+    {
+      source: ">Alpha Beta\n",
+      caret: ">Alpha".length,
+      expected: ">Alpha\n>Beta\n",
+      nextCaret: ">Alpha\n>".length
+    },
+    {
+      source: "- Parent\n  * Alpha Beta\n",
+      caret: "- Parent\n  * Alpha".length,
+      expected: "- Parent\n  * Alpha\n  * Beta\n",
+      nextCaret: "- Parent\n  * Alpha\n  * ".length
+    },
+    {
+      source: "> - [x] Alpha Beta\r\n",
+      caret: "> - [x] Alpha".length,
+      expected: "> - [x] Alpha\r\n> - [ ] Beta\r\n",
+      nextCaret: "> - [x] Alpha\r\n> - [ ] ".length
+    }
+  ];
+  for (const fixture of cases) {
+    const edit = structuralEnterContinuation(fixture.source, fixture.caret);
+    assert.equal(edit?.source, fixture.expected);
+    assert.equal(edit?.caret, fixture.nextCaret);
+  }
 });
 
 test("saving a temporary source control captures its logical unit and selection", () => {
