@@ -18,6 +18,7 @@ import {
   codeOuterHistoryDirection,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
+  isMacSourceControlNoopShortcut,
   tetherCodeViewForElement
 } from "./codeEditor.js";
 import { decodedMarkdownSourceOffset, sourceTabEdit } from "./sourceEditing.js";
@@ -6603,6 +6604,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (!_view.editable) return false;
           if (isSourceInputComposing(event)) return false;
           if (["Backspace", "Delete"].includes(event.key)) protectedExactSource = null;
+          if (isMacSourceControlNoopShortcut(event)) {
+            event.preventDefault();
+            return true;
+          }
           if (isEditorHistoryShortcut(event)) {
             protectedExactSource = null;
             const command = codeOuterHistoryDirection(event);

@@ -4204,6 +4204,151 @@ async function verifyCodeNativeControlShortcuts() {
   }
 }
 
+async function verifyPlatformNativeDocumentShortcuts() {
+  const content = "alpha beta";
+  const caret = content.indexOf("beta") + 2;
+  const codeFixture = `Before.\n\n\`\`\`text\n${content}\n\`\`\`\n\nAfter.\n`;
+  const scenarios = [
+    {
+      name: "Control-A",
+      steps: [
+        { keyCode: "A", key: "a", code: "KeyA", virtualKeyCode: 65, nativeModifiers: ["control"], modifiers: 2 },
+        { text: "x" }
+      ]
+    },
+    {
+      name: "Control-Z",
+      steps: [
+        { text: "q" },
+        { keyCode: "Z", key: "z", code: "KeyZ", virtualKeyCode: 90, nativeModifiers: ["control"], modifiers: 2 },
+        { text: "x" }
+      ]
+    },
+    {
+      name: "Control-Y",
+      steps: [
+        { text: "q" },
+        { keyCode: "Y", key: "y", code: "KeyY", virtualKeyCode: 89, nativeModifiers: ["control"], modifiers: 2 },
+        { text: "x" }
+      ]
+    }
+  ];
+  const runNativeSteps = async (scenario, index) => {
+    const controlId = `tether-native-document-shortcut-${index}`;
+    await evaluate(`(() => {
+      const control = document.createElement("textarea");
+      control.id = ${JSON.stringify(controlId)};
+      control.style.position = "fixed";
+      control.style.left = "-10000px";
+      control.value = ${JSON.stringify(content)};
+      document.body.append(control);
+      control.focus();
+      control.setSelectionRange(${caret}, ${caret});
+      return true;
+    })()`);
+    for (const step of scenario.steps) {
+      if (step.text) await cdp.send("Input.insertText", { text: step.text });
+      else await dispatchNativeKey(step.keyCode, step.nativeModifiers);
+      await delay(25);
+    }
+    const value = await evaluate(
+      `document.querySelector(${JSON.stringify(`#${controlId}`)})?.value ?? null`
+    );
+    await evaluate(`document.querySelector(${JSON.stringify(`#${controlId}`)})?.remove()`);
+    return value;
+  };
+  const runRenderedSteps = async (scenario) => {
+    for (const step of scenario.steps) {
+      if (step.text) {
+        await dispatchTextKey(
+          step.text,
+          `Key${step.text.toUpperCase()}`,
+          step.text.toUpperCase().charCodeAt(0)
+        );
+      } else {
+        await dispatchKey({
+          key: step.key,
+          code: step.code,
+          virtualKeyCode: step.virtualKeyCode,
+          modifiers: step.modifiers
+        });
+      }
+      await delay(25);
+    }
+  };
+
+  await startSession(codeFixture, content);
+  const nativeResults = [];
+  for (let index = 0; index < scenarios.length; index += 1) {
+    nativeResults.push(await runNativeSteps(scenarios[index], index));
+  }
+  await stopSession();
+
+  const mismatches = [];
+  for (let index = 0; index < scenarios.length; index += 1) {
+    const scenario = scenarios[index];
+    const nativeValue = nativeResults[index];
+
+    await startSession(content, content);
+    await placeCaretInText(content, caret);
+    await evaluate(`(() => {
+      window.__tetherShortcutTrace = [];
+      window.addEventListener("keydown", (event) => {
+        queueMicrotask(() => window.__tetherShortcutTrace.push({
+          key: event.key,
+          code: event.code,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          shiftKey: event.shiftKey,
+          defaultPrevented: event.defaultPrevented,
+          cancelBubble: event.cancelBubble
+        }));
+      }, true);
+      return true;
+    })()`);
+    await runRenderedSteps(scenario);
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    try {
+      await waitForCompletedSave(nativeValue);
+    } catch (error) {
+      mismatches.push({
+        shortcut: scenario.name,
+        surface: "prose",
+        nativeValue,
+        actualSource: await readFile(samplePath, "utf8").catch(() => null),
+        eventTrace: await evaluate("window.__tetherShortcutTrace || []")
+      });
+    }
+    await stopSession();
+
+    await startSession(codeFixture, content);
+    await clickElement(".milkdown-code-block .cm-line");
+    await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+    for (let offset = 0; offset < caret; offset += 1) {
+      await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    }
+    await runRenderedSteps(scenario);
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    const expectedCodeSource = codeFixture.replace(content, nativeValue);
+    try {
+      await waitForCompletedSave(expectedCodeSource);
+    } catch (error) {
+      mismatches.push({
+        shortcut: scenario.name,
+        surface: "code",
+        nativeValue,
+        actualSource: await readFile(samplePath, "utf8").catch(() => null)
+      });
+    }
+    await stopSession();
+  }
+  if (mismatches.length) {
+    throw new Error(`Rendered editor shortcuts diverged from native source controls:\n${JSON.stringify(mismatches, null, 2)}`);
+  }
+}
+
 async function run() {
   if (process.env.TETHER_PARITY_CASE === "external-markdown-open") {
     await verifyExternalMarkdownOpening();
@@ -4218,6 +4363,11 @@ async function run() {
   if (process.env.TETHER_PARITY_CASE === "code-native-control-shortcuts") {
     await verifyCodeNativeControlShortcuts();
     console.log("Verified macOS Control shortcuts match native source controls inside code.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "platform-native-shortcuts") {
+    await verifyPlatformNativeDocumentShortcuts();
+    console.log("Verified macOS history and Select All shortcuts match native source controls.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "code-option-vertical-navigation") {
@@ -4491,6 +4641,7 @@ async function run() {
   await verifyCodeShiftOptionVerticalSelection();
   await verifyCodeNativeNoopShortcuts();
   await verifyCodeNativeControlShortcuts();
+  await verifyPlatformNativeDocumentShortcuts();
   await verifyCodeDocumentJumpReplacement();
   await verifyCodeSelectAllEditing();
   await verifyProseSelectAllEditing();

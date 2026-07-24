@@ -44,6 +44,7 @@ import {
   isCodeSourceNativeNoopShortcut,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
+  isMacSourceControlNoopShortcut,
   shouldRestoreEditorHistoryFocus,
   tetherCodeExtensions,
   tetherCodeLanguageLabel,
@@ -1426,6 +1427,11 @@ export default function WysiwygSurface({
         return null;
       }
     };
+    const handleSourceNativeNoopShortcut = (event) => {
+      if (isSourceInputComposing(event) || !isMacSourceControlNoopShortcut(event)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
     const scheduleCodeFocusRestore = (codeTarget) => {
       if (historyFocusFrame) window.cancelAnimationFrame(historyFocusFrame);
       const restore = (remaining) => {
@@ -1800,6 +1806,7 @@ export default function WysiwygSurface({
     refreshWidgetsRef.current = prepareMarkdownWidgets;
     const previewObserver = new MutationObserver(prepareMarkdownWidgets);
     host.addEventListener("mousedown", ensureSyntheticTrailingAfterPointer, true);
+    host.addEventListener("keydown", handleSourceNativeNoopShortcut, true);
     host.addEventListener("keydown", ensureSyntheticTrailing, true);
     host.addEventListener("keydown", restoreFocusAfterHistory, true);
     host.addEventListener("focusin", rememberCodeFocus, true);
@@ -2013,6 +2020,7 @@ export default function WysiwygSurface({
     return () => {
       disposed = true;
       host.removeEventListener("mousedown", ensureSyntheticTrailingAfterPointer, true);
+      host.removeEventListener("keydown", handleSourceNativeNoopShortcut, true);
       host.removeEventListener("keydown", ensureSyntheticTrailing, true);
       host.removeEventListener("keydown", restoreFocusAfterHistory, true);
       host.removeEventListener("focusin", rememberCodeFocus, true);

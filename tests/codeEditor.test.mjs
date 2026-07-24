@@ -47,21 +47,25 @@ test("vertical entry into code lands on its physical edge source line", () => {
 });
 
 test("editor history shortcuts include undo and redo without matching unrelated modifiers", () => {
-  assert.equal(isEditorHistoryShortcut({ key: "z", metaKey: true }), true);
-  assert.equal(isEditorHistoryShortcut({ key: "Z", metaKey: true, shiftKey: true }), true);
-  assert.equal(isEditorHistoryShortcut({ key: "z", ctrlKey: true }), true);
-  assert.equal(isEditorHistoryShortcut({ key: "y", ctrlKey: true }), true);
-  assert.equal(isEditorHistoryShortcut({ key: "Y", metaKey: true }), true);
-  assert.equal(isEditorHistoryShortcut({ key: "z", metaKey: true, altKey: true }), false);
-  assert.equal(isEditorHistoryShortcut({ key: "y", metaKey: true, shiftKey: true }), false);
-  assert.equal(isEditorHistoryShortcut({ key: "z" }), false);
+  assert.equal(isEditorHistoryShortcut({ key: "z", metaKey: true }, "MacIntel"), true);
+  assert.equal(isEditorHistoryShortcut({ key: "Z", metaKey: true, shiftKey: true }, "MacIntel"), true);
+  assert.equal(isEditorHistoryShortcut({ key: "z", ctrlKey: true }, "MacIntel"), false);
+  assert.equal(isEditorHistoryShortcut({ key: "y", ctrlKey: true }, "MacIntel"), false);
+  assert.equal(isEditorHistoryShortcut({ key: "Y", metaKey: true }, "MacIntel"), false);
+  assert.equal(isEditorHistoryShortcut({ key: "z", ctrlKey: true }, "Win32"), true);
+  assert.equal(isEditorHistoryShortcut({ key: "y", ctrlKey: true }, "Win32"), true);
+  assert.equal(isEditorHistoryShortcut({ key: "z", metaKey: true }, "Win32"), false);
+  assert.equal(isEditorHistoryShortcut({ key: "z", metaKey: true, altKey: true }, "MacIntel"), false);
+  assert.equal(isEditorHistoryShortcut({ key: "y", ctrlKey: true, shiftKey: true }, "Win32"), false);
+  assert.equal(isEditorHistoryShortcut({ key: "z" }, "MacIntel"), false);
 });
 
 test("code editor history shortcuts target the canonical Markdown document first", () => {
-  assert.equal(codeOuterHistoryDirection({ key: "z", metaKey: true }), "undo");
-  assert.equal(codeOuterHistoryDirection({ key: "Z", metaKey: true, shiftKey: true }), "redo");
-  assert.equal(codeOuterHistoryDirection({ key: "y", ctrlKey: true }), "redo");
-  assert.equal(codeOuterHistoryDirection({ key: "z" }), null);
+  assert.equal(codeOuterHistoryDirection({ key: "z", metaKey: true }, "MacIntel"), "undo");
+  assert.equal(codeOuterHistoryDirection({ key: "Z", metaKey: true, shiftKey: true }, "MacIntel"), "redo");
+  assert.equal(codeOuterHistoryDirection({ key: "y", ctrlKey: true }, "Win32"), "redo");
+  assert.equal(codeOuterHistoryDirection({ key: "y", ctrlKey: true }, "MacIntel"), null);
+  assert.equal(codeOuterHistoryDirection({ key: "z" }, "MacIntel"), null);
 });
 
 test("history focus restoration accepts the document shell and surviving editor descendants", () => {
@@ -114,16 +118,18 @@ test("CodeMirror history refocuses a connected editor without stealing external 
 });
 
 test("editor Select All shortcuts escalate from CodeMirror to the Markdown document", () => {
-  assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true }), true);
-  assert.equal(isEditorSelectAllShortcut({ key: "A", ctrlKey: true }), true);
-  assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true, shiftKey: true }), false);
-  assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true, altKey: true }), false);
-  assert.equal(isEditorSelectAllShortcut({ key: "a" }), false);
-  assert.equal(isEditorSelectAllShortcut({ key: "z", metaKey: true }), false);
+  assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true }, "MacIntel"), true);
+  assert.equal(isEditorSelectAllShortcut({ key: "A", ctrlKey: true }, "Win32"), true);
+  assert.equal(isEditorSelectAllShortcut({ key: "A", ctrlKey: true }, "MacIntel"), false);
+  assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true }, "Win32"), false);
+  assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true, shiftKey: true }, "MacIntel"), false);
+  assert.equal(isEditorSelectAllShortcut({ key: "a", metaKey: true, altKey: true }, "MacIntel"), false);
+  assert.equal(isEditorSelectAllShortcut({ key: "a" }, "MacIntel"), false);
+  assert.equal(isEditorSelectAllShortcut({ key: "z", metaKey: true }, "MacIntel"), false);
 });
 
 test("CodeMirror-only structural shortcuts stay inert like native source controls", () => {
-  for (const key of ["a", "b", "d", "e", "f", "h", "k", "l", "n", "o", "p", "t", "v"]) {
+  for (const key of ["a", "b", "d", "e", "f", "h", "k", "l", "n", "o", "p", "t", "v", "y", "z"]) {
     assert.equal(
       isCodeSourceNativeNoopShortcut({ key, ctrlKey: true }, "MacIntel"),
       true,
@@ -465,7 +471,8 @@ test("source-only code edits join CodeMirror's undo and redo sequence", () => {
       { key: "z", metaKey: true },
       history.afterSource,
       history.afterContent,
-      history
+      history,
+      "MacIntel"
     ),
     "undo"
   );
@@ -474,7 +481,8 @@ test("source-only code edits join CodeMirror's undo and redo sequence", () => {
       { key: "z", metaKey: true },
       history.afterSource,
       "changed",
-      history
+      history,
+      "MacIntel"
     ),
     null
   );
@@ -484,7 +492,8 @@ test("source-only code edits join CodeMirror's undo and redo sequence", () => {
       { key: "z", metaKey: true, shiftKey: true },
       history.beforeSource,
       history.beforeContent,
-      history
+      history,
+      "MacIntel"
     ),
     "redo"
   );
@@ -493,7 +502,8 @@ test("source-only code edits join CodeMirror's undo and redo sequence", () => {
       { key: "y", ctrlKey: true },
       history.beforeSource,
       history.beforeContent,
-      history
+      history,
+      "Win32"
     ),
     "redo"
   );
@@ -502,7 +512,8 @@ test("source-only code edits join CodeMirror's undo and redo sequence", () => {
       { key: "z", metaKey: true },
       history.beforeSource,
       history.beforeContent,
-      history
+      history,
+      "MacIntel"
     ),
     null
   );
@@ -515,7 +526,8 @@ test("source-only code edits join CodeMirror's undo and redo sequence", () => {
       { key: "z", metaKey: true },
       history.afterSource,
       history.afterContent,
-      history
+      history,
+      "MacIntel"
     ),
     "undo"
   );

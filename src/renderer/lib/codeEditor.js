@@ -8,18 +8,30 @@ import {
 } from "@codemirror/language";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
+import { isPrimaryShortcutModifier } from "./constants.js";
 import { sourceTabEdit } from "./sourceEditing.js";
 
 const tetherCodeViews = new WeakMap();
 
-export function isEditorHistoryShortcut(event) {
-  if (!event || event.altKey || !(event.metaKey || event.ctrlKey)) return false;
-  const key = String(event.key || "").toLowerCase();
-  return key === "z" || (key === "y" && !event.shiftKey);
+function currentEditorPlatform() {
+  return globalThis.navigator?.userAgentData?.platform
+    || globalThis.navigator?.platform
+    || "";
 }
 
-export function codeOuterHistoryDirection(event) {
-  if (!isEditorHistoryShortcut(event)) return null;
+function isMacEditorPlatform(platform) {
+  return /^(?:mac|iphone|ipad|ipod)/i.test(String(platform));
+}
+
+export function isEditorHistoryShortcut(event, platform = currentEditorPlatform()) {
+  const isMac = isMacEditorPlatform(platform);
+  if (!event || event.altKey || !isPrimaryShortcutModifier(event, isMac)) return false;
+  const key = String(event.key || "").toLowerCase();
+  return key === "z" || (!isMac && key === "y" && !event.shiftKey);
+}
+
+export function codeOuterHistoryDirection(event, platform = currentEditorPlatform()) {
+  if (!isEditorHistoryShortcut(event, platform)) return null;
   const key = String(event.key || "").toLowerCase();
   return key === "y" || (key === "z" && event.shiftKey) ? "redo" : "undo";
 }
@@ -49,11 +61,12 @@ export function restoreCodeViewFocusAfterHistory(codeView, scheduleFrame = globa
   return true;
 }
 
-export function isEditorSelectAllShortcut(event) {
+export function isEditorSelectAllShortcut(event, platform = currentEditorPlatform()) {
+  const isMac = isMacEditorPlatform(platform);
   return Boolean(event)
     && !event.altKey
     && !event.shiftKey
-    && Boolean(event.metaKey || event.ctrlKey)
+    && isPrimaryShortcutModifier(event, isMac)
     && String(event.key || "").toLowerCase() === "a";
 }
 
@@ -70,27 +83,34 @@ const macNativeNoopControlKeys = new Set([
   "o",
   "p",
   "t",
-  "v"
+  "v",
+  "y",
+  "z"
 ]);
 
-export function isCodeSourceNativeNoopShortcut(
+export function isMacSourceControlNoopShortcut(
   event,
-  platform = globalThis.navigator?.userAgentData?.platform
-    || globalThis.navigator?.platform
-    || ""
+  platform = currentEditorPlatform()
 ) {
-  if (!event || event.metaKey === event.ctrlKey) return false;
-  const isMacPlatform = /^(?:mac|iphone|ipad|ipod)/i.test(String(platform));
-  if (
-    event.ctrlKey
+  return Boolean(
+    event
+    && event.ctrlKey
     && !event.metaKey
     && !event.altKey
-    && isMacPlatform
+    && isMacEditorPlatform(platform)
     && (
       macNativeNoopControlKeys.has(String(event.key || "").toLowerCase())
       || ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)
     )
-  ) return true;
+  );
+}
+
+export function isCodeSourceNativeNoopShortcut(
+  event,
+  platform = currentEditorPlatform()
+) {
+  if (!event || event.metaKey === event.ctrlKey) return false;
+  if (isMacSourceControlNoopShortcut(event, platform)) return true;
   if (event.shiftKey) return false;
   if (event.key === "Enter") return !event.altKey;
   return Boolean(event.altKey) && ["ArrowUp", "ArrowDown"].includes(event.key);
@@ -397,8 +417,14 @@ export function emptyCodeEnterSource(source) {
   return `${value.slice(0, contentStart)}${lineEnding}${value.slice(contentStart)}`;
 }
 
-export function codeSourceOnlyHistoryDirection(event, source, content, history) {
-  if (!history || !isEditorHistoryShortcut(event)) return null;
+export function codeSourceOnlyHistoryDirection(
+  event,
+  source,
+  content,
+  history,
+  platform = currentEditorPlatform()
+) {
+  if (!history || !isEditorHistoryShortcut(event, platform)) return null;
   const key = String(event.key || "").toLowerCase();
   const redo = key === "y" || (key === "z" && event.shiftKey);
   if (

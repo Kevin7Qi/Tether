@@ -82,6 +82,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /TETHER_PARITY_CASE === "code-shift-option-vertical-selection"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-native-noop-shortcuts"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-native-control-shortcuts"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "platform-native-shortcuts"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "external-markdown-open"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-control-select-all"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-line-delete"/);
@@ -443,6 +444,18 @@ test("code history changes restore the same embedded editor focus", () => {
     syntax,
     /editor\.closest\("\.ProseMirror"\)\?\.tetherRunBoundaryHistory\?\.\(command\)/
   );
+});
+
+test("macOS Control shortcuts are intercepted before structured editor keymaps", () => {
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
+  const codeEditor = fs.readFileSync(path.join(root, "src", "renderer", "lib", "codeEditor.js"), "utf8");
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
+  assert.match(codeEditor, /export function isMacSourceControlNoopShortcut\(/);
+  assert.match(surface, /const handleSourceNativeNoopShortcut = \(event\) =>/);
+  assert.match(surface, /isMacSourceControlNoopShortcut\(event\)/);
+  assert.match(surface, /addEventListener\("keydown", handleSourceNativeNoopShortcut, true\)/);
+  assert.match(surface, /removeEventListener\("keydown", handleSourceNativeNoopShortcut, true\)/);
+  assert.match(syntax, /if \(isMacSourceControlNoopShortcut\(event\)\)[\s\S]*event\.preventDefault\(\)/);
 });
 
 test("exact source selections capture copy and cut before DOM reconciliation", () => {
