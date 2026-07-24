@@ -6144,6 +6144,10 @@ function capturedCodeBlockTarget(view, block, event) {
   return { position: blockPosition + 1, assoc: 1 };
 }
 
+export function isInlineMathPointerEdge(distance) {
+  return Number.isFinite(distance) && distance >= 0 && distance <= 1;
+}
+
 function capturedTargetAtPointer(view, event) {
   let math = event.target instanceof Element
     ? event.target.closest('span[data-type="math_inline"]')
@@ -6164,7 +6168,11 @@ function capturedTargetAtPointer(view, event) {
             : 0
       }))
       .sort((left, right) => left.distance - right.distance)[0];
-    if (nearby?.distance <= 10) {
+    // Direct clicks anywhere inside the rendered formula are already captured
+    // above. Keep only a true edge slop outside it: a wider halo swallows the
+    // ordinary prose space beside the atom, so a drag that starts in that
+    // space opens the math source input instead of selecting the document.
+    if (isInlineMathPointerEdge(nearby?.distance)) {
       math = nearby.candidate;
       adjacentMathEdge = event.clientX >= nearby.rect.right ? "after" : "before";
     }

@@ -41,6 +41,7 @@ import {
   isUnmarkedCodeBlockBoundaryMutation,
   isUnmarkedCodeBlockDeletion,
   isUnmarkedFullDocumentReplacement,
+  isInlineMathPointerEdge,
   isSourceInputComposing,
   landedOnRenderedSourceBoundary,
   hardbreakBoundaryBackspaceTransaction,
@@ -136,6 +137,14 @@ const schema = new Schema({
     strike_through: {},
     link: { attrs: { href: {}, title: { default: null } } }
   }
+});
+
+test("inline math pointer capture leaves adjacent prose available for drag selection", () => {
+  assert.equal(isInlineMathPointerEdge(0), true);
+  assert.equal(isInlineMathPointerEdge(1), true);
+  assert.equal(isInlineMathPointerEdge(1.01), false);
+  assert.equal(isInlineMathPointerEdge(2.414), false);
+  assert.equal(isInlineMathPointerEdge(10), false);
 });
 
 const literalSchema = new Schema({

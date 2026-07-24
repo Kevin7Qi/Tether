@@ -250,6 +250,8 @@ async function editorState() {
     const selection = getSelection();
     const anchorNode = selection?.anchorNode || null;
     const anchorOffset = selection?.anchorOffset ?? null;
+    const focusNode = selection?.focusNode || null;
+    const focusOffset = selection?.focusOffset ?? null;
     const followingText = anchorNode?.nodeType === Node.TEXT_NODE
       ? anchorNode.data.slice(anchorOffset)
       : anchorNode?.childNodes?.[anchorOffset]?.textContent ?? "";
@@ -257,6 +259,9 @@ async function editorState() {
       activeElement: document.activeElement?.className || document.activeElement?.tagName || null,
       anchorText: anchorNode?.data || null,
       anchorOffset,
+      focusText: focusNode?.data || null,
+      focusOffset,
+      selectionText: selection?.toString() || "",
       followingText,
       dirty: Boolean(document.querySelector(".dirty-dot")),
       saveDisabled: document.querySelector(".save-button")?.disabled ?? null,
@@ -349,6 +354,26 @@ async function clickElement(selector) {
   await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, ...point });
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, ...point });
   await delay(120);
+}
+
+async function clickTextBoundary(text, offset, rootSelector = ".ProseMirror") {
+  const point = await textBoundaryPoint(text, offset, rootSelector);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+    ...point
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+    ...point
+  });
+  await delay(180);
 }
 
 async function textBoundaryPoint(text, offset, rootSelector) {
@@ -824,6 +849,185 @@ async function verifyInlineEditing() {
   await waitForSaveState(false);
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(editedInlineFixture);
+}
+
+async function verifyRenderedPointerInsertion() {
+  const fixtures = [
+    {
+      name: "strong",
+      source: "Before **bold** after.\n",
+      visible: "bold",
+      offset: 2,
+      expected: "Before **boXld** after.\n"
+    },
+    {
+      name: "emphasis",
+      source: "Before *italic* after.\n",
+      visible: "italic",
+      offset: 3,
+      expected: "Before *itaXlic* after.\n"
+    },
+    {
+      name: "inline code",
+      source: "Before `code` after.\n",
+      visible: "code",
+      offset: 2,
+      expected: "Before `coXde` after.\n"
+    },
+    {
+      name: "link",
+      source: "Before [guide](https://example.com) after.\n",
+      visible: "guide",
+      offset: 2,
+      expected: "Before [guXide](https://example.com) after.\n"
+    },
+    {
+      name: "strikethrough",
+      source: "Before ~~strike~~ after.\n",
+      visible: "strike",
+      offset: 3,
+      expected: "Before ~~strXike~~ after.\n"
+    }
+  ];
+
+  for (const fixture of fixtures) {
+    await startSession(fixture.source, fixture.visible);
+    await clickTextBoundary(fixture.visible, fixture.offset);
+    await cdp.send("Input.insertText", { text: "X" });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(fixture.expected);
+    await stopSession();
+  }
+}
+
+async function verifyRenderedPointerSelection() {
+  const source = "Before **bold** after.\n";
+  const selectionStart = "Before".length;
+  const selectionEnd = source.indexOf("after.");
+  const selectedSource = source.slice(selectionStart, selectionEnd);
+  const cutSource = `${source.slice(0, selectionStart)}${source.slice(selectionEnd)}`;
+
+  await startSession(source, "Before bold after.");
+  const start = await textBoundaryPoint("Before ", "Before ".length, ".ProseMirror");
+  const end = await textBoundaryPoint(" after.", 1, ".ProseMirror");
+  await dragBetweenTextBoundaries(start, end);
+  await waitFor(
+    async () => (await editorState()).selectionText === " bold ",
+    "pointer drag across rendered bold text did not retain its visible selection"
+  );
+  const copied = await dispatchCopyAndCaptureText();
+  if (copied !== selectedSource) {
+    const state = await editorState().catch(() => null);
+    throw new Error(
+      `Rendered pointer Copy emitted ${JSON.stringify(copied)} instead of ${JSON.stringify(selectedSource)}\n`
+      + `Editor state: ${JSON.stringify(state)}`
+    );
+  }
+  const cut = await dispatchCutAndCaptureText();
+  if (cut !== selectedSource) {
+    throw new Error(
+      `Rendered pointer Cut emitted ${JSON.stringify(cut)} instead of ${JSON.stringify(selectedSource)}`
+    );
+  }
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(cutSource);
+  if (await dispatchPasteText(selectedSource) == null) {
+    throw new Error("No focused editor received the rendered pointer-selection Paste event");
+  }
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(source);
+  await stopSession();
+
+  await startSession(source, "Before bold after.");
+  const backwardStart = await textBoundaryPoint(" after.", 1, ".ProseMirror");
+  const backwardEnd = await textBoundaryPoint("Before ", "Before".length, ".ProseMirror");
+  await dragBetweenTextBoundaries(backwardStart, backwardEnd);
+  try {
+    await waitFor(
+      async () => (await editorState()).selectionText === " bold ",
+      "backward pointer drag across rendered bold text did not retain its visible selection"
+    );
+  } catch (error) {
+    const state = await editorState().catch(() => null);
+    throw new Error(`${error.message}\nEditor state: ${JSON.stringify(state)}`);
+  }
+  const backwardCopied = await dispatchCopyAndCaptureText();
+  if (backwardCopied !== selectedSource) {
+    const state = await editorState().catch(() => null);
+    throw new Error(
+      `Backward rendered pointer Copy emitted ${JSON.stringify(backwardCopied)} instead of `
+      + `${JSON.stringify(selectedSource)}\nEditor state: ${JSON.stringify(state)}`
+    );
+  }
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(`${source.slice(0, selectionStart)}X${source.slice(selectionEnd)}`);
+  await stopSession();
+
+  const atomFixtures = [
+    {
+      name: "inline math",
+      source: "Before $x + y$ after.\n"
+    },
+    {
+      name: "image",
+      source: "Before ![Alt](https://example.com/image.png) after.\n"
+    },
+    {
+      name: "footnote reference",
+      source: "Before [^note] after.\n\n[^note]: Footnote\n"
+    },
+    {
+      name: "inline HTML",
+      source: "Before <em>html</em> after.\n"
+    }
+  ];
+  for (const fixture of atomFixtures) {
+    const atomSelectionStart = "Before".length;
+    const atomSelectionEnd = fixture.source.indexOf("after.");
+    const expectedSelection = fixture.source.slice(atomSelectionStart, atomSelectionEnd);
+    await startSession(fixture.source, "Before");
+    const atomStart = await textBoundaryPoint("Before ", "Before".length, ".ProseMirror");
+    const atomEnd = await textBoundaryPoint(" after.", 1, ".ProseMirror");
+    const atomGeometry = await evaluate(`(() => {
+      const atom = document.querySelector('span[data-type="math_inline"]');
+      const rect = atom?.getBoundingClientRect();
+      return rect ? {
+        startX: ${JSON.stringify(atomStart.x)},
+        left: rect.left,
+        distance: Math.max(0, rect.left - ${JSON.stringify(atomStart.x)})
+      } : null;
+    })()`);
+    await dragBetweenTextBoundaries(atomStart, atomEnd);
+    try {
+      await waitFor(
+        () => evaluate(`Boolean(
+          document.querySelector(".ProseMirror")?.tetherGetActiveSourceSelection?.()
+          || (getSelection() && !getSelection().isCollapsed)
+        )`),
+        `pointer drag across rendered ${fixture.name} did not retain a selection`
+      );
+    } catch (error) {
+      const state = await editorState().catch(() => null);
+      throw new Error(
+        `${error.message}\nAtom geometry: ${JSON.stringify(atomGeometry)}`
+        + `\nEditor state: ${JSON.stringify(state)}`
+      );
+    }
+    const atomCopied = await dispatchCopyAndCaptureText();
+    if (atomCopied !== expectedSelection) {
+      const state = await editorState().catch(() => null);
+      throw new Error(
+        `Rendered ${fixture.name} pointer Copy emitted ${JSON.stringify(atomCopied)} instead of `
+        + `${JSON.stringify(expectedSelection)}\nEditor state: ${JSON.stringify(state)}`
+      );
+    }
+    await stopSession();
+  }
 }
 
 async function verifyInlineBoundaryNavigation() {
@@ -6090,6 +6294,16 @@ async function run() {
     console.log("Verified cold-launch, already-running, and drag-drop Markdown opening.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "rendered-pointer-insertion") {
+    await verifyRenderedPointerInsertion();
+    console.log("Verified pointer insertion inside rendered inline Markdown preserves exact source.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "rendered-pointer-selection") {
+    await verifyRenderedPointerSelection();
+    console.log("Verified pointer selection across rendered inline Markdown preserves exact source.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-native-noop-shortcuts") {
     await verifyCodeNativeNoopShortcuts();
     console.log("Verified native no-op shortcuts do not invoke CodeMirror structural commands.");
@@ -6412,6 +6626,8 @@ async function run() {
     return;
   }
   await verifyInlineEditing();
+  await verifyRenderedPointerInsertion();
+  await verifyRenderedPointerSelection();
   await stopSession();
   await verifyInlineBoundaryNavigation();
   await verifyPlatformNativeInlineBoundaryNavigation();
