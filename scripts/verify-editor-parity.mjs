@@ -5649,6 +5649,98 @@ async function verifyPlatformNativeDocumentShortcuts() {
   }
 }
 
+async function verifyPlatformNativeModifiedEnterShortcuts() {
+  const content = "alpha\nbravo";
+  const caret = content.indexOf("bravo") + 2;
+  const codeFixture = `Before.\n\n\`\`\`text\n${content}\n\`\`\`\n\nAfter.\n`;
+  const shortcuts = [
+    { name: "Command-Enter", nativeModifiers: ["meta"], modifiers: 4 },
+    { name: "Control-Enter", nativeModifiers: ["control"], modifiers: 2 },
+    { name: "Option-Enter", nativeModifiers: ["alt"], modifiers: 1 },
+    { name: "Shift-Command-Enter", nativeModifiers: ["shift", "meta"], modifiers: 12 },
+    { name: "Shift-Control-Enter", nativeModifiers: ["shift", "control"], modifiers: 10 },
+    { name: "Shift-Option-Enter", nativeModifiers: ["shift", "alt"], modifiers: 9 },
+    { name: "Command-Option-Enter", nativeModifiers: ["meta", "alt"], modifiers: 5 },
+    { name: "Control-Option-Enter", nativeModifiers: ["control", "alt"], modifiers: 3 }
+  ];
+  const nativeValues = [];
+  await startSession(content, "bravo");
+  for (let index = 0; index < shortcuts.length; index += 1) {
+    const shortcut = shortcuts[index];
+    const controlId = `tether-native-modified-enter-${index}`;
+    await evaluate(`(() => {
+      const control = document.createElement("textarea");
+      control.id = ${JSON.stringify(controlId)};
+      control.style.position = "fixed";
+      control.style.left = "-10000px";
+      control.value = ${JSON.stringify(content)};
+      document.body.append(control);
+      control.focus();
+      control.setSelectionRange(${caret}, ${caret});
+      return true;
+    })()`);
+    await dispatchNativeKey("Enter", shortcut.nativeModifiers);
+    await delay(25);
+    await cdp.send("Input.insertText", { text: "X" });
+    nativeValues.push(await evaluate(
+      `document.querySelector(${JSON.stringify(`#${controlId}`)})?.value ?? null`
+    ));
+    await evaluate(`document.querySelector(${JSON.stringify(`#${controlId}`)})?.remove()`);
+  }
+  await stopSession();
+
+  const saveAndRead = async () => {
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForSaveState(true);
+    return readFile(samplePath, "utf8");
+  };
+  const mismatches = [];
+  for (let index = 0; index < shortcuts.length; index += 1) {
+    const shortcut = shortcuts[index];
+    const expected = nativeValues[index];
+
+    await startSession(content, "bravo");
+    await placeCaretInText("bravo", 2);
+    await dispatchEnterKey(shortcut.modifiers);
+    await dispatchTextKey("X", "KeyX", 88);
+    const proseSource = await saveAndRead();
+    if (proseSource !== expected) {
+      mismatches.push({
+        shortcut: shortcut.name,
+        surface: "prose",
+        expected,
+        actualSource: proseSource
+      });
+    }
+    await stopSession();
+
+    await startSession(codeFixture, "alpha");
+    await clickElement(".milkdown-code-block .cm-line:nth-child(2)");
+    await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchEnterKey(shortcut.modifiers);
+    await dispatchTextKey("X", "KeyX", 88);
+    const codeSource = await saveAndRead();
+    const expectedCodeSource = codeFixture.replace(content, expected);
+    if (codeSource !== expectedCodeSource) {
+      mismatches.push({
+        shortcut: shortcut.name,
+        surface: "code",
+        expectedSource: expectedCodeSource,
+        actualSource: codeSource
+      });
+    }
+    await stopSession();
+  }
+  if (mismatches.length) {
+    throw new Error(
+      `Modified Return diverged from native source controls:\n${JSON.stringify(mismatches, null, 2)}`
+    );
+  }
+}
+
 async function verifyPlatformNativeNavigationShortcuts() {
   const content = "alpha\nbravo\ncharlie";
   const caret = content.indexOf("bravo") + 2;
@@ -6004,6 +6096,11 @@ async function run() {
     console.log("Verified macOS document shortcuts match native source controls.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "platform-native-modified-enter") {
+    await verifyPlatformNativeModifiedEnterShortcuts();
+    console.log("Verified modified Return shortcuts against native source controls.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "platform-native-navigation") {
     await verifyPlatformNativeNavigationShortcuts();
     console.log("Verified macOS line and document navigation match native source controls.");
@@ -6333,6 +6430,7 @@ async function run() {
   await verifyCodeNativeNoopShortcuts();
   await verifyCodeNativeControlShortcuts();
   await verifyPlatformNativeDocumentShortcuts();
+  await verifyPlatformNativeModifiedEnterShortcuts();
   await verifyPlatformNativeNavigationShortcuts();
   await verifyPlatformNativePlainVerticalNavigationShortcuts();
   await verifyPlatformNativeOptionNavigationShortcuts();
