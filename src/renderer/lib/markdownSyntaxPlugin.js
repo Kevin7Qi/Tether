@@ -1169,7 +1169,13 @@ function serializedCaretOffset(state, unit, source, position, serializer) {
   let marker = "\uE000";
   while (source.includes(marker)) marker += "\uE001";
 
-  const transaction = state.tr.insertText(marker, position, position);
+  // Raw paragraph metadata deliberately replays the untouched physical source.
+  // Invalidate it for this synthetic probe so the serializer includes the
+  // marker and can reveal the caret's true offset around inline delimiters.
+  const transaction = invalidateParagraphSource(
+    state.tr.insertText(marker, position, position),
+    position
+  );
   const markedState = { schema: state.schema, doc: transaction.doc };
   const markerInsideUnit = position >= unit.from && position < unit.to;
   const markedUnit = {
@@ -3525,16 +3531,47 @@ export function collapsedDocumentSourceSelection(
     && selection.head > position
     && selection.head < position + node.nodeSize
   ));
+  const mappingState = selection === state.selection
+    ? state
+    : EditorState.create({ doc: state.doc, selection });
   const directParagraphSource = selection.$from.parent.attrs?.paragraphSource;
-  const sourceOffset = directSegment
+  let sourceOffset = directSegment
     && directParagraphSource === selection.$from.parent.textContent
     ? directSegment.from + selection.$from.parentOffset
     : documentSourceOffsetAtPosition(
-        { doc: state.doc, selection },
+        mappingState,
         selection.head,
         serializer,
         "forward"
       );
+  // ProseMirror associates a caret at the end of a marked run with the mark
+  // on its left. The serializer probe therefore lands just before the closing
+  // Markdown syntax. A source editor's caret at the same rendered boundary is
+  // outside the complete token, so advance through its exact source suffix.
+  const backwardBoundary = markdownBoundarySourceTarget(
+    mappingState,
+    "backward"
+  );
+  if (Number.isFinite(sourceOffset) && backwardBoundary?.inlinePosition != null) {
+    const unit = markdownDeletionSourceUnit(
+      mappingState,
+      backwardBoundary
+    );
+    const unitSource = unit ? continuousMarkdownSource(mappingState, unit, serializer) : "";
+    const localOffset = unit
+      ? sourceCaretOffset(
+          mappingState,
+          unit,
+          unitSource,
+          selection.head,
+          null,
+          serializer
+        )
+      : null;
+    if (Number.isFinite(localOffset)) {
+      sourceOffset += Math.max(0, unitSource.length - localOffset);
+    }
+  }
   if (!documentSource || !Number.isFinite(sourceOffset)) return null;
   return {
     anchor: sourceOffset,
@@ -7169,7 +7206,20 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           const plainSelection = sourceSelection || documentSelection
             ? null
             : plainTextMarkdownSourceSelection(_view.state, ctx.get(serializerCtx));
-          const exactSelection = sourceSelection || documentSelection || plainSelection;
+          const collapsedParagraphSelection = (
+            sourceSelection
+            || documentSelection
+            || plainSelection
+            || !_view.state.selection.empty
+            || _view.state.selection.$from.depth !== 1
+            || _view.state.selection.$from.parent.type.name !== "paragraph"
+          )
+            ? null
+            : collapsedDocumentSourceSelection(_view.state, ctx.get(serializerCtx));
+          const exactSelection = sourceSelection
+            || documentSelection
+            || plainSelection
+            || collapsedParagraphSelection;
           if (
             (exactSelection || sourceNewlineSelectionInfo(_view.state))
             && !event.altKey

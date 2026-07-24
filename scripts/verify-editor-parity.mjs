@@ -463,6 +463,18 @@ async function dispatchTextKey(text, code, virtualKeyCode) {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...common });
 }
 
+async function dispatchEnterKey() {
+  const common = {
+    key: "Enter",
+    code: "Enter",
+    text: "\r",
+    unmodifiedText: "\r",
+    windowsVirtualKeyCode: 13
+  };
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...common });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...common });
+}
+
 async function dispatchNativeKey(keyCode, modifiers = []) {
   const handled = await evaluate(
     `window.remoteMarkdown.sendNativeKeyForTest(${JSON.stringify(keyCode)}, ${JSON.stringify(modifiers)})`
@@ -1021,6 +1033,34 @@ async function verifyPlatformNativeInlineBoundaryNavigation() {
       },
       {
         ...fixture,
+        name: `${fixture.name} Enter before`,
+        markdown,
+        visibleText: "Before ",
+        visibleOffset: "Before ".length,
+        sourceCaret: sourceStart,
+        keyCode: "Enter",
+        key: "Enter",
+        code: "Enter",
+        virtualKeyCode: 13,
+        nativeModifiers: [],
+        modifiers: 0
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Enter after`,
+        markdown,
+        visibleText: " after.",
+        visibleOffset: 0,
+        sourceCaret: sourceEnd,
+        keyCode: "Enter",
+        key: "Enter",
+        code: "Enter",
+        virtualKeyCode: 13,
+        nativeModifiers: [],
+        modifiers: 0
+      },
+      {
+        ...fixture,
         name: `${fixture.name} Option-Delete`,
         markdown,
         visibleText: "Before ",
@@ -1077,10 +1117,13 @@ async function verifyPlatformNativeInlineBoundaryNavigation() {
       }
     ];
   });
+  const selectedScenarios = process.env.TETHER_PARITY_SCENARIO
+    ? scenarios.filter(({ name }) => name.includes(process.env.TETHER_PARITY_SCENARIO))
+    : scenarios;
   const mismatches = [];
 
-  for (let index = 0; index < scenarios.length; index += 1) {
-    const scenario = scenarios[index];
+  for (let index = 0; index < selectedScenarios.length; index += 1) {
+    const scenario = selectedScenarios[index];
     const controlId = `tether-native-inline-boundary-${index}`;
     await startSession(scenario.markdown, "Before ");
     await evaluate(`(() => {
@@ -1094,7 +1137,11 @@ async function verifyPlatformNativeInlineBoundaryNavigation() {
       control.setSelectionRange(${scenario.sourceCaret}, ${scenario.sourceCaret});
       return true;
     })()`);
-    await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
+    if (scenario.key === "Enter" && !scenario.nativeModifiers.length) {
+      await cdp.send("Input.insertText", { text: "\n" });
+    } else {
+      await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
+    }
     await cdp.send("Input.insertText", { text: "x" });
     const nativeSource = await evaluate(
       `document.querySelector(${JSON.stringify(`#${controlId}`)})?.value ?? null`
@@ -1103,12 +1150,16 @@ async function verifyPlatformNativeInlineBoundaryNavigation() {
 
     await startSession(scenario.markdown, "Before ");
     await placeCaretInText(scenario.visibleText, scenario.visibleOffset);
-    await dispatchKey({
-      key: scenario.key,
-      code: scenario.code,
-      virtualKeyCode: scenario.virtualKeyCode,
-      modifiers: scenario.modifiers
-    });
+    if (scenario.key === "Enter" && !scenario.modifiers) {
+      await dispatchEnterKey();
+    } else {
+      await dispatchKey({
+        key: scenario.key,
+        code: scenario.code,
+        virtualKeyCode: scenario.virtualKeyCode,
+        modifiers: scenario.modifiers
+      });
+    }
     const renderedNavigation = await evaluate(`(() => {
       const root = document.querySelector(".ProseMirror");
       const control = document.querySelector(".tether-continuous-source");
@@ -3451,6 +3502,8 @@ async function verifyHardBreakCutPasteHistory() {
 async function verifySoftLineEditing() {
   const fixture = "Alpha\r\nBeta\r\n";
   const editedFixture = "AlXpha\r\nBeta\r\n";
+  const enteredFixture = "Al\r\npha\r\nBeta\r\n";
+  const enteredAndTypedFixture = "Al\r\nXpha\r\nBeta\r\n";
   const joinedFixture = "AlphaBeta\r\n";
   const navigatedFixture = "Alpha\r\nXBeta\r\n";
   const save = async (source) => {
@@ -3469,6 +3522,22 @@ async function verifySoftLineEditing() {
   await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
   await waitForSaveState(false);
   await save(editedFixture);
+  await stopSession();
+
+  await startSession(fixture, "Alpha");
+  await placeCaretInText("Alpha", 2);
+  await dispatchEnterKey();
+  await waitForSaveState(false);
+  await save(enteredFixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await save(fixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await save(enteredFixture);
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await save(enteredAndTypedFixture);
   await stopSession();
 
   await startSession(fixture, "Alpha");
@@ -4763,6 +4832,20 @@ async function verifyPlatformNativeDocumentShortcuts() {
         },
         { text: "x" }
       ]
+    },
+    {
+      name: "Enter",
+      steps: [
+        {
+          keyCode: "Enter",
+          key: "Enter",
+          code: "Enter",
+          virtualKeyCode: 13,
+          nativeModifiers: [],
+          modifiers: 0
+        },
+        { text: "x" }
+      ]
     }
   ];
   const runNativeSteps = async (scenario, index) => {
@@ -4780,6 +4863,9 @@ async function verifyPlatformNativeDocumentShortcuts() {
     })()`);
     for (const step of scenario.steps) {
       if (step.text) await cdp.send("Input.insertText", { text: step.text });
+      else if (step.key === "Enter" && !step.nativeModifiers?.length) {
+        await cdp.send("Input.insertText", { text: "\n" });
+      }
       else await dispatchNativeKey(step.keyCode, step.nativeModifiers);
       await delay(25);
     }
@@ -4797,6 +4883,8 @@ async function verifyPlatformNativeDocumentShortcuts() {
           `Key${step.text.toUpperCase()}`,
           step.text.toUpperCase().charCodeAt(0)
         );
+      } else if (step.key === "Enter" && !step.modifiers) {
+        await dispatchEnterKey();
       } else {
         await dispatchKey({
           key: step.key,

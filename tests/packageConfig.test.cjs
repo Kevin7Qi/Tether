@@ -597,6 +597,9 @@ test("exact source edits preserve source-only carets or refocus the rendered sur
   assert.match(syntax, /focusExactEditSelection\(view\);/);
   assert.match(syntax, /const captureExactTyping = \(event\) =>/);
   assert.match(syntax, /const captureExactDeletion = \(event\) => \{[\s\S]*isMacSourceNativeNoopShortcut\(event\)/);
+  assert.match(syntax, /const collapsedParagraphSelection = \(/);
+  assert.match(syntax, /\$from\.depth !== 1/);
+  assert.match(syntax, /\$from\.parent\.type\.name !== "paragraph"/);
   assert.match(syntax, /addEventListener\("keydown", captureExactTyping, true\)/);
   assert.match(syntax, /removeEventListener\("keydown", captureExactTyping, true\)/);
   assert.ok((syntax.match(/dispatchExactEdit\(/g) || []).length >= 5);

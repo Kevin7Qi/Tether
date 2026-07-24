@@ -182,6 +182,61 @@ test("a synthetic empty document exposes physical source offset zero for paste",
   });
 });
 
+test("collapsed source carets retain marked inline boundary offsets", () => {
+  const boundarySchema = new Schema({
+    nodes: {
+      doc: { content: "paragraph+" },
+      paragraph: {
+        content: "inline*",
+        attrs: {
+          paragraphSource: { default: null },
+          paragraphSourceSignature: { default: null }
+        }
+      },
+      text: { group: "inline" }
+    },
+    marks: { strong: {} }
+  });
+  const strong = boundarySchema.marks.strong.create();
+  const source = "Before **bold** after.";
+  const paragraph = boundarySchema.node("paragraph", {
+    paragraphSource: source,
+    paragraphSourceSignature: "unchanged"
+  }, [
+    boundarySchema.text("Before "),
+    boundarySchema.text("bold", [strong]),
+    boundarySchema.text(" after.")
+  ]);
+  const doc = boundarySchema.node("doc", null, [paragraph]);
+  const serialize = (root) => {
+    const block = root.firstChild;
+    if (typeof block?.attrs?.paragraphSource === "string") {
+      return `${block.attrs.paragraphSource}\n`;
+    }
+    let value = "";
+    block?.forEach((node) => {
+      const marked = node.marks.some((mark) => mark.type.name === "strong");
+      value += marked ? `**${node.text}**` : node.text;
+    });
+    return `${value}\n`;
+  };
+
+  const before = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, 1 + "Before ".length)
+  });
+  assert.equal(collapsedDocumentSourceSelection(before, serialize)?.head, "Before ".length);
+
+  const after = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, 1 + "Before bold".length)
+  });
+  assert.equal(
+    collapsedDocumentSourceSelection(after, serialize)?.head,
+    "Before **bold**".length
+  );
+});
+
 test("saving a temporary source control captures its logical unit and selection", () => {
   const focus = sourceControlSaveFocus({
     classList: ["tether-continuous-source", "is-block", "is-code_block"],
