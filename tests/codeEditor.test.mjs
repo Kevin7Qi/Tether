@@ -30,6 +30,7 @@ import {
   isCodeSourceNativeNoopShortcut,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
+  isMacSourceNativeNoopShortcut,
   restoreCodeViewFocusAfterHistory,
   shouldRestoreEditorHistoryFocus,
   tetherCodeExtensions,
@@ -181,6 +182,40 @@ test("CodeMirror-only structural shortcuts stay inert like native source control
   }), false);
   assert.equal(isCodeSourceNativeNoopShortcut({ key: "Enter", metaKey: true, altKey: true }), false);
   assert.equal(isCodeSourceNativeNoopShortcut({ key: "Enter" }), false);
+});
+
+test("macOS source-native navigation no-ops bypass structured editor keymaps", () => {
+  for (const key of ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"]) {
+    assert.equal(
+      isMacSourceNativeNoopShortcut({ key, metaKey: true }, "MacIntel"),
+      true,
+      `Command-${key}`
+    );
+    assert.equal(
+      isMacSourceNativeNoopShortcut({ key, metaKey: true, shiftKey: true }, "MacIntel"),
+      true,
+      `Shift-Command-${key}`
+    );
+  }
+  for (const key of ["Home", "End"]) {
+    assert.equal(
+      isMacSourceNativeNoopShortcut({ key, ctrlKey: true }, "MacIntel"),
+      true,
+      `Control-${key}`
+    );
+  }
+  assert.equal(
+    isMacSourceNativeNoopShortcut({ key: "Home" }, "MacIntel"),
+    false
+  );
+  assert.equal(
+    isMacSourceNativeNoopShortcut({ key: "ArrowLeft", metaKey: true }, "Win32"),
+    false
+  );
+  assert.equal(
+    isMacSourceNativeNoopShortcut({ key: "ArrowLeft", metaKey: true, altKey: true }, "MacIntel"),
+    false
+  );
 });
 
 test("CodeMirror Tab edits preserve the source editor's literal bytes and selection", () => {

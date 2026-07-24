@@ -44,7 +44,7 @@ import {
   isCodeSourceNativeNoopShortcut,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
-  isMacSourceControlNoopShortcut,
+  isMacSourceNativeNoopShortcut,
   shouldRestoreEditorHistoryFocus,
   tetherCodeExtensions,
   tetherCodeLanguageLabel,
@@ -1428,7 +1428,7 @@ export default function WysiwygSurface({
       }
     };
     const handleSourceNativeNoopShortcut = (event) => {
-      if (isSourceInputComposing(event) || !isMacSourceControlNoopShortcut(event)) return;
+      if (isSourceInputComposing(event) || !isMacSourceNativeNoopShortcut(event)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
     };

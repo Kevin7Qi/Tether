@@ -18,7 +18,7 @@ import {
   codeOuterHistoryDirection,
   isEditorHistoryShortcut,
   isEditorSelectAllShortcut,
-  isMacSourceControlNoopShortcut,
+  isMacSourceNativeNoopShortcut,
   tetherCodeViewForElement
 } from "./codeEditor.js";
 import { decodedMarkdownSourceOffset, sourceTabEdit } from "./sourceEditing.js";
@@ -2750,6 +2750,59 @@ export function applyDocumentSourceJump(
     edge === "start" ? "forward" : "backward",
     serializer
   );
+}
+
+export function applyDocumentSourceLineJump(
+  view,
+  event,
+  serializer,
+  sourceOffset = null,
+  sourceAnchor = null
+) {
+  const edge = sourceLineJumpEdge(event);
+  const documentSource = documentSourceSegments(view?.state, serializer);
+  if (!edge || !documentSource) return false;
+  const currentHead = Number.isFinite(sourceOffset)
+    ? sourceOffset
+    : documentSourceOffsetAtPosition(
+        view.state,
+        view.state.selection.head,
+        serializer,
+        edge === "start" ? "forward" : "backward"
+      );
+  const currentAnchor = Number.isFinite(sourceAnchor)
+    ? sourceAnchor
+    : documentSourceOffsetAtPosition(
+        view.state,
+        view.state.selection.anchor,
+        serializer,
+        "forward"
+      );
+  if (!Number.isFinite(currentHead) || !Number.isFinite(currentAnchor)) return false;
+  const next = sourceSelectionLineJump({
+    anchor: currentAnchor,
+    head: currentHead,
+    fullSource: documentSource.fullSource,
+    boundary: view.state.selection.head
+  }, edge, Boolean(event.shiftKey));
+  if (!next) return false;
+  if (!event.shiftKey) {
+    return activateDocumentSourceOffset(
+      view,
+      next,
+      next.head,
+      edge === "start" ? "backward" : "forward",
+      serializer
+    );
+  }
+  dispatchFocusedSourceSelection(
+    view,
+    view.state.tr.setMeta(markdownSyntaxKey, {
+      action: "source-selection",
+      sourceSelection: next
+    })
+  );
+  return true;
 }
 
 export function documentSourceOffsetAtPosition(state, position, serializer, affinity = "forward") {
@@ -6604,7 +6657,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (!_view.editable) return false;
           if (isSourceInputComposing(event)) return false;
           if (["Backspace", "Delete"].includes(event.key)) protectedExactSource = null;
-          if (isMacSourceControlNoopShortcut(event)) {
+          if (isMacSourceNativeNoopShortcut(event)) {
             event.preventDefault();
             return true;
           }
@@ -6744,26 +6797,11 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           }
           if (
             lineJumpEdge
-            && _view.state.selection.empty
             && !activeSourceControl?.element?.isConnected
-            && _view.endOfTextblock(lineJumpEdge === "start" ? "up" : "down")
+            && applyDocumentSourceLineJump(_view, event, serializer)
           ) {
-            const target = sourceLineJumpTarget(
-              _view.state,
-              lineJumpEdge,
-              ctx.get(serializerCtx)
-            );
-            if (target) {
-              event.preventDefault();
-              activateMarkdownSourceAt(_view, _view.state.selection.from, {
-                explicitUnitPosition: target.unit.from,
-                sourceOffset: event.shiftKey ? target.caretOffset : target.boundaryOffset,
-                initialSelectionDirection: event.shiftKey
-                  ? lineJumpEdge === "start" ? "line-start" : "line-end"
-                  : null
-              });
-              return true;
-            }
+            event.preventDefault();
+            return true;
           }
           if (
             sourceSelection

@@ -105,12 +105,29 @@ export function isMacSourceControlNoopShortcut(
   );
 }
 
+export function isMacSourceNativeNoopShortcut(
+  event,
+  platform = currentEditorPlatform()
+) {
+  if (!event || event.altKey || !isMacEditorPlatform(platform)) return false;
+  if (isMacSourceControlNoopShortcut(event, platform)) return true;
+  const key = String(event.key || "");
+  if (event.metaKey && !event.ctrlKey) {
+    return ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(key);
+  }
+  return Boolean(
+    event.ctrlKey
+    && !event.metaKey
+    && ["Home", "End"].includes(key)
+  );
+}
+
 export function isCodeSourceNativeNoopShortcut(
   event,
   platform = currentEditorPlatform()
 ) {
   if (!event || event.metaKey === event.ctrlKey) return false;
-  if (isMacSourceControlNoopShortcut(event, platform)) return true;
+  if (isMacSourceNativeNoopShortcut(event, platform)) return true;
   if (event.shiftKey) return false;
   if (event.key === "Enter") return !event.altKey;
   return Boolean(event.altKey) && ["ArrowUp", "ArrowDown"].includes(event.key);
