@@ -136,6 +136,7 @@ import {
   markdownSourceTargetFromPointer,
   markdownSyntaxPlugin,
   isSourceInputComposing,
+  preserveDocumentSourceNoopBoundary,
   sourceCaretOffset,
   sourceDocumentJumpEdge,
   sourceFaithfulHeadingKeymapConfig,
@@ -1429,6 +1430,13 @@ export default function WysiwygSurface({
     };
     const handleSourceNativeNoopShortcut = (event) => {
       if (isSourceInputComposing(event) || !isMacSourceNativeNoopShortcut(event)) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target?.closest(".cm-content, .tether-continuous-source")) {
+        const crepe = crepeRef.current;
+        const view = crepe?.editor.action((ctx) => ctx.get(editorViewCtx));
+        const serializer = crepe?.editor.action((ctx) => ctx.get(serializerCtx));
+        preserveDocumentSourceNoopBoundary(view, event, serializer);
+      }
       event.preventDefault();
       event.stopImmediatePropagation();
     };

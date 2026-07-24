@@ -3007,6 +3007,44 @@ export function applyDocumentSourcePlainVerticalJump(view, event, serializer) {
   return true;
 }
 
+export function preserveDocumentSourceNoopBoundary(view, event, serializer) {
+  if (
+    !view?.state
+    || !["Backspace", "Delete"].includes(event?.key)
+    || typeof serializer !== "function"
+  ) return false;
+  const direction = event.key === "Backspace" ? "backward" : "forward";
+  const boundaryTarget = markdownBoundarySourceTarget(view.state, direction);
+  const boundaryUnit = boundaryTarget
+    ? markdownDeletionSourceUnit(view.state, boundaryTarget)
+    : null;
+  const boundaryOffset = boundaryUnit
+    ? documentSourceUnitBoundaryOffset(
+        view.state,
+        boundaryUnit,
+        boundaryTarget.edge === "end" ? "forward" : "backward",
+        serializer
+      )
+    : null;
+  const documentSource = Number.isFinite(boundaryOffset)
+    ? documentSourceSegments(view.state, serializer)
+    : null;
+  if (!documentSource) return false;
+  dispatchFocusedSourceSelection(
+    view,
+    view.state.tr.setMeta(markdownSyntaxKey, {
+      action: "source-selection",
+      sourceSelection: {
+        anchor: boundaryOffset,
+        head: boundaryOffset,
+        fullSource: documentSource.fullSource,
+        boundary: view.state.selection.head
+      }
+    })
+  );
+  return true;
+}
+
 export function documentSourceOffsetAtPosition(state, position, serializer, affinity = "forward") {
   const documentSource = documentSourceSegments(state, serializer);
   if (!documentSource) return null;
@@ -6639,6 +6677,17 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         }
       };
       const captureExactDeletion = (event) => {
+        if (isMacSourceNativeNoopShortcut(event)) {
+          const currentView = editorView || view;
+          preserveDocumentSourceNoopBoundary(
+            currentView,
+            event,
+            ctx.get(serializerCtx)
+          );
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
         const lineDirection = sourceLineDeleteDirection(event);
         const wordDirection = lineDirection ? null : sourceWordDeleteDirection(event);
         const plainDeletion = !event.altKey

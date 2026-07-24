@@ -962,6 +962,62 @@ async function verifyPlatformNativeInlineBoundaryNavigation() {
         virtualKeyCode: 37,
         nativeModifiers: ["shift", "alt"],
         modifiers: 9
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Option-Delete`,
+        markdown,
+        visibleText: "Before ",
+        visibleOffset: "Before ".length,
+        sourceCaret: sourceStart,
+        keyCode: "Delete",
+        key: "Delete",
+        code: "Delete",
+        virtualKeyCode: 46,
+        nativeModifiers: ["alt"],
+        modifiers: 1
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Option-Backspace`,
+        markdown,
+        visibleText: " after.",
+        visibleOffset: 0,
+        sourceCaret: sourceEnd,
+        keyCode: "Backspace",
+        key: "Backspace",
+        code: "Backspace",
+        virtualKeyCode: 8,
+        nativeModifiers: ["alt"],
+        modifiers: 1
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Command-Delete`,
+        markdown,
+        visibleText: "Before ",
+        visibleOffset: "Before ".length,
+        sourceCaret: sourceStart,
+        keyCode: "Delete",
+        key: "Delete",
+        code: "Delete",
+        virtualKeyCode: 46,
+        nativeModifiers: ["meta"],
+        modifiers: 4
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Command-Backspace`,
+        markdown,
+        visibleText: " after.",
+        visibleOffset: 0,
+        sourceCaret: sourceEnd,
+        keyCode: "Backspace",
+        key: "Backspace",
+        code: "Backspace",
+        virtualKeyCode: 8,
+        nativeModifiers: ["meta"],
+        modifiers: 4
       }
     ];
   });
@@ -1778,27 +1834,29 @@ async function verifySourceLineDeletionHistory() {
     return Boolean(control);
   })()`);
   await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8, modifiers: 4 });
+  await cdp.send("Input.insertText", { text: "x" });
   await waitForSaveState(false);
-  const linePrefixDeleted = "ld** after.\n";
-  await save(linePrefixDeleted);
+  const inlineInserted = "Before **boxld** after.\n";
+  await save(inlineInserted);
   await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
   await waitForSaveState(false);
   await save(markdown);
   await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
   await waitForSaveState(false);
-  await save(linePrefixDeleted);
+  await save(inlineInserted);
   await stopSession();
 
   await startSession(markdown, "Before ");
   await placeCaretInText("Before ", 3);
   await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46, modifiers: 4 });
+  await cdp.send("Input.insertText", { text: "x" });
   await waitForSaveState(false);
-  await save("Bef\n");
+  await save("Befxore **bold** after.\n");
   await stopSession();
 
   const contentStart = codeBlockSource.indexOf("\n") + 1;
   const lineCaret = contentStart + "const ".length;
-  const lineDeletedBlock = `${codeBlockSource.slice(0, contentStart)}${
+  const insertedBlock = `${codeBlockSource.slice(0, lineCaret)}x${
     codeBlockSource.slice(lineCaret)
   }`;
   await startSession(codeFixture, codeContent);
@@ -1814,8 +1872,9 @@ async function verifySourceLineDeletionHistory() {
     return Boolean(control);
   })()`);
   await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8, modifiers: 4 });
+  await cdp.send("Input.insertText", { text: "x" });
   await waitForSaveState(false);
-  await save(codeFixture.replace(codeBlockSource, lineDeletedBlock));
+  await save(codeFixture.replace(codeBlockSource, insertedBlock));
   await stopSession();
 
   const withoutOpeningNewline = `${codeBlockSource.slice(0, contentStart - 1)}${
@@ -4417,6 +4476,34 @@ async function verifyPlatformNativeDocumentShortcuts() {
         { keyCode: "Y", key: "y", code: "KeyY", virtualKeyCode: 89, nativeModifiers: ["control"], modifiers: 2 },
         { text: "x" }
       ]
+    },
+    {
+      name: "Command-Backspace",
+      steps: [
+        {
+          keyCode: "Backspace",
+          key: "Backspace",
+          code: "Backspace",
+          virtualKeyCode: 8,
+          nativeModifiers: ["meta"],
+          modifiers: 4
+        },
+        { text: "x" }
+      ]
+    },
+    {
+      name: "Command-Delete",
+      steps: [
+        {
+          keyCode: "Delete",
+          key: "Delete",
+          code: "Delete",
+          virtualKeyCode: 46,
+          nativeModifiers: ["meta"],
+          modifiers: 4
+        },
+        { text: "x" }
+      ]
     }
   ];
   const runNativeSteps = async (scenario, index) => {
@@ -4887,7 +4974,7 @@ async function run() {
   }
   if (process.env.TETHER_PARITY_CASE === "platform-native-shortcuts") {
     await verifyPlatformNativeDocumentShortcuts();
-    console.log("Verified macOS history and Select All shortcuts match native source controls.");
+    console.log("Verified macOS document shortcuts match native source controls.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "platform-native-navigation") {
@@ -4932,7 +5019,7 @@ async function run() {
   }
   if (process.env.TETHER_PARITY_CASE === "source-line-delete") {
     await verifySourceLineDeletionHistory();
-    console.log("Verified hidden line deletion follows exact physical Markdown line bounds.");
+    console.log("Verified macOS document deletion remains source-native across editor surfaces.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "source-word-delete") {

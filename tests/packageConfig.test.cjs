@@ -459,8 +459,10 @@ test("macOS source-native no-op shortcuts are intercepted before structured edit
   assert.match(codeEditor, /export function isMacSourceNativeNoopShortcut\(/);
   assert.match(surface, /const handleSourceNativeNoopShortcut = \(event\) =>/);
   assert.match(surface, /isMacSourceNativeNoopShortcut\(event\)/);
+  assert.match(surface, /preserveDocumentSourceNoopBoundary\(view, event, serializer\)/);
   assert.match(surface, /addEventListener\("keydown", handleSourceNativeNoopShortcut, true\)/);
   assert.match(surface, /removeEventListener\("keydown", handleSourceNativeNoopShortcut, true\)/);
+  assert.match(syntax, /export function preserveDocumentSourceNoopBoundary\(/);
   assert.match(syntax, /if \(isMacSourceNativeNoopShortcut\(event\)\)[\s\S]*event\.preventDefault\(\)/);
 });
 
@@ -593,6 +595,7 @@ test("exact source edits preserve source-only carets or refocus the rendered sur
   assert.match(syntax, /preserveSourcePosition[\s\S]*activateDocumentSourceOffset\(/);
   assert.match(syntax, /focusExactEditSelection\(view\);/);
   assert.match(syntax, /const captureExactTyping = \(event\) =>/);
+  assert.match(syntax, /const captureExactDeletion = \(event\) => \{[\s\S]*isMacSourceNativeNoopShortcut\(event\)/);
   assert.match(syntax, /addEventListener\("keydown", captureExactTyping, true\)/);
   assert.match(syntax, /removeEventListener\("keydown", captureExactTyping, true\)/);
   assert.ok((syntax.match(/dispatchExactEdit\(/g) || []).length >= 5);

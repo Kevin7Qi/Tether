@@ -121,7 +121,16 @@ export function isMacSourceNativeNoopShortcut(
   if (isMacSourceControlNoopShortcut(event, platform)) return true;
   const key = String(event.key || "");
   if (event.metaKey && !event.ctrlKey) {
-    return ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(key);
+    return [
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+      "Home",
+      "End",
+      "Backspace",
+      "Delete"
+    ].includes(key);
   }
   return Boolean(
     event.ctrlKey

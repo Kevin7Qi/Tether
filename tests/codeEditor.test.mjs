@@ -204,6 +204,18 @@ test("macOS source-native navigation no-ops bypass structured editor keymaps", (
       `Control-${key}`
     );
   }
+  for (const key of ["Backspace", "Delete"]) {
+    assert.equal(
+      isMacSourceNativeNoopShortcut({ key, metaKey: true }, "MacIntel"),
+      true,
+      `Command-${key}`
+    );
+    assert.equal(
+      isMacSourceNativeNoopShortcut({ key, metaKey: true }, "Win32"),
+      false,
+      `Windows Command-${key}`
+    );
+  }
   assert.equal(
     isMacSourceNativeNoopShortcut({ key: "Home" }, "MacIntel"),
     false
