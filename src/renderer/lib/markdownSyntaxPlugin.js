@@ -6619,6 +6619,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
   let protectedExactSource = null;
   let pendingRenderedTypingSelection = null;
   let pendingRenderedSourceSelection = null;
+  let pendingAtomPointerCleanup = null;
   const capturedExactClipboardEvents = new WeakSet();
   const pendingRenderedSourceSelectionFor = (view) => {
     const pending = pendingRenderedSourceSelection;
@@ -6639,6 +6640,99 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     const pending = pendingRenderedSourceSelectionFor(view);
     pendingRenderedSourceSelection = null;
     return pending;
+  };
+  const selectFromCapturedAtomPointer = (view, startTarget, event) => {
+    if (!Number.isFinite(startTarget?.atomPosition) || !Number.isFinite(startTarget?.sourceOffset)) {
+      return false;
+    }
+    const serializer = ctx.get(serializerCtx);
+    const unit = markdownAtomSyntaxAt(view.state, startTarget.atomPosition);
+    const endTarget = markdownSourceTargetFromPointer(view, event);
+    const documentSource = documentSourceSegments(view.state, serializer);
+    const unitStart = unit
+      ? documentSourceUnitStartOffset(view.state, unit, serializer)
+      : null;
+    const documentHead = endTarget
+      ? documentSourceOffsetFromPointerTarget(view.state, endTarget, serializer)
+      : null;
+    const exactSelection = documentSource && unit && Number.isFinite(unitStart)
+      && Number.isFinite(documentHead)
+      ? sourcePointerDragSelection(
+          documentSource.fullSource,
+          unitStart,
+          startTarget.sourceOffset,
+          documentHead
+        )
+      : null;
+    if (!exactSelection || exactSelection.anchor === exactSelection.head) return false;
+
+    const forward = exactSelection.anchor < exactSelection.head;
+    const anchorPosition = documentPositionAtSourceOffset(
+      view.state,
+      exactSelection.anchor,
+      serializer
+    ) ?? (forward ? unit.from : unit.to);
+    const headPosition = Math.max(
+      0,
+      Math.min(endTarget.position, view.state.doc.content.size)
+    );
+    view.dispatch(
+      view.state.tr
+        .setSelection(TextSelection.create(view.state.doc, anchorPosition, headPosition))
+        .setMeta(markdownSyntaxKey, {
+          action: "source-selection",
+          sourceSelection: {
+            ...exactSelection,
+            boundary: forward ? unit.to : unit.from
+          }
+        })
+        .scrollIntoView()
+    );
+    focusProseMirrorRoot(view);
+    return true;
+  };
+  const beginCapturedAtomPointer = (view, target, event) => {
+    if (
+      event.button !== 0
+      || !Number.isFinite(target?.atomPosition)
+      || !Number.isFinite(target?.sourceOffset)
+    ) return false;
+    const pointerWindow = view.dom.ownerDocument?.defaultView;
+    if (!pointerWindow) return false;
+    // An inline atom has no editable DOM text at which the browser can retain
+    // a drag anchor. Delay its ordinary source-control activation until
+    // mouseup; a real drag can then become one exact document-source range.
+    pendingAtomPointerCleanup?.();
+    const origin = { x: event.clientX, y: event.clientY };
+    let moved = false;
+    const handleMove = (moveEvent) => {
+      if (Math.hypot(
+        moveEvent.clientX - origin.x,
+        moveEvent.clientY - origin.y
+      ) >= 3) moved = true;
+    };
+    const cleanup = () => {
+      pointerWindow.removeEventListener("mousemove", handleMove, true);
+      pointerWindow.removeEventListener("mouseup", handleUp, true);
+      pointerWindow.removeEventListener("blur", handleBlur, true);
+      if (pendingAtomPointerCleanup === cleanup) pendingAtomPointerCleanup = null;
+    };
+    const handleUp = (upEvent) => {
+      cleanup();
+      if (!view.dom.isConnected) return;
+      if (moved && selectFromCapturedAtomPointer(view, target, upEvent)) {
+        upEvent.preventDefault();
+        upEvent.stopPropagation();
+        return;
+      }
+      activateCapturedTarget(view, target);
+    };
+    const handleBlur = () => cleanup();
+    pendingAtomPointerCleanup = cleanup;
+    pointerWindow.addEventListener("mousemove", handleMove, true);
+    pointerWindow.addEventListener("mouseup", handleUp, true);
+    pointerWindow.addEventListener("blur", handleBlur, true);
+    return true;
   };
 
   const rememberExactEdit = (sourceSelection, transaction, afterSourceSelection = null) => {
@@ -7506,6 +7600,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (view.dom.tetherGetActiveSourceSelection === getActiveSourceSelection) {
             delete view.dom.tetherGetActiveSourceSelection;
           }
+          pendingAtomPointerCleanup?.();
           editorView = null;
         }
       };
@@ -7653,6 +7748,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (sourceToFinish) {
             event.preventDefault();
             sourceToFinish.finish(true, activateCapturedPosition);
+            return true;
+          }
+          if (beginCapturedAtomPointer(view, target, event)) {
+            event.preventDefault();
             return true;
           }
           activateCapturedPosition();

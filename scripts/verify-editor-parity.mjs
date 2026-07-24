@@ -899,6 +899,43 @@ async function verifyRenderedPointerInsertion() {
     await waitForCompletedSave(fixture.expected);
     await stopSession();
   }
+
+  const mathSource = "Before $x + y$ after.\n";
+  await startSession(mathSource, "Before");
+  const mathPoint = await waitFor(
+    () => evaluate(`(() => {
+      const math = document.querySelector('span[data-type="math_inline"]');
+      const rect = math?.getBoundingClientRect();
+      return rect ? { x: rect.left + 1, y: rect.top + rect.height / 2 } : null;
+    })()`),
+    "rendered inline math did not expose a click target"
+  );
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+    ...mathPoint
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+    ...mathPoint
+  });
+  await waitForSourceControl(
+    (state) => state?.active
+      && state.value === "$x + y$"
+      && state.selectionStart === 1
+      && state.selectionEnd === 1,
+    "a normal rendered formula click did not retain its exact source caret"
+  );
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave("Before $Xx + y$ after.\n");
+  await stopSession();
 }
 
 async function verifyRenderedPointerSelection() {
@@ -1028,6 +1065,78 @@ async function verifyRenderedPointerSelection() {
     }
     await stopSession();
   }
+
+  const mathSource = "Before $x + y$ after.\n";
+  const mathSelectionStart = mathSource.indexOf("$") + 1;
+  const mathSelectionEnd = mathSource.indexOf("after.");
+  await startSession(mathSource, "Before");
+  const mathStart = await waitFor(
+    () => evaluate(`(() => {
+      const math = document.querySelector('span[data-type="math_inline"]');
+      const rect = math?.getBoundingClientRect();
+      return rect ? { x: rect.left + 1, y: rect.top + rect.height / 2 } : null;
+    })()`),
+    "rendered inline math did not expose a pointer target"
+  );
+  const mathEnd = await textBoundaryPoint(" after.", 1, ".ProseMirror");
+  await dragBetweenTextBoundaries(mathStart, mathEnd);
+  try {
+    await waitFor(
+      () => evaluate(`Boolean(
+        document.querySelector(".ProseMirror")?.tetherGetActiveSourceSelection?.()
+        || (getSelection() && !getSelection().isCollapsed)
+      )`),
+      "pointer drag originating on rendered inline math did not retain a selection"
+    );
+  } catch (error) {
+    const state = await editorState().catch(() => null);
+    const control = await sourceControlState().catch(() => null);
+    throw new Error(
+      `${error.message}\nSource control: ${JSON.stringify(control)}`
+      + `\nEditor state: ${JSON.stringify(state)}`
+    );
+  }
+  const mathCopied = await dispatchCopyAndCaptureText();
+  const expectedMathSelection = mathSource.slice(mathSelectionStart, mathSelectionEnd);
+  if (mathCopied !== expectedMathSelection) {
+    const state = await editorState().catch(() => null);
+    throw new Error(
+      `Inline-math-origin pointer Copy emitted ${JSON.stringify(mathCopied)} instead of `
+      + `${JSON.stringify(expectedMathSelection)}\nEditor state: ${JSON.stringify(state)}`
+    );
+  }
+  await stopSession();
+
+  await startSession(mathSource, "Before");
+  const backwardMathStart = await waitFor(
+    () => evaluate(`(() => {
+      const math = document.querySelector('span[data-type="math_inline"]');
+      const rect = math?.getBoundingClientRect();
+      return rect ? { x: rect.left + 1, y: rect.top + rect.height / 2 } : null;
+    })()`),
+    "rendered inline math did not expose a backward-drag target"
+  );
+  const backwardMathEnd = await textBoundaryPoint("Before ", "Before".length, ".ProseMirror");
+  await dragBetweenTextBoundaries(backwardMathStart, backwardMathEnd);
+  await waitFor(
+    () => evaluate(`Boolean(
+      document.querySelector(".ProseMirror")?.tetherGetActiveSourceSelection?.()
+    )`),
+    "backward pointer drag originating on rendered inline math lost its source selection"
+  );
+  const backwardMathCopied = await dispatchCopyAndCaptureText();
+  const expectedBackwardMathSelection = mathSource.slice(
+    "Before".length,
+    mathSource.indexOf("$") + 1
+  );
+  if (backwardMathCopied !== expectedBackwardMathSelection) {
+    const state = await editorState().catch(() => null);
+    throw new Error(
+      `Backward inline-math-origin pointer Copy emitted ${JSON.stringify(backwardMathCopied)} instead of `
+      + `${JSON.stringify(expectedBackwardMathSelection)}\nEditor state: ${JSON.stringify(state)}`
+    );
+  }
+  await stopSession();
 }
 
 async function verifyInlineBoundaryNavigation() {
