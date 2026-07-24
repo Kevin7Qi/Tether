@@ -4209,6 +4209,131 @@ async function verifyShiftEnterEditing() {
   }
 }
 
+async function verifyRenderedTabEditing() {
+  const cases = [
+    {
+      name: "plain collapsed Tab",
+      markdown: "Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      expected: "Alpha\tX Beta\n"
+    },
+    {
+      name: "heading collapsed Tab",
+      markdown: "## Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      expected: "## Alpha\tX Beta\n"
+    },
+    {
+      name: "bullet collapsed Tab",
+      markdown: "+ Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      expected: "+ Alpha\tX Beta\n",
+      history: true
+    },
+    {
+      name: "task collapsed Tab",
+      markdown: "- [X] Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      expected: "- [X] Alpha\tX Beta\n"
+    },
+    {
+      name: "quote collapsed Tab",
+      markdown: ">Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      expected: ">Alpha\tX Beta\n"
+    },
+    {
+      name: "backward plain selection Tab",
+      markdown: "Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha ".length,
+      visibleEndOffset: "Alpha Beta".length,
+      backward: true,
+      expected: "\tAlpha X\n"
+    },
+    {
+      name: "bullet selection Tab",
+      markdown: "+ Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha ".length,
+      visibleEndOffset: "Alpha Beta".length,
+      expected: "\t+ Alpha X\n"
+    },
+    {
+      name: "nested bullet collapsed Shift-Tab",
+      markdown: "- Parent\n    + Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      shift: true,
+      expected: "- Parent\n+ AlphaX Beta\n"
+    },
+    {
+      name: "plain collapsed Shift-Tab",
+      markdown: "Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      shift: true,
+      expected: "AlphaX Beta\n"
+    }
+  ];
+  const selectedCases = process.env.TETHER_PARITY_SCENARIO
+    ? cases.filter(({ name }) => name.includes(process.env.TETHER_PARITY_SCENARIO))
+    : cases;
+  for (const testCase of selectedCases) {
+    await startSession(testCase.markdown, testCase.text);
+    if (Number.isFinite(testCase.visibleEndOffset)) {
+      const start = await textBoundaryPoint(
+        testCase.text,
+        testCase.visibleOffset,
+        ".ProseMirror"
+      );
+      const end = await textBoundaryPoint(
+        testCase.text,
+        testCase.visibleEndOffset,
+        ".ProseMirror"
+      );
+      await dragBetweenTextBoundaries(
+        testCase.backward ? end : start,
+        testCase.backward ? start : end
+      );
+      await waitFor(
+        () => evaluate(`getSelection()?.toString() === "Beta"`),
+        `${testCase.name} could not install its rendered selection`
+      );
+    } else {
+      await placeCaretInText(testCase.text, testCase.visibleOffset);
+    }
+    await dispatchKey({
+      key: "Tab",
+      code: "Tab",
+      virtualKeyCode: 9,
+      modifiers: testCase.shift ? 8 : 0
+    });
+    await dispatchTextKey("X", "KeyX", 88);
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(testCase.expected);
+    if (testCase.history) {
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.markdown);
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.expected);
+    }
+    await stopSession();
+  }
+}
+
 async function verifyProseToCodeReplacement() {
   const anchor = "Bef".length;
   const codeStart = codeFixture.indexOf(codeBlockSource);
@@ -6150,6 +6275,11 @@ async function run() {
     console.log("Verified Shift+Return inserts one literal source newline across rendered blocks.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "rendered-tab-editing") {
+    await verifyRenderedTabEditing();
+    console.log("Verified Tab and Shift+Tab edit rendered blocks at their physical source positions.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "closing-fence-replacement") {
     await verifyClosingFenceReplacement();
     console.log("Verified real Electron closing-fence replacement history.");
@@ -6230,6 +6360,7 @@ async function run() {
   await verifyStructuralEnterEdges();
   await verifyStructuralEnterSelections();
   await verifyShiftEnterEditing();
+  await verifyRenderedTabEditing();
   await verifyProseToCodeReplacement();
   await verifyProseToCodeCutPaste();
   await verifyCodeBoundaryDeletion();

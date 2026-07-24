@@ -57,6 +57,7 @@ import {
 import { tetherStringifyOptions } from "../src/renderer/lib/markdownStyle.js";
 import {
   activeMarkdownBlockSyntax,
+  collapsedDocumentSourceSelection,
   continuousMarkdownSource,
   documentSourceSegments,
   literalEnterEdit,
@@ -555,6 +556,21 @@ test("an exact root-list source maps the caret into an unusually laid-out nested
   assert.equal(
     sourceCaretOffset(state, unit, exactSource, nested, null, serialize),
     exactSource.indexOf("nested target")
+  );
+});
+
+test("a rendered nested-list caret maps to its exact physical source column", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "- Parent\n    + Alpha Beta\n";
+  const doc = parse(source);
+  const caret = textPosition(doc, "Alpha Beta") + "Alpha".length;
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, caret)
+  });
+  assert.equal(
+    collapsedDocumentSourceSelection(state, serialize)?.head,
+    source.indexOf("Alpha") + "Alpha".length
   );
 });
 

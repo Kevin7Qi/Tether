@@ -3961,7 +3961,11 @@ function literalTextblockSourceMapping(
     source = segmentSource.slice(from, to);
     segmentSourceOffset = from;
   }
-  if (source === text) return null;
+  // A root paragraph whose raw source is already identical to its rendered
+  // text needs no decoding. Nested structural paragraphs are different: even
+  // identical text starts after physical list/quote prefixes, so retain their
+  // segment offset instead of falling back to a whole-block serializer probe.
+  if (source === text && segment?.node === textblock) return null;
   if (decodedMarkdownSourceOffset(
     source,
     text,
@@ -7326,6 +7330,9 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       };
       const captureExactTyping = (event) => {
         const currentView = editorView || view;
+        const activeSourceSelection = markdownSyntaxKey.getState(
+          currentView.state
+        )?.sourceSelection;
         if (
           !currentView.editable
           || isSourceInputComposing(event)
@@ -7335,10 +7342,49 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           || String(event.key || "").length !== 1
         ) return;
         const target = event.target instanceof Element ? event.target : null;
-        if (target?.closest("button, input, select, textarea, .cm-content, .tether-continuous-source")) {
+        if (target?.closest("button, input, select, textarea, .tether-continuous-source")) {
           return;
         }
-        if (markdownSyntaxKey.getState(currentView.state)?.sourceSelection) return;
+        if (target?.closest(".cm-content") && !activeSourceSelection) return;
+        if (activeSourceSelection) {
+          const transaction = replaceSourceSelectionTransaction(
+            currentView.state,
+            activeSourceSelection,
+            event.key,
+            ctx.get(parserCtx)
+          );
+          if (!transaction) return;
+          const from = Math.min(
+            activeSourceSelection.anchor,
+            activeSourceSelection.head
+          );
+          const fullSource = `${
+            activeSourceSelection.fullSource.slice(0, from)
+          }${event.key}${
+            activeSourceSelection.fullSource.slice(Math.max(
+              activeSourceSelection.anchor,
+              activeSourceSelection.head
+            ))
+          }`;
+          const afterSelection = {
+            ...activeSourceSelection,
+            anchor: from + event.key.length,
+            head: from + event.key.length,
+            fullSource,
+            boundary: transaction.selection.head
+          };
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          dispatchExactEdit(
+            currentView,
+            transaction,
+            activeSourceSelection,
+            activeSourceSelection,
+            afterSelection,
+            { renderedCaret: true }
+          );
+          return;
+        }
         const sourceSelection = consumePendingRenderedSourceSelection(currentView)
           || collapsedDocumentSourceSelection(
             currentView.state,
@@ -7638,15 +7684,17 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             && !event.altKey
             && !event.ctrlKey
             && !event.metaKey;
-          // CodeMirror Select All already installs an exact source selection.
-          // Rendered Cmd+A leaves ProseMirror's AllSelection instead, so map it
-          // to the same physical range before applying source-native Tab.
+          const pendingTabSelection = sourceTabShortcut && !sourceSelection
+            ? consumePendingRenderedSourceSelection(_view)
+            : null;
+          // CodeMirror and temporary source controls already use physical
+          // source offsets for Tab. Map ordinary rendered carets and ranges
+          // through that same path so ProseMirror cannot silently substitute
+          // four spaces or apply a structurally different list command.
           const tabSourceSelection = sourceTabShortcut
-            ? sourceSelection || (
-                _view.state.selection instanceof AllSelection
-                  ? sourceSelectionFromDocumentSelection(_view.state, serializer)
-                  : null
-              )
+            ? sourceSelection
+              || pendingTabSelection
+              || renderedDocumentSourceSelection(_view.state, serializer)
             : null;
           if (tabSourceSelection) {
             const next = sourceSelectionTabEdit(tabSourceSelection, Boolean(event.shiftKey));
@@ -7669,8 +7717,15 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               transaction,
               tabSourceSelection,
               fullSelection,
-              next
+              next,
+              { renderedCaret: !sourceSelection }
             );
+            if (!sourceSelection && next.anchor === next.head) {
+              pendingRenderedSourceSelection = {
+                sourceSelection: next,
+                boundary: _view.state.selection.head
+              };
+            }
             return true;
           }
           if (
