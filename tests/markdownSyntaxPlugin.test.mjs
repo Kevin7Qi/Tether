@@ -275,12 +275,59 @@ test("structural Enter continues physical list, task, ordered, and quote prefixe
       caret: "> - [x] Alpha".length,
       expected: "> - [x] Alpha\r\n> - [ ] Beta\r\n",
       nextCaret: "> - [x] Alpha\r\n> - [ ] ".length
+    },
+    {
+      source: "+ Alpha\n",
+      caret: "+ Alpha".length,
+      expected: "+ Alpha\n+ \n",
+      nextCaret: "+ Alpha\n+ ".length,
+      atLineEnd: true
+    },
+    {
+      source: "- [X] Alpha\n",
+      caret: "- [X] Alpha".length,
+      expected: "- [X] Alpha\n- [ ] \n",
+      nextCaret: "- [X] Alpha\n- [ ] ".length,
+      atLineEnd: true
+    },
+    {
+      source: "+ Alpha\n+ \n",
+      caret: "+ Alpha\n+ ".length,
+      expected: "+ Alpha\n\n\n",
+      nextCaret: "+ Alpha\n\n".length,
+      exit: true
+    },
+    {
+      source: ">Alpha\r\n>\r\n",
+      caret: ">Alpha\r\n>".length,
+      expected: ">Alpha\r\n\r\n\r\n",
+      nextCaret: ">Alpha\r\n\r\n".length,
+      exit: true
+    },
+    {
+      source: "- Parent\n  * Alpha\n  * \n",
+      caret: "- Parent\n  * Alpha\n  * ".length,
+      expected: "- Parent\n  * Alpha\n- \n",
+      nextCaret: "- Parent\n  * Alpha\n- ".length,
+      outdent: true
+    },
+    {
+      source: "> - [x] Alpha\n> - [ ] \n",
+      caret: "> - [x] Alpha\n> - [ ] ".length,
+      expected: "> - [x] Alpha\n> \n",
+      nextCaret: "> - [x] Alpha\n> ".length,
+      outdent: true
     }
   ];
   for (const fixture of cases) {
     const edit = structuralEnterContinuation(fixture.source, fixture.caret);
     assert.equal(edit?.source, fixture.expected);
     assert.equal(edit?.caret, fixture.nextCaret);
+    if (fixture.atLineEnd != null) {
+      assert.equal(edit?.atLineEnd, fixture.atLineEnd);
+    }
+    if (fixture.exit != null) assert.equal(edit?.exit, fixture.exit);
+    if (fixture.outdent != null) assert.equal(edit?.outdent, fixture.outdent);
   }
 });
 

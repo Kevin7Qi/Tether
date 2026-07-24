@@ -69,6 +69,7 @@ import {
   sourceFaithfulListMarkerBackspaceTransaction,
   replaceSourceSelectionTransaction,
   splitOrderedListItemWithSourceNumber,
+  structuralEnterEdit,
   structuralSourceHandoffTarget
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
@@ -688,6 +689,41 @@ test("Enter creates a sequential continuation without renumbering existing sourc
     .map((_, index) => transaction.doc.firstChild.child(index).attrs.orderedNumber);
   assert.deepEqual(numbers, [1, null, 1]);
   assert.equal(serialize(transaction.doc), "1. alpha\n2.\n1. beta\n");
+});
+
+test("Enter replaces a selected list tail before creating its physical continuation", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "+ Alpha Beta\n";
+  const doc = parse(source);
+  const start = textPosition(doc, "Alpha Beta");
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(
+      doc,
+      start + "Alpha".length,
+      start + "Alpha Beta".length
+    )
+  });
+  const edit = structuralEnterEdit(state, parse, serialize);
+  assert.ok(edit);
+  assert.equal(edit.beforeSelection.fullSource.slice(
+    Math.min(edit.beforeSelection.anchor, edit.beforeSelection.head),
+    Math.max(edit.beforeSelection.anchor, edit.beforeSelection.head)
+  ), " Beta");
+  assert.equal(edit.afterSelection.fullSource, "+ Alpha\n+ \n");
+
+  const afterState = EditorState.create({
+    doc: edit.transaction.doc,
+    selection: edit.transaction.selection
+  });
+  const typed = replaceSourceSelectionTransaction(
+    afterState,
+    edit.afterSelection,
+    "x",
+    parse
+  );
+  assert.ok(typed);
+  assert.equal(serialize(typed.doc), "+ Alpha\n+ x\n");
 });
 
 test("Milkdown preserves task marker case through edits and reconciles checkbox toggles", async () => {

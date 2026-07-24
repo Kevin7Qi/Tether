@@ -1955,6 +1955,103 @@ function replaceDocumentSourceAtCaret(state, source, caretOffset, parser) {
   return transaction.setSelection(TextSelection.create(transaction.doc, selectionPosition));
 }
 
+function stripSourceMarkerFromSignature(signature, marker) {
+  if (typeof signature !== "string" || !signature.includes(marker)) return signature;
+  const strip = (value) => {
+    if (typeof value === "string") return value.split(marker).join("");
+    if (Array.isArray(value)) {
+      return value
+        .map(strip)
+        .filter((entry) => !(
+          (entry?.type === "text" && entry.value === "")
+          || (entry?.type === "paragraph" && entry.children?.length === 0)
+        ));
+    }
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, strip(entry)])
+    );
+  };
+  try {
+    return JSON.stringify(strip(JSON.parse(signature)));
+  } catch {
+    return signature.split(marker).join("");
+  }
+}
+
+function sanitizeMarkedSourceAttrs(attrs, marker, caretOffset) {
+  return Object.fromEntries(Object.entries(attrs || {}).map(([key, value]) => {
+    if (typeof value === "string") {
+      return [
+        key,
+        key.endsWith("Signature")
+          ? stripSourceMarkerFromSignature(value, marker)
+          : value.split(marker).join("")
+      ];
+    }
+    if (
+      Number.isFinite(value)
+      && /(SourceStart|SourceEnd|ContentStart|ContentEnd)$/.test(key)
+      && value > caretOffset
+    ) {
+      return [key, value - marker.length];
+    }
+    return [key, value];
+  }));
+}
+
+function sanitizeMarkedSourceDocument(node, marker, caretOffset) {
+  if (node.isText) return node;
+  const children = [];
+  node.forEach((child) => {
+    children.push(sanitizeMarkedSourceDocument(child, marker, caretOffset));
+  });
+  return node.type.create(
+    sanitizeMarkedSourceAttrs(node.attrs, marker, caretOffset),
+    Fragment.fromArray(children),
+    node.marks
+  );
+}
+
+function replaceMarkedDocumentSourceAtCaret(state, source, caretOffset, parser) {
+  if (typeof parser !== "function") return null;
+  let marker = "\uE200";
+  while (source.includes(marker)) marker += "\uE201";
+  const marked = normalizeEmptyMarkdownDocument(
+    parser(`${source.slice(0, caretOffset)}${marker}${source.slice(caretOffset)}`),
+    source
+  );
+  let markerPosition = null;
+  marked?.descendants((node, position) => {
+    if (markerPosition != null || !node.isText) return markerPosition == null;
+    const index = node.text.indexOf(marker);
+    if (index >= 0) markerPosition = position + index;
+    return markerPosition == null;
+  });
+  if (markerPosition == null) return null;
+  const sanitized = sanitizeMarkedSourceDocument(marked, marker, caretOffset);
+
+  let transaction = state.tr.replace(
+    0,
+    state.doc.content.size,
+    new Slice(sanitized.content, 0, 0)
+  );
+  for (const [name, value] of Object.entries(sanitized.attrs || {})) {
+    transaction = transaction.setDocAttribute(name, value);
+  }
+  transaction = transaction.delete(
+    markerPosition,
+    markerPosition + marker.length
+  );
+  const selectionPosition = Math.max(
+    0,
+    Math.min(markerPosition, transaction.doc.content.size)
+  );
+  return transaction.setSelection(
+    TextSelection.create(transaction.doc, selectionPosition)
+  );
+}
+
 function listLinePrefix(line, requireCaretBoundary = false) {
   const pattern = requireCaretBoundary
     ? /^((?:\[\^[^\]\r\n]+\]:[\t ]*)?(?:[\t ]{0,3}>[\t ]?)*)([\t ]*)(?:[-+*]|\d+[.)])(?:[\t ]+)(?:\[[ xX]\][\t ]+)?$/
@@ -1968,28 +2065,106 @@ function listLinePrefix(line, requireCaretBoundary = false) {
   };
 }
 
+function structuralListLineMatch(line) {
+  return String(line ?? "").match(
+    /^((?:[\t ]{0,3}>[\t ]?)*)([\t ]*)([-+*]|(\d+)([.)]))(?:([\t ]+)(?:\[([ xX])\]([\t ]*))?|$)/
+  );
+}
+
+function structuralListContinuationPrefix(match) {
+  if (!match) return null;
+  const marker = match[4] == null
+    ? match[3]
+    : `${Number(match[4]) + 1}${match[5]}`;
+  return `${match[1]}${match[2]}${marker}${match[6] || " "}${
+    match[7] == null ? "" : `[ ]${match[8] || " "}`
+  }`;
+}
+
 export function structuralEnterContinuation(source, caretOffset) {
   const value = String(source ?? "");
   const caret = Math.max(0, Math.min(value.length, Number(caretOffset) || 0));
   const lineStart = value.lastIndexOf("\n", Math.max(0, caret - 1)) + 1;
   const nextNewline = value.indexOf("\n", caret);
-  const lineEnd = nextNewline < 0 ? value.length : nextNewline;
+  const lineEnd = nextNewline < 0
+    ? value.length
+    : nextNewline > lineStart && value[nextNewline - 1] === "\r"
+      ? nextNewline - 1
+      : nextNewline;
+  const afterLineEnding = nextNewline < 0 ? value.length : nextNewline + 1;
   const line = value.slice(lineStart, lineEnd);
   const localCaret = caret - lineStart;
-  const list = line.match(
-    /^((?:[\t ]{0,3}>[\t ]?)*)([\t ]*)([-+*]|(\d+)([.)]))([\t ]+)(?:\[([ xX])\]([\t ]+))?/
-  );
+  const list = structuralListLineMatch(line);
   let prefix = null;
+  let prefixLength = 0;
   if (list && localCaret >= list[0].length) {
-    const marker = list[4] == null
-      ? list[3]
-      : `${Number(list[4]) + 1}${list[5]}`;
-    prefix = `${list[1]}${list[2]}${marker}${list[6]}${
-      list[7] == null ? "" : `[ ]${list[8]}`
-    }`;
+    prefixLength = list[0].length;
+    if (
+      line.slice(prefixLength).trim() === ""
+    ) {
+      if (list[2] !== "") {
+        const precedingLines = value.slice(0, lineStart).split(/\r?\n/);
+        for (let index = precedingLines.length - 1; index >= 0; index -= 1) {
+          const preceding = structuralListLineMatch(precedingLines[index]);
+          if (
+            !preceding
+            || preceding[1] !== list[1]
+            || preceding[2].length >= list[2].length
+          ) continue;
+          const outdentPrefix = structuralListContinuationPrefix(preceding);
+          return {
+            source: `${value.slice(0, lineStart)}${outdentPrefix}${value.slice(lineEnd)}`,
+            caret: lineStart + outdentPrefix.length,
+            prefix: outdentPrefix,
+            exit: false,
+            outdent: true,
+            atLineEnd: true
+          };
+        }
+      }
+      if (list[1] !== "") {
+        return {
+          source: `${value.slice(0, lineStart)}${list[1]}${value.slice(lineEnd)}`,
+          caret: lineStart + list[1].length,
+          prefix: list[1],
+          exit: false,
+          outdent: true,
+          atLineEnd: true
+        };
+      }
+      const lineEnding = sourceLineEndingAt(value, caret);
+      return {
+        source: `${value.slice(0, lineStart)}${lineEnding}${lineEnding}${
+          value.slice(afterLineEnding)
+        }`,
+        caret: lineStart + lineEnding.length,
+        prefix: "",
+        exit: true,
+        atLineEnd: true
+      };
+    }
+    prefix = structuralListContinuationPrefix(list);
   } else {
     const quote = line.match(/^((?:[\t ]{0,3}>[\t ]?)+)/);
-    if (quote && localCaret >= quote[0].length) prefix = quote[1];
+    if (quote && localCaret >= quote[0].length) {
+      prefixLength = quote[0].length;
+      if (
+        (quote[0].match(/>/g) || []).length === 1
+        && line.slice(prefixLength).trim() === ""
+      ) {
+        const lineEnding = sourceLineEndingAt(value, caret);
+        return {
+          source: `${value.slice(0, lineStart)}${lineEnding}${lineEnding}${
+            value.slice(afterLineEnding)
+          }`,
+          caret: lineStart + lineEnding.length,
+          prefix: "",
+          exit: true,
+          atLineEnd: true
+        };
+      }
+      prefix = quote[1];
+    }
   }
   if (prefix == null) return null;
 
@@ -2000,18 +2175,160 @@ export function structuralEnterContinuation(source, caretOffset) {
       value.slice(caret + discardedSpace)
     }`,
     caret: caret + lineEnding.length + prefix.length,
-    prefix
+    prefix,
+    exit: false,
+    atLineEnd: caret + discardedSpace >= lineEnd
   };
+}
+
+function structuralEnterSourceSelectionEdit(state, sourceSelection, parser) {
+  const continuation = structuralEnterContinuation(
+    sourceSelection?.fullSource,
+    sourceSelection?.head
+  );
+  if (!continuation) return null;
+  const transaction = (
+    continuation.exit || continuation.atLineEnd
+      ? replaceMarkedDocumentSourceAtCaret
+      : replaceDocumentSourceAtCaret
+  )(
+    state,
+    continuation.source,
+    continuation.caret,
+    parser
+  );
+  return transaction ? {
+    transaction,
+    beforeSelection: sourceSelection,
+    afterSelection: {
+      anchor: continuation.caret,
+      head: continuation.caret,
+      fullSource: continuation.source,
+      boundary: transaction.selection.head
+    }
+  } : null;
+}
+
+function structuralEnterRangeEdit(state, parser, serializer) {
+  const { selection } = state || {};
+  if (
+    !selection
+    || selection.empty
+    || !selection.$from?.sameParent(selection.$to)
+    || !selection.$from.parent.isTextblock
+  ) return null;
+  let beforeSelection = plainTextMarkdownSourceSelection(
+    state,
+    serializer,
+    selection
+  ) || sourceSelectionFromDocumentSelection(state, serializer);
+  if (!beforeSelection) {
+    const fromSelection = collapsedDocumentSourceSelection(
+      state,
+      serializer,
+      TextSelection.create(state.doc, selection.from)
+    );
+    const toSelection = collapsedDocumentSourceSelection(
+      state,
+      serializer,
+      TextSelection.create(state.doc, selection.to)
+    );
+    if (
+      fromSelection
+      && toSelection
+      && fromSelection.fullSource === toSelection.fullSource
+    ) {
+      const forward = selection.anchor <= selection.head;
+      beforeSelection = {
+        anchor: forward ? fromSelection.head : toSelection.head,
+        head: forward ? toSelection.head : fromSelection.head,
+        fullSource: fromSelection.fullSource,
+        boundary: selection.head
+      };
+    }
+  }
+  if (!beforeSelection) return null;
+  const from = Math.min(beforeSelection.anchor, beforeSelection.head);
+  const to = Math.max(beforeSelection.anchor, beforeSelection.head);
+  if (from === to) return null;
+  const deletedSource = `${
+    beforeSelection.fullSource.slice(0, from)
+  }${beforeSelection.fullSource.slice(to)}`;
+  const deletedSelection = {
+    anchor: from,
+    head: from,
+    fullSource: deletedSource,
+    boundary: selection.from
+  };
+
+  if (
+    selection.$from.depth === 1
+    && selection.$from.parent.type.name === "heading"
+  ) {
+    const heading = selection.$from.parent;
+    const documentSource = documentSourceSegments(state, serializer);
+    const segment = documentSource?.segments.find(({ node }) => node === heading);
+    const sourceStart = heading.attrs.headingSourceStart;
+    const contentEnd = heading.attrs.headingContentEnd;
+    const contentEndOffset = segment
+      && Number.isFinite(sourceStart)
+      && Number.isFinite(contentEnd)
+      ? segment.from + contentEnd - sourceStart
+      : null;
+    if (
+      !segment
+      || !Number.isFinite(contentEndOffset)
+      || to !== contentEndOffset
+      || from < segment.from
+    ) return null;
+    const removedLength = to - from;
+    const insertOffset = segment.to - removedLength;
+    const lineEnding = sourceLineEndingAt(deletedSource, insertOffset);
+    const source = `${
+      deletedSource.slice(0, insertOffset)
+    }${lineEnding}${deletedSource.slice(insertOffset)}`;
+    const afterCaret = insertOffset + lineEnding.length;
+    const transaction = replaceMarkedDocumentSourceAtCaret(
+      state,
+      source,
+      afterCaret,
+      parser
+    );
+    return transaction ? {
+      transaction,
+      beforeSelection,
+      afterSelection: {
+        anchor: afterCaret,
+        head: afterCaret,
+        fullSource: source,
+        boundary: transaction.selection.head
+      }
+    } : null;
+  }
+
+  if (
+    selection.$from.parent.type.name !== "paragraph"
+    || selection.$from.depth <= 1
+  ) return null;
+  const edit = structuralEnterSourceSelectionEdit(
+    state,
+    deletedSelection,
+    parser
+  );
+  return edit ? { ...edit, beforeSelection } : null;
 }
 
 export function structuralEnterEdit(state, parser, serializer) {
   const { selection } = state || {};
   if (
-    !selection?.empty
+    !selection
     || !selection.$from?.parent?.isTextblock
     || typeof parser !== "function"
     || typeof serializer !== "function"
   ) return null;
+  if (!selection.empty) {
+    return structuralEnterRangeEdit(state, parser, serializer);
+  }
   const beforeSelection = collapsedDocumentSourceSelection(state, serializer);
   if (!beforeSelection) return null;
 
@@ -2030,12 +2347,32 @@ export function structuralEnterEdit(state, parser, serializer) {
       ? segment.from + contentEnd - sourceStart
       : null;
     const caret = beforeSelection.head;
-    if (
-      !segment
-      || !Number.isFinite(contentEndOffset)
-      || caret <= segment.from
-      || caret >= contentEndOffset
-    ) return null;
+    if (!segment || !Number.isFinite(contentEndOffset)) return null;
+
+    if (caret === contentEndOffset) {
+      const lineEnding = sourceLineEndingAt(beforeSelection.fullSource, caret);
+      const source = `${
+        beforeSelection.fullSource.slice(0, segment.to)
+      }${lineEnding}${beforeSelection.fullSource.slice(segment.to)}`;
+      const afterCaret = segment.to + lineEnding.length;
+      const transaction = replaceMarkedDocumentSourceAtCaret(
+        state,
+        source,
+        afterCaret,
+        parser
+      );
+      return transaction ? {
+        transaction,
+        beforeSelection,
+        afterSelection: {
+          anchor: afterCaret,
+          head: afterCaret,
+          fullSource: source,
+          boundary: transaction.selection.head
+        }
+      } : null;
+    }
+    if (caret <= segment.from || caret > contentEndOffset) return null;
 
     const lineEnding = sourceLineEndingAt(beforeSelection.fullSource, caret);
     const discardedSpace = beforeSelection.fullSource
@@ -2069,27 +2406,50 @@ export function structuralEnterEdit(state, parser, serializer) {
   if (selection.$from.parent.type.name !== "paragraph" || selection.$from.depth <= 1) {
     return null;
   }
-  const continuation = structuralEnterContinuation(
+  let continuation = structuralEnterContinuation(
     beforeSelection.fullSource,
     beforeSelection.head
   );
-  if (!continuation) return null;
-  const transaction = replaceDocumentSourceAtCaret(
-    state,
-    continuation.source,
-    continuation.caret,
-    parser
-  );
-  return transaction ? {
-    transaction,
-    beforeSelection,
-    afterSelection: {
-      anchor: continuation.caret,
-      head: continuation.caret,
-      fullSource: continuation.source,
-      boundary: transaction.selection.head
+  if (continuation) continuation.sourceCaret = beforeSelection.head;
+  if (
+    !continuation
+    && selection.$from.parentOffset === selection.$from.parent.content.size
+  ) {
+    const backwardCaret = documentSourceOffsetAtPosition(
+      state,
+      selection.head,
+      serializer,
+      "backward"
+    );
+    if (
+      Number.isFinite(backwardCaret)
+      && backwardCaret < beforeSelection.head
+      && /^[\r\n]*$/.test(
+        beforeSelection.fullSource.slice(backwardCaret, beforeSelection.head)
+      )
+    ) {
+      continuation = structuralEnterContinuation(
+        beforeSelection.fullSource,
+        backwardCaret
+      );
+      if (continuation) continuation.sourceCaret = backwardCaret;
     }
-  } : null;
+  }
+  return continuation
+    ? structuralEnterSourceSelectionEdit(
+        state,
+        {
+          ...beforeSelection,
+          anchor: Number.isFinite(continuation.sourceCaret)
+            ? continuation.sourceCaret
+            : beforeSelection.anchor,
+          head: Number.isFinite(continuation.sourceCaret)
+            ? continuation.sourceCaret
+            : beforeSelection.head
+        },
+        parser
+      )
+    : null;
 }
 
 function precedingListIndent(source, lineStart, current, searchStart = 0) {
@@ -6189,7 +6549,17 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
   let exactSourceDispatchDepth = 0;
   let protectedExactSource = null;
   let pendingRenderedTypingSelection = null;
+  let pendingStructuralSourceSelection = null;
   const capturedExactClipboardEvents = new WeakSet();
+  const consumePendingStructuralSourceSelection = (view) => {
+    const pending = pendingStructuralSourceSelection
+      && view?.state?.selection?.empty
+      && view.state.selection.head === pendingStructuralSourceSelection.boundary
+      ? pendingStructuralSourceSelection.sourceSelection
+      : null;
+    pendingStructuralSourceSelection = null;
+    return pending;
+  };
 
   const rememberExactEdit = (sourceSelection, transaction, afterSourceSelection = null) => {
     if (!sourceSelection || !transaction?.docChanged) return;
@@ -6510,8 +6880,13 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     if (isSourceInputComposing(event)) return false;
     if (!["insertText", "insertReplacementText"].includes(event.inputType)) return false;
     if (typeof event.data !== "string") return false;
-    const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
-    const renderedTyping = sourceSelection === pendingRenderedTypingSelection;
+    const activeSourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+    const structuralSourceSelection = activeSourceSelection
+      ? null
+      : consumePendingStructuralSourceSelection(view);
+    const sourceSelection = activeSourceSelection || structuralSourceSelection;
+    const renderedTyping = Boolean(structuralSourceSelection)
+      || sourceSelection === pendingRenderedTypingSelection;
     pendingRenderedTypingSelection = null;
     const documentSelection = sourceSelection
       ? null
@@ -6876,6 +7251,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const direction = lineDirection || wordDirection
           || (event.key === "Backspace" ? "backward" : "forward");
         const mode = lineDirection ? "line" : wordDirection ? "word" : "character";
+        pendingStructuralSourceSelection = null;
         if (!deleteExactSource(view, direction, mode)) return;
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -6895,10 +7271,11 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return;
         }
         if (markdownSyntaxKey.getState(currentView.state)?.sourceSelection) return;
-        const sourceSelection = collapsedDocumentSourceSelection(
-          currentView.state,
-          ctx.get(serializerCtx)
-        );
+        const sourceSelection = consumePendingStructuralSourceSelection(currentView)
+          || collapsedDocumentSourceSelection(
+            currentView.state,
+            ctx.get(serializerCtx)
+          );
         if (!sourceSelection) return;
         pendingRenderedTypingSelection = sourceSelection;
         setTimeout(() => {
@@ -6924,6 +7301,18 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         if (target?.closest("button, input, select, textarea, .cm-content, .tether-continuous-source")) {
           return;
         }
+        if ([
+          "ArrowLeft",
+          "ArrowRight",
+          "ArrowUp",
+          "ArrowDown",
+          "Home",
+          "End",
+          "PageUp",
+          "PageDown"
+        ].includes(event.key)) {
+          pendingStructuralSourceSelection = null;
+        }
         if (
           !navigateExactSourceSelection(currentView, event)
           && !applyDocumentSourceWordJump(
@@ -6947,6 +7336,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       const navigationWindow = view.dom.ownerDocument?.defaultView;
       const captureSourceHandoff = (event) => {
         if (!view.editable) return;
+        pendingStructuralSourceSelection = null;
         protectedExactSource = null;
         const targetElement = event.target instanceof Element ? event.target : null;
         if (targetElement?.closest(".tether-continuous-source")) return;
@@ -7000,8 +7390,13 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     },
     props: {
       handleTextInput(view, _from, _to, text) {
-        const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
-        const renderedTyping = sourceSelection === pendingRenderedTypingSelection;
+        const activeSourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+        const structuralSourceSelection = activeSourceSelection
+          ? null
+          : consumePendingStructuralSourceSelection(view);
+        const sourceSelection = activeSourceSelection || structuralSourceSelection;
+        const renderedTyping = Boolean(structuralSourceSelection)
+          || sourceSelection === pendingRenderedTypingSelection;
         pendingRenderedTypingSelection = null;
         const documentSelection = sourceSelection
           ? null
@@ -7040,7 +7435,9 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       },
       handleDOMEvents: {
         paste(view, event) {
+          const structuralSourceSelection = consumePendingStructuralSourceSelection(view);
           const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection
+            || structuralSourceSelection
             || collapsedDocumentSourceSelection(view.state, ctx.get(serializerCtx))
             || plainTextMarkdownSourceSelection(view.state, ctx.get(serializerCtx));
           const text = event.clipboardData?.getData("text/plain");
@@ -7060,7 +7457,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             edit.sourceSelection,
             edit.sourceSelection,
             null,
-            { isolatedHistory: true }
+            {
+              isolatedHistory: true,
+              renderedCaret: Boolean(structuralSourceSelection)
+            }
           );
           return true;
         },
@@ -7355,7 +7755,21 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             && !event.shiftKey
             && event.key === "Enter"
           ) {
-            const structuralEdit = structuralEnterEdit(
+            const pendingStructural = pendingStructuralSourceSelection
+              && _view.state.selection.empty
+              && _view.state.selection.head === pendingStructuralSourceSelection.boundary
+              ? pendingStructuralSourceSelection
+              : null;
+            pendingStructuralSourceSelection = null;
+            const structuralEdit = (
+              pendingStructural
+                ? structuralEnterSourceSelectionEdit(
+                    _view.state,
+                    pendingStructural.sourceSelection,
+                    ctx.get(parserCtx)
+                  )
+                : null
+            ) || structuralEnterEdit(
               _view.state,
               ctx.get(parserCtx),
               ctx.get(serializerCtx)
@@ -7370,6 +7784,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 structuralEdit.afterSelection,
                 { renderedCaret: true }
               );
+              pendingStructuralSourceSelection = {
+                sourceSelection: structuralEdit.afterSelection,
+                boundary: _view.state.selection.head
+              };
               return true;
             }
           }

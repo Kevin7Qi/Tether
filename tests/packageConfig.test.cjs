@@ -99,6 +99,8 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /TETHER_PARITY_CASE === "code-boundary-deletion"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "platform-native-code-boundary-deletion"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "structural-enter-editing"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "structural-enter-edge-editing"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "structural-enter-selection-editing"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "prose-select-all-editing"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "structural-marker-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "block-atom-traversal"/);
@@ -602,6 +604,8 @@ test("exact source edits preserve source-only carets or refocus the rendered sur
   assert.match(syntax, /structuralEnterEdit\(/);
   assert.match(syntax, /\{ renderedCaret: true \}/);
   assert.match(syntax, /pendingRenderedTypingSelection = sourceSelection/);
+  assert.match(syntax, /pendingStructuralSourceSelection = \{/);
+  assert.match(syntax, /consumePendingStructuralSourceSelection/);
   assert.match(syntax, /\{ renderedCaret: renderedTyping \|\| !sourceSelection \}/);
   assert.match(syntax, /\$from\.depth !== 1/);
   assert.match(syntax, /\$from\.parent\.type\.name !== "paragraph"/);

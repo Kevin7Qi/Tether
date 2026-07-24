@@ -3782,6 +3782,246 @@ async function verifyStructuralEnterEditing() {
   }
 }
 
+async function verifyStructuralEnterEdges() {
+  const cases = [
+    {
+      name: "ATX heading end",
+      markdown: "## Alpha\n",
+      enters: 1,
+      expected: "## Alpha\nx\n",
+      history: true
+    },
+    {
+      name: "closed ATX heading end",
+      markdown: "## Alpha ##\n",
+      enters: 1,
+      expected: "## Alpha ##\nx\n"
+    },
+    {
+      name: "setext heading end",
+      markdown: "Alpha\n---\n",
+      enters: 1,
+      expected: "Alpha\n---\nx\n"
+    },
+    {
+      name: "bullet continuation",
+      markdown: "+ Alpha\n",
+      enters: 1,
+      expected: "+ Alpha\n+ x\n",
+      history: true
+    },
+    {
+      name: "ordered continuation",
+      markdown: "3) Alpha\n7) Keep\n",
+      enters: 1,
+      expected: "3) Alpha\n4) x\n7) Keep\n",
+      history: true
+    },
+    {
+      name: "CRLF ordered continuation",
+      markdown: "10. Alpha\r\n20. Keep\r\n",
+      enters: 1,
+      expected: "10. Alpha\r\n11. x\r\n20. Keep\r\n"
+    },
+    {
+      name: "task continuation",
+      markdown: "- [X] Alpha\n",
+      enters: 1,
+      expected: "- [X] Alpha\n- [ ] x\n",
+      directInput: true
+    },
+    {
+      name: "no-space quote continuation",
+      markdown: ">Alpha\n",
+      enters: 1,
+      expected: ">Alpha\n>x\n"
+    },
+    {
+      name: "nested bullet continuation",
+      markdown: "- Parent\n  * Alpha\n",
+      enters: 1,
+      expected: "- Parent\n  * Alpha\n  * x\n"
+    },
+    {
+      name: "bullet continuation exit",
+      markdown: "+ Alpha\n",
+      enters: 2,
+      expected: "+ Alpha\n\nx\n"
+    },
+    {
+      name: "task continuation exit",
+      markdown: "- [X] Alpha\n",
+      enters: 2,
+      expected: "- [X] Alpha\n\nx\n",
+      history: true
+    },
+    {
+      name: "quote continuation exit",
+      markdown: ">Alpha\n",
+      enters: 2,
+      expected: ">Alpha\n\nx\n"
+    },
+    {
+      name: "CRLF quote continuation exit",
+      markdown: ">Alpha\r\n",
+      enters: 2,
+      expected: ">Alpha\r\n\r\nx\r\n"
+    },
+    {
+      name: "nested bullet outdent",
+      markdown: "- Parent\n  * Alpha\n",
+      enters: 2,
+      expected: "- Parent\n  * Alpha\n- x\n"
+    }
+  ];
+  const selectedCases = process.env.TETHER_PARITY_SCENARIO
+    ? cases.filter(({ name }) => name.includes(process.env.TETHER_PARITY_SCENARIO))
+    : cases;
+  for (const testCase of selectedCases) {
+    await startSession(testCase.markdown, "Alpha");
+    await placeCaretInText("Alpha", "Alpha".length);
+    for (let index = 0; index < testCase.enters; index += 1) {
+      await dispatchEnterKey();
+      await delay(150);
+    }
+    if (testCase.directInput) {
+      await cdp.send("Input.insertText", { text: "x" });
+    } else {
+      await dispatchTextKey("x", "KeyX", 88);
+    }
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(testCase.expected);
+    if (testCase.history) {
+      for (let index = 0; index <= testCase.enters; index += 1) {
+        await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+      }
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.markdown);
+      for (let index = 0; index <= testCase.enters; index += 1) {
+        await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+      }
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.expected);
+    }
+    await delay(300);
+    const state = await editorState();
+    if (
+      state.dirty
+      || state.anchorText !== "x"
+      || state.anchorOffset !== 1
+      || state.exactSourceSelection
+    ) {
+      throw new Error(
+        `${testCase.name} did not retain a clean rendered caret after structural Return: ${
+          JSON.stringify(state)
+        }`
+      );
+    }
+    await stopSession();
+  }
+}
+
+async function verifyStructuralEnterSelections() {
+  const cases = [
+    {
+      name: "ATX selected tail",
+      markdown: "## Alpha Beta\n",
+      expected: "## Alpha\nx\n",
+      history: true
+    },
+    {
+      name: "bullet selected tail",
+      markdown: "+ Alpha Beta\n",
+      expected: "+ Alpha\n+ x\n",
+      history: true
+    },
+    {
+      name: "ordered selected tail",
+      markdown: "3) Alpha Beta\n7) Keep\n",
+      expected: "3) Alpha\n4) x\n7) Keep\n"
+    },
+    {
+      name: "CRLF ordered selected tail",
+      markdown: "10. Alpha Beta\r\n20. Keep\r\n",
+      expected: "10. Alpha\r\n11. x\r\n20. Keep\r\n"
+    },
+    {
+      name: "task selected tail",
+      markdown: "- [X] Alpha Beta\n",
+      expected: "- [X] Alpha\n- [ ] x\n",
+      directInput: true
+    },
+    {
+      name: "quote selected tail",
+      markdown: ">Alpha Beta\n",
+      expected: ">Alpha\n>x\n"
+    }
+  ];
+  const selectedCases = process.env.TETHER_PARITY_SCENARIO
+    ? cases.filter(({ name }) => name.includes(process.env.TETHER_PARITY_SCENARIO))
+    : cases;
+  for (const testCase of selectedCases) {
+    await startSession(testCase.markdown, "Alpha Beta");
+    const start = await textBoundaryPoint(
+      "Alpha Beta",
+      "Alpha".length,
+      ".ProseMirror"
+    );
+    const end = await textBoundaryPoint(
+      "Alpha Beta",
+      "Alpha Beta".length,
+      ".ProseMirror"
+    );
+    await dragBetweenTextBoundaries(start, end);
+    await waitFor(
+      () => evaluate(`getSelection()?.toString() === " Beta"`),
+      `${testCase.name} could not install its rendered tail selection`
+    );
+    await dispatchEnterKey();
+    if (testCase.directInput) {
+      await cdp.send("Input.insertText", { text: "x" });
+    } else {
+      await dispatchTextKey("x", "KeyX", 88);
+    }
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(testCase.expected);
+    if (testCase.history) {
+      for (let index = 0; index < 2; index += 1) {
+        await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+      }
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.markdown);
+      for (let index = 0; index < 2; index += 1) {
+        await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+      }
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.expected);
+    }
+    await delay(300);
+    const state = await editorState();
+    if (
+      state.dirty
+      || state.anchorText !== "x"
+      || state.anchorOffset !== 1
+      || state.followingText
+      || state.exactSourceSelection
+    ) {
+      throw new Error(
+        `${testCase.name} did not retain a clean rendered caret after replacing its selection: ${
+          JSON.stringify(state)
+        }`
+      );
+    }
+    await stopSession();
+  }
+}
+
 async function verifyProseToCodeReplacement() {
   const anchor = "Bef".length;
   const codeStart = codeFixture.indexOf(codeBlockSource);
@@ -5708,6 +5948,16 @@ async function run() {
     console.log("Verified structural Return preserves heading, list, task, quote, and nested source.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "structural-enter-edge-editing") {
+    await verifyStructuralEnterEdges();
+    console.log("Verified structural Return continues and exits rendered blocks at their physical source edges.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "structural-enter-selection-editing") {
+    await verifyStructuralEnterSelections();
+    console.log("Verified structural Return replaces rendered selections at their physical source positions.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "closing-fence-replacement") {
     await verifyClosingFenceReplacement();
     console.log("Verified real Electron closing-fence replacement history.");
@@ -5785,6 +6035,8 @@ async function run() {
   await verifyHardBreakCutPasteHistory();
   await verifySoftLineEditing();
   await verifyStructuralEnterEditing();
+  await verifyStructuralEnterEdges();
+  await verifyStructuralEnterSelections();
   await verifyProseToCodeReplacement();
   await verifyProseToCodeCutPaste();
   await verifyCodeBoundaryDeletion();
