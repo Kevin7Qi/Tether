@@ -2209,20 +2209,22 @@ function structuralEnterSourceSelectionEdit(state, sourceSelection, parser) {
   } : null;
 }
 
-function structuralEnterRangeEdit(state, parser, serializer) {
-  const { selection } = state || {};
-  if (
-    !selection
-    || selection.empty
-    || !selection.$from?.sameParent(selection.$to)
-    || !selection.$from.parent.isTextblock
-  ) return null;
+function renderedDocumentSourceSelection(state, serializer, selection = state?.selection) {
+  if (!state?.doc || !selection || typeof serializer !== "function") return null;
   let beforeSelection = plainTextMarkdownSourceSelection(
     state,
     serializer,
     selection
   ) || sourceSelectionFromDocumentSelection(state, serializer);
-  if (!beforeSelection) {
+  if (!beforeSelection && selection.empty && selection.$from?.parent?.isTextblock) {
+    beforeSelection = collapsedDocumentSourceSelection(state, serializer, selection);
+  }
+  if (
+    !beforeSelection
+    && !selection.empty
+    && selection.$from?.sameParent(selection.$to)
+    && selection.$from.parent.isTextblock
+  ) {
     const fromSelection = collapsedDocumentSourceSelection(
       state,
       serializer,
@@ -2247,6 +2249,61 @@ function structuralEnterRangeEdit(state, parser, serializer) {
       };
     }
   }
+  return beforeSelection;
+}
+
+export function literalEnterEdit(
+  state,
+  parser,
+  serializer,
+  sourceSelection = null
+) {
+  if (
+    !state?.doc
+    || typeof parser !== "function"
+    || typeof serializer !== "function"
+  ) return null;
+  const beforeSelection = sourceSelection
+    || renderedDocumentSourceSelection(state, serializer);
+  if (!beforeSelection) return null;
+  const from = Math.min(beforeSelection.anchor, beforeSelection.head);
+  const to = Math.max(beforeSelection.anchor, beforeSelection.head);
+  const lineEnding = sourceLineEndingAt(beforeSelection.fullSource, from);
+  const source = `${beforeSelection.fullSource.slice(0, from)}${lineEnding}${
+    beforeSelection.fullSource.slice(to)
+  }`;
+  const afterCaret = from + lineEnding.length;
+  const transaction = replaceMarkedDocumentSourceAtCaret(
+    state,
+    source,
+    afterCaret,
+    parser
+  );
+  return transaction ? {
+    transaction,
+    beforeSelection,
+    afterSelection: {
+      anchor: afterCaret,
+      head: afterCaret,
+      fullSource: source,
+      boundary: transaction.selection.head
+    }
+  } : null;
+}
+
+function structuralEnterRangeEdit(state, parser, serializer) {
+  const { selection } = state || {};
+  if (
+    !selection
+    || selection.empty
+    || !selection.$from?.sameParent(selection.$to)
+    || !selection.$from.parent.isTextblock
+  ) return null;
+  const beforeSelection = renderedDocumentSourceSelection(
+    state,
+    serializer,
+    selection
+  );
   if (!beforeSelection) return null;
   const from = Math.min(beforeSelection.anchor, beforeSelection.head);
   const to = Math.max(beforeSelection.anchor, beforeSelection.head);
@@ -6549,15 +6606,26 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
   let exactSourceDispatchDepth = 0;
   let protectedExactSource = null;
   let pendingRenderedTypingSelection = null;
-  let pendingStructuralSourceSelection = null;
+  let pendingRenderedSourceSelection = null;
   const capturedExactClipboardEvents = new WeakSet();
-  const consumePendingStructuralSourceSelection = (view) => {
-    const pending = pendingStructuralSourceSelection
-      && view?.state?.selection?.empty
-      && view.state.selection.head === pendingStructuralSourceSelection.boundary
-      ? pendingStructuralSourceSelection.sourceSelection
-      : null;
-    pendingStructuralSourceSelection = null;
+  const pendingRenderedSourceSelectionFor = (view) => {
+    const pending = pendingRenderedSourceSelection;
+    if (!pending || !view?.state?.selection?.empty) return null;
+    const matchesBoundary = view.state.selection.head === pending.boundary;
+    let matchesSource = false;
+    try {
+      matchesSource = serializeMarkdownDocument(
+        view.state.doc,
+        ctx.get(serializerCtx)
+      ) === pending.sourceSelection.fullSource;
+    } catch {
+      matchesSource = false;
+    }
+    return matchesBoundary || matchesSource ? pending.sourceSelection : null;
+  };
+  const consumePendingRenderedSourceSelection = (view) => {
+    const pending = pendingRenderedSourceSelectionFor(view);
+    pendingRenderedSourceSelection = null;
     return pending;
   };
 
@@ -6883,7 +6951,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     const activeSourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
     const structuralSourceSelection = activeSourceSelection
       ? null
-      : consumePendingStructuralSourceSelection(view);
+      : consumePendingRenderedSourceSelection(view);
     const sourceSelection = activeSourceSelection || structuralSourceSelection;
     const renderedTyping = Boolean(structuralSourceSelection)
       || sourceSelection === pendingRenderedTypingSelection;
@@ -7251,7 +7319,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const direction = lineDirection || wordDirection
           || (event.key === "Backspace" ? "backward" : "forward");
         const mode = lineDirection ? "line" : wordDirection ? "word" : "character";
-        pendingStructuralSourceSelection = null;
+        pendingRenderedSourceSelection = null;
         if (!deleteExactSource(view, direction, mode)) return;
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -7271,7 +7339,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return;
         }
         if (markdownSyntaxKey.getState(currentView.state)?.sourceSelection) return;
-        const sourceSelection = consumePendingStructuralSourceSelection(currentView)
+        const sourceSelection = consumePendingRenderedSourceSelection(currentView)
           || collapsedDocumentSourceSelection(
             currentView.state,
             ctx.get(serializerCtx)
@@ -7311,7 +7379,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           "PageUp",
           "PageDown"
         ].includes(event.key)) {
-          pendingStructuralSourceSelection = null;
+          pendingRenderedSourceSelection = null;
         }
         if (
           !navigateExactSourceSelection(currentView, event)
@@ -7336,7 +7404,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       const navigationWindow = view.dom.ownerDocument?.defaultView;
       const captureSourceHandoff = (event) => {
         if (!view.editable) return;
-        pendingStructuralSourceSelection = null;
+        pendingRenderedSourceSelection = null;
         protectedExactSource = null;
         const targetElement = event.target instanceof Element ? event.target : null;
         if (targetElement?.closest(".tether-continuous-source")) return;
@@ -7393,7 +7461,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const activeSourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection;
         const structuralSourceSelection = activeSourceSelection
           ? null
-          : consumePendingStructuralSourceSelection(view);
+          : consumePendingRenderedSourceSelection(view);
         const sourceSelection = activeSourceSelection || structuralSourceSelection;
         const renderedTyping = Boolean(structuralSourceSelection)
           || sourceSelection === pendingRenderedTypingSelection;
@@ -7435,7 +7503,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       },
       handleDOMEvents: {
         paste(view, event) {
-          const structuralSourceSelection = consumePendingStructuralSourceSelection(view);
+          const structuralSourceSelection = consumePendingRenderedSourceSelection(view);
           const sourceSelection = markdownSyntaxKey.getState(view.state)?.sourceSelection
             || structuralSourceSelection
             || collapsedDocumentSourceSelection(view.state, ctx.get(serializerCtx))
@@ -7752,20 +7820,46 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             !event.altKey
             && !event.ctrlKey
             && !event.metaKey
+            && event.shiftKey
+            && event.key === "Enter"
+          ) {
+            const pendingLiteral = consumePendingRenderedSourceSelection(_view);
+            const literalEdit = literalEnterEdit(
+              _view.state,
+              ctx.get(parserCtx),
+              ctx.get(serializerCtx),
+              sourceSelection || pendingLiteral
+            );
+            if (literalEdit) {
+              event.preventDefault();
+              dispatchExactEdit(
+                _view,
+                literalEdit.transaction,
+                literalEdit.beforeSelection,
+                literalEdit.beforeSelection,
+                literalEdit.afterSelection,
+                { renderedCaret: true }
+              );
+              pendingRenderedSourceSelection = {
+                sourceSelection: literalEdit.afterSelection,
+                boundary: _view.state.selection.head
+              };
+              return true;
+            }
+          }
+          if (
+            !event.altKey
+            && !event.ctrlKey
+            && !event.metaKey
             && !event.shiftKey
             && event.key === "Enter"
           ) {
-            const pendingStructural = pendingStructuralSourceSelection
-              && _view.state.selection.empty
-              && _view.state.selection.head === pendingStructuralSourceSelection.boundary
-              ? pendingStructuralSourceSelection
-              : null;
-            pendingStructuralSourceSelection = null;
+            const pendingStructural = consumePendingRenderedSourceSelection(_view);
             const structuralEdit = (
               pendingStructural
                 ? structuralEnterSourceSelectionEdit(
                     _view.state,
-                    pendingStructural.sourceSelection,
+                    pendingStructural,
                     ctx.get(parserCtx)
                   )
                 : null
@@ -7784,7 +7878,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 structuralEdit.afterSelection,
                 { renderedCaret: true }
               );
-              pendingStructuralSourceSelection = {
+              pendingRenderedSourceSelection = {
                 sourceSelection: structuralEdit.afterSelection,
                 boundary: _view.state.selection.head
               };

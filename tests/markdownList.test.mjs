@@ -59,6 +59,7 @@ import {
   activeMarkdownBlockSyntax,
   continuousMarkdownSource,
   documentSourceSegments,
+  literalEnterEdit,
   plainTextMarkdownSourceSelection,
   plainTextMarkdownSourceToken,
   sourceCaretOffset,
@@ -724,6 +725,34 @@ test("Enter replaces a selected list tail before creating its physical continuat
   );
   assert.ok(typed);
   assert.equal(serialize(typed.doc), "+ Alpha\n+ x\n");
+});
+
+test("Shift+Enter inserts one literal source newline without inventing a list marker", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "+ Alpha Beta\n";
+  const doc = parse(source);
+  const start = textPosition(doc, "Alpha Beta");
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, start + "Alpha".length)
+  });
+  const edit = literalEnterEdit(state, parse, serialize);
+  assert.ok(edit);
+  assert.equal(edit.afterSelection.fullSource, "+ Alpha\n Beta\n");
+  assert.equal(serialize(edit.transaction.doc), "+ Alpha\n Beta\n");
+
+  const afterState = EditorState.create({
+    doc: edit.transaction.doc,
+    selection: edit.transaction.selection
+  });
+  const typed = replaceSourceSelectionTransaction(
+    afterState,
+    edit.afterSelection,
+    "x",
+    parse
+  );
+  assert.ok(typed);
+  assert.equal(serialize(typed.doc), "+ Alpha\nx Beta\n");
 });
 
 test("Milkdown preserves task marker case through edits and reconciles checkbox toggles", async () => {

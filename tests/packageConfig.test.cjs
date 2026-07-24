@@ -101,6 +101,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /TETHER_PARITY_CASE === "structural-enter-editing"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "structural-enter-edge-editing"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "structural-enter-selection-editing"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "shift-enter-editing"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "prose-select-all-editing"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "structural-marker-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "block-atom-traversal"/);
@@ -602,10 +603,12 @@ test("exact source edits preserve source-only carets or refocus the rendered sur
   assert.match(syntax, /const captureExactDeletion = \(event\) => \{[\s\S]*isMacSourceNativeNoopShortcut\(event\)/);
   assert.match(syntax, /const collapsedParagraphSelection = \(/);
   assert.match(syntax, /structuralEnterEdit\(/);
+  assert.match(syntax, /literalEnterEdit\(/);
   assert.match(syntax, /\{ renderedCaret: true \}/);
   assert.match(syntax, /pendingRenderedTypingSelection = sourceSelection/);
-  assert.match(syntax, /pendingStructuralSourceSelection = \{/);
-  assert.match(syntax, /consumePendingStructuralSourceSelection/);
+  assert.match(syntax, /pendingRenderedSourceSelection = \{/);
+  assert.match(syntax, /pendingRenderedSourceSelectionFor/);
+  assert.match(syntax, /consumePendingRenderedSourceSelection/);
   assert.match(syntax, /\{ renderedCaret: renderedTyping \|\| !sourceSelection \}/);
   assert.match(syntax, /\$from\.depth !== 1/);
   assert.match(syntax, /\$from\.parent\.type\.name !== "paragraph"/);

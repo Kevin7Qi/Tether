@@ -469,12 +469,13 @@ async function dispatchTextKey(text, code, virtualKeyCode) {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...common });
 }
 
-async function dispatchEnterKey() {
+async function dispatchEnterKey(modifiers = 0) {
   const common = {
     key: "Enter",
     code: "Enter",
     text: "\r",
     unmodifiedText: "\r",
+    modifiers,
     windowsVirtualKeyCode: 13
   };
   await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...common });
@@ -4022,6 +4023,192 @@ async function verifyStructuralEnterSelections() {
   }
 }
 
+async function verifyShiftEnterEditing() {
+  const cases = [
+    {
+      name: "plain interior",
+      markdown: "Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      sourceOffset: "Alpha".length,
+      expected: "Alpha\nx Beta\n",
+      history: true
+    },
+    {
+      name: "CRLF plain interior",
+      markdown: "Alpha Beta\r\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      sourceOffset: "Alpha".length,
+      expected: "Alpha\r\nx Beta\r\n",
+      lineEnding: "\r\n"
+    },
+    {
+      name: "heading interior",
+      markdown: "## Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      sourceOffset: "## Alpha".length,
+      expected: "## Alpha\nx Beta\n"
+    },
+    {
+      name: "bullet interior",
+      markdown: "+ Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      sourceOffset: "+ Alpha".length,
+      expected: "+ Alpha\nx Beta\n",
+      history: true
+    },
+    {
+      name: "task end",
+      markdown: "- [X] Alpha\n",
+      text: "Alpha",
+      visibleOffset: "Alpha".length,
+      sourceOffset: "- [X] Alpha".length,
+      expected: "- [X] Alpha\nx\n"
+    },
+    {
+      name: "quote interior",
+      markdown: ">Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      sourceOffset: ">Alpha".length,
+      expected: ">Alpha\nx Beta\n"
+    },
+    {
+      name: "backward bullet selection",
+      markdown: "+ Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      visibleEndOffset: "Alpha Beta".length,
+      sourceOffset: "+ Alpha".length,
+      sourceEndOffset: "+ Alpha Beta".length,
+      backward: true,
+      expected: "+ Alpha\nx\n"
+    },
+    {
+      name: "heading selection",
+      markdown: "## Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      visibleEndOffset: "Alpha Beta".length,
+      sourceOffset: "## Alpha".length,
+      sourceEndOffset: "## Alpha Beta".length,
+      expected: "## Alpha\nx\n"
+    },
+    {
+      name: "repeated bullet newline",
+      markdown: "+ Alpha Beta\n",
+      text: "Alpha Beta",
+      visibleOffset: "Alpha".length,
+      sourceOffset: "+ Alpha".length,
+      enters: 2,
+      expected: "+ Alpha\n\nx Beta\n"
+    }
+  ];
+  const selectedCases = process.env.TETHER_PARITY_SCENARIO
+    ? cases.filter(({ name }) => name.includes(process.env.TETHER_PARITY_SCENARIO))
+    : cases;
+  for (let index = 0; index < selectedCases.length; index += 1) {
+    const testCase = selectedCases[index];
+    const enters = testCase.enters || 1;
+    const sourceEndOffset = testCase.sourceEndOffset ?? testCase.sourceOffset;
+    await startSession(testCase.markdown, testCase.text);
+    const controlId = `tether-shift-enter-${index}`;
+    await evaluate(`(() => {
+      const control = document.createElement("textarea");
+      control.id = ${JSON.stringify(controlId)};
+      control.value = ${JSON.stringify(testCase.markdown)};
+      control.style.position = "fixed";
+      control.style.left = "-10000px";
+      document.body.append(control);
+      control.focus();
+      control.setSelectionRange(
+        ${testCase.sourceOffset},
+        ${sourceEndOffset},
+        ${JSON.stringify(testCase.backward ? "backward" : "forward")}
+      );
+      return true;
+    })()`);
+    for (let enter = 0; enter < enters; enter += 1) {
+      await dispatchEnterKey(8);
+    }
+    await cdp.send("Input.insertText", { text: "x" });
+    const normalizedNativeSource = await evaluate(
+      `document.querySelector(${JSON.stringify(`#${controlId}`)})?.value ?? null`
+    );
+    const nativeSource = testCase.lineEnding === "\r\n"
+      ? normalizedNativeSource.replaceAll("\n", "\r\n")
+      : normalizedNativeSource;
+    await evaluate(`document.querySelector(${JSON.stringify(`#${controlId}`)})?.remove()`);
+    if (nativeSource !== testCase.expected) {
+      throw new Error(
+        `${testCase.name} native source fixture produced ${JSON.stringify(nativeSource)}`
+      );
+    }
+
+    if (Number.isFinite(testCase.visibleEndOffset)) {
+      const start = await textBoundaryPoint(
+        testCase.text,
+        testCase.visibleOffset,
+        ".ProseMirror"
+      );
+      const end = await textBoundaryPoint(
+        testCase.text,
+        testCase.visibleEndOffset,
+        ".ProseMirror"
+      );
+      await dragBetweenTextBoundaries(
+        testCase.backward ? end : start,
+        testCase.backward ? start : end
+      );
+      await waitFor(
+        () => evaluate(`getSelection()?.toString() === " Beta"`),
+        `${testCase.name} could not install its rendered selection`
+      );
+    } else {
+      await placeCaretInText(testCase.text, testCase.visibleOffset);
+    }
+    for (let enter = 0; enter < enters; enter += 1) {
+      await dispatchEnterKey(8);
+    }
+    await cdp.send("Input.insertText", { text: "x" });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(testCase.expected);
+    if (testCase.history) {
+      for (let step = 0; step < (testCase.historySteps || 1); step += 1) {
+        await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+      }
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.markdown);
+      for (let step = 0; step < (testCase.historySteps || 1); step += 1) {
+        await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+      }
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.expected);
+    }
+    await delay(300);
+    const state = await editorState();
+    if (
+      state.dirty
+      || state.anchorOffset !== 1
+      || !state.anchorText?.startsWith("x")
+      || state.exactSourceSelection
+    ) {
+      throw new Error(
+        `${testCase.name} did not retain a clean rendered caret after Shift+Return: ${
+          JSON.stringify(state)
+        }`
+      );
+    }
+    await stopSession();
+  }
+}
+
 async function verifyProseToCodeReplacement() {
   const anchor = "Bef".length;
   const codeStart = codeFixture.indexOf(codeBlockSource);
@@ -5958,6 +6145,11 @@ async function run() {
     console.log("Verified structural Return replaces rendered selections at their physical source positions.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "shift-enter-editing") {
+    await verifyShiftEnterEditing();
+    console.log("Verified Shift+Return inserts one literal source newline across rendered blocks.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "closing-fence-replacement") {
     await verifyClosingFenceReplacement();
     console.log("Verified real Electron closing-fence replacement history.");
@@ -6037,6 +6229,7 @@ async function run() {
   await verifyStructuralEnterEditing();
   await verifyStructuralEnterEdges();
   await verifyStructuralEnterSelections();
+  await verifyShiftEnterEditing();
   await verifyProseToCodeReplacement();
   await verifyProseToCodeCutPaste();
   await verifyCodeBoundaryDeletion();
