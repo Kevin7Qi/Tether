@@ -839,6 +839,206 @@ async function verifyInlineBoundaryNavigation() {
   await waitForCompletedSave(deletedInlineMarkerFixture);
 }
 
+async function verifyPlatformNativeInlineBoundaryNavigation() {
+  const fixtures = [
+    { name: "strong", source: "**bold**" },
+    { name: "link", source: "[guide](https://example.com)" },
+    { name: "inline-code", source: "`code`" },
+    { name: "strikethrough", source: "~~gone~~" }
+  ];
+  const scenarios = fixtures.flatMap((fixture) => {
+    const markdown = `Before ${fixture.source} after.\n`;
+    const sourceStart = "Before ".length;
+    const sourceEnd = sourceStart + fixture.source.length;
+    return [
+      {
+        ...fixture,
+        name: `${fixture.name} ArrowRight`,
+        markdown,
+        visibleText: "Before ",
+        visibleOffset: "Before ".length,
+        sourceCaret: sourceStart,
+        keyCode: "Right",
+        key: "ArrowRight",
+        code: "ArrowRight",
+        virtualKeyCode: 39,
+        nativeModifiers: [],
+        modifiers: 0
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Shift-ArrowRight`,
+        markdown,
+        visibleText: "Before ",
+        visibleOffset: "Before ".length,
+        sourceCaret: sourceStart,
+        keyCode: "Right",
+        key: "ArrowRight",
+        code: "ArrowRight",
+        virtualKeyCode: 39,
+        nativeModifiers: ["shift"],
+        modifiers: 8
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} ArrowLeft`,
+        markdown,
+        visibleText: " after.",
+        visibleOffset: 0,
+        sourceCaret: sourceEnd,
+        keyCode: "Left",
+        key: "ArrowLeft",
+        code: "ArrowLeft",
+        virtualKeyCode: 37,
+        nativeModifiers: [],
+        modifiers: 0
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Shift-ArrowLeft`,
+        markdown,
+        visibleText: " after.",
+        visibleOffset: 0,
+        sourceCaret: sourceEnd,
+        keyCode: "Left",
+        key: "ArrowLeft",
+        code: "ArrowLeft",
+        virtualKeyCode: 37,
+        nativeModifiers: ["shift"],
+        modifiers: 8
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Option-ArrowRight`,
+        markdown,
+        visibleText: "Before ",
+        visibleOffset: "Before ".length,
+        sourceCaret: sourceStart,
+        keyCode: "Right",
+        key: "ArrowRight",
+        code: "ArrowRight",
+        virtualKeyCode: 39,
+        nativeModifiers: ["alt"],
+        modifiers: 1
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Shift-Option-ArrowRight`,
+        markdown,
+        visibleText: "Before ",
+        visibleOffset: "Before ".length,
+        sourceCaret: sourceStart,
+        keyCode: "Right",
+        key: "ArrowRight",
+        code: "ArrowRight",
+        virtualKeyCode: 39,
+        nativeModifiers: ["shift", "alt"],
+        modifiers: 9
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Option-ArrowLeft`,
+        markdown,
+        visibleText: " after.",
+        visibleOffset: 0,
+        sourceCaret: sourceEnd,
+        keyCode: "Left",
+        key: "ArrowLeft",
+        code: "ArrowLeft",
+        virtualKeyCode: 37,
+        nativeModifiers: ["alt"],
+        modifiers: 1
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Shift-Option-ArrowLeft`,
+        markdown,
+        visibleText: " after.",
+        visibleOffset: 0,
+        sourceCaret: sourceEnd,
+        keyCode: "Left",
+        key: "ArrowLeft",
+        code: "ArrowLeft",
+        virtualKeyCode: 37,
+        nativeModifiers: ["shift", "alt"],
+        modifiers: 9
+      }
+    ];
+  });
+  const mismatches = [];
+
+  for (let index = 0; index < scenarios.length; index += 1) {
+    const scenario = scenarios[index];
+    const controlId = `tether-native-inline-boundary-${index}`;
+    await startSession(scenario.markdown, "Before ");
+    await evaluate(`(() => {
+      const control = document.createElement("textarea");
+      control.id = ${JSON.stringify(controlId)};
+      control.style.position = "fixed";
+      control.style.left = "-10000px";
+      control.value = ${JSON.stringify(scenario.markdown)};
+      document.body.append(control);
+      control.focus();
+      control.setSelectionRange(${scenario.sourceCaret}, ${scenario.sourceCaret});
+      return true;
+    })()`);
+    await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
+    await cdp.send("Input.insertText", { text: "x" });
+    const nativeSource = await evaluate(
+      `document.querySelector(${JSON.stringify(`#${controlId}`)})?.value ?? null`
+    );
+    await stopSession();
+
+    await startSession(scenario.markdown, "Before ");
+    await placeCaretInText(scenario.visibleText, scenario.visibleOffset);
+    await dispatchKey({
+      key: scenario.key,
+      code: scenario.code,
+      virtualKeyCode: scenario.virtualKeyCode,
+      modifiers: scenario.modifiers
+    });
+    const renderedNavigation = await evaluate(`(() => {
+      const root = document.querySelector(".ProseMirror");
+      const control = document.querySelector(".tether-continuous-source");
+      const selection = getSelection();
+      return {
+        activeElement: document.activeElement?.className || document.activeElement?.tagName || null,
+        exactSourceSelection: root?.tetherGetActiveSourceSelection?.() || null,
+        sourceControl: control ? {
+          value: control.value,
+          start: control.selectionStart,
+          end: control.selectionEnd,
+          direction: control.selectionDirection
+        } : null,
+        anchorText: selection?.anchorNode?.data || null,
+        anchorOffset: selection?.anchorOffset ?? null
+      };
+    })()`);
+    await dispatchTextKey("x", "KeyX", 88);
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForSaveState(true);
+    const renderedSource = await readFile(samplePath, "utf8");
+    if (renderedSource !== nativeSource) {
+      mismatches.push({
+        scenario: scenario.name,
+        expectedSource: nativeSource,
+        actualSource: renderedSource,
+        renderedNavigation
+      });
+    }
+    await stopSession();
+  }
+
+  if (mismatches.length) {
+    throw new Error(
+      `Rendered inline-boundary navigation diverged from native source controls:\n${
+        JSON.stringify(mismatches, null, 2)
+      }`
+    );
+  }
+}
+
 async function verifyInlineBoundaryExitNavigation() {
   const forwardExpected = "Before **bold** Xafter.\n";
   await startSession(inlineFixture, "Before bold after.");
@@ -4700,6 +4900,11 @@ async function run() {
     console.log("Verified plain vertical navigation matches native source controls.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "platform-native-inline-boundary-navigation") {
+    await verifyPlatformNativeInlineBoundaryNavigation();
+    console.log("Verified rendered inline boundaries match native source controls.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "platform-native-option-navigation") {
     await verifyPlatformNativeOptionNavigationShortcuts();
     console.log("Verified macOS Option navigation matches native source controls.");
@@ -4959,6 +5164,7 @@ async function run() {
   await verifyInlineEditing();
   await stopSession();
   await verifyInlineBoundaryNavigation();
+  await verifyPlatformNativeInlineBoundaryNavigation();
   await verifyInlineBoundaryExitNavigation();
   await stopSession();
   await verifyLiteralSourceTokens();

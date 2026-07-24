@@ -2849,9 +2849,29 @@ export function applyDocumentSourceWordJump(view, event, serializer) {
   const direction = event.key === "ArrowLeft" ? "backward" : "forward";
   const documentSource = documentSourceSegments(view.state, serializer);
   const existing = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+  // A rendered caret beside an inline atom is visually compatible with both
+  // the content edge and the atom's outer source edge. Word navigation must
+  // start at the latter so backward movement sees closing delimiters and full
+  // link destinations exactly as a source textarea does.
+  const boundaryTarget = existing
+    ? null
+    : markdownBoundarySourceTarget(view.state, direction);
+  const boundaryUnit = boundaryTarget
+    ? markdownDeletionSourceUnit(view.state, boundaryTarget)
+    : null;
+  const boundaryOffset = boundaryUnit
+    ? documentSourceUnitBoundaryOffset(
+        view.state,
+        boundaryUnit,
+        boundaryTarget.edge === "end" ? "forward" : "backward",
+        serializer
+      )
+    : null;
   const head = Number.isFinite(existing?.head)
     ? existing.head
-    : documentSourceOffsetAtPosition(
+    : Number.isFinite(boundaryOffset)
+      ? boundaryOffset
+      : documentSourceOffsetAtPosition(
         view.state,
         view.state.selection.head,
         serializer,
@@ -2859,7 +2879,9 @@ export function applyDocumentSourceWordJump(view, event, serializer) {
       );
   const anchor = Number.isFinite(existing?.anchor)
     ? existing.anchor
-    : documentSourceOffsetAtPosition(
+    : Number.isFinite(boundaryOffset)
+      ? boundaryOffset
+      : documentSourceOffsetAtPosition(
         view.state,
         view.state.selection.anchor,
         serializer,
@@ -6676,6 +6698,11 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         }
         if (
           !navigateExactSourceSelection(currentView, event)
+          && !applyDocumentSourceWordJump(
+            currentView,
+            event,
+            ctx.get(serializerCtx)
+          )
           && !applyDocumentSourcePlainVerticalJump(
             currentView,
             event,

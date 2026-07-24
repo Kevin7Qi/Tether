@@ -85,6 +85,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /TETHER_PARITY_CASE === "platform-native-shortcuts"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "platform-native-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "platform-native-plain-vertical-navigation"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "platform-native-inline-boundary-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "platform-native-option-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-editing-history"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "external-markdown-open"/);
@@ -564,6 +565,7 @@ test("exact source-only selections own line and word jump commands", () => {
   assert.match(syntax, /const navigateExactSourceSelection = \(view, event\) =>/);
   assert.match(syntax, /navigationWindow\?\.addEventListener\("keydown", captureExactNavigation, true\)/);
   assert.match(syntax, /export function applyDocumentSourcePlainVerticalJump\(/);
+  assert.match(syntax, /captureExactNavigation[\s\S]*applyDocumentSourceWordJump\(/);
   assert.match(syntax, /captureExactNavigation[\s\S]*applyDocumentSourcePlainVerticalJump\(/);
   assert.match(syntax, /export function applyDocumentSourceWordJump\([\s\S]*sourceSelectionWordJump\(/);
   assert.match(syntax, /const lineJumpEdge = sourceLineJumpEdge\(event\);[\s\S]*sourceSelectionLineJump\(/);
