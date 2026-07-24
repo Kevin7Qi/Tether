@@ -645,6 +645,22 @@ ipcMain.on("test:openExternalMarkdown", (_event, filePath) => {
   if (editorParityRun) queueExternalDocumentPath(filePath);
 });
 
+// Parity-only native delivery lets the hidden harness compare CodeMirror with
+// Chromium's ordinary source controls through Electron's real input path.
+ipcMain.handle("test:sendNativeKey", async (event, keyCode, modifiers = []) => {
+  if (
+    !editorParityRun
+    || typeof keyCode !== "string"
+    || !Array.isArray(modifiers)
+    || modifiers.some((modifier) => typeof modifier !== "string")
+  ) return false;
+  const input = { keyCode, modifiers };
+  event.sender.focus();
+  event.sender.sendInputEvent({ type: "keyDown", ...input });
+  event.sender.sendInputEvent({ type: "keyUp", ...input });
+  return true;
+});
+
 ipcMain.on("test:resetEditorParity", (event, fixture) => {
   if (!editorParityRun || typeof fixture !== "string") return;
   const outgoingWindow = BrowserWindow.fromWebContents(event.sender);

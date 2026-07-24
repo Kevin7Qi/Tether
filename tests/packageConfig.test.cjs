@@ -67,8 +67,11 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /await stopSession\(true\)/);
   assert.match(verifier, /process\.exit\(exitCode\)/);
   assert.match(main, /ipcMain\.on\("test:resetEditorParity"/);
+  assert.match(main, /ipcMain\.handle\("test:sendNativeKey"/);
+  assert.match(main, /!editorParityRun/);
   assert.match(main, /createWindow\(\{ deferLoad: true \}\)/);
   assert.match(preload, /resetEditorParity: \(fixture\) => ipcRenderer\.send\("test:resetEditorParity", fixture\)/);
+  assert.match(preload, /sendNativeKeyForTest: \(keyCode, modifiers\)/);
   assert.match(verifier, /connectRendererTarget\(outgoingTargetId\)/);
   assert.match(verifier, /window\.remoteMarkdown\.resetEditorParity/);
   assert.match(verifier, /window\.localStorage\.clear\(\)/);
@@ -78,6 +81,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /TETHER_PARITY_CASE === "code-option-vertical-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-shift-option-vertical-selection"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-native-noop-shortcuts"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "code-native-control-shortcuts"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "external-markdown-open"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-control-select-all"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-line-delete"/);

@@ -123,6 +123,25 @@ test("editor Select All shortcuts escalate from CodeMirror to the Markdown docum
 });
 
 test("CodeMirror-only structural shortcuts stay inert like native source controls", () => {
+  for (const key of ["a", "b", "d", "e", "f", "h", "k", "n", "o", "p", "t"]) {
+    assert.equal(
+      isCodeSourceNativeNoopShortcut({ key, ctrlKey: true }, "MacIntel"),
+      true,
+      `Control-${key}`
+    );
+  }
+  assert.equal(
+    isCodeSourceNativeNoopShortcut({ key: "a", ctrlKey: true, shiftKey: true }, "MacIntel"),
+    false
+  );
+  assert.equal(
+    isCodeSourceNativeNoopShortcut({ key: "a", ctrlKey: true, altKey: true }, "MacIntel"),
+    false
+  );
+  assert.equal(
+    isCodeSourceNativeNoopShortcut({ key: "a", ctrlKey: true }, "Win32"),
+    false
+  );
   assert.equal(isCodeSourceNativeNoopShortcut({
     key: "ArrowUp",
     metaKey: true,

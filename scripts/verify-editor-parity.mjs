@@ -451,6 +451,13 @@ async function dispatchKey({ key, code, virtualKeyCode, modifiers = 0 }) {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...common });
 }
 
+async function dispatchNativeKey(keyCode, modifiers = []) {
+  const handled = await evaluate(
+    `window.remoteMarkdown.sendNativeKeyForTest(${JSON.stringify(keyCode)}, ${JSON.stringify(modifiers)})`
+  );
+  if (!handled) throw new Error(`Native key dispatch was unavailable for ${keyCode}`);
+}
+
 async function dispatchPasteText(text) {
   return evaluate(`(() => {
     const transfer = new DataTransfer();
@@ -4055,6 +4062,97 @@ async function verifyCodeNativeNoopShortcuts() {
   );
 }
 
+async function verifyCodeNativeControlShortcuts() {
+  const content = "alpha\nbeta";
+  const fixture = `Before.\n\n\`\`\`text\n${content}\n\`\`\`\n\nAfter.\n`;
+  const caret = content.indexOf("beta") + 2;
+  const shortcuts = [
+    { keyCode: "A", name: "Control-A" },
+    { keyCode: "E", name: "Control-E" },
+    { keyCode: "B", name: "Control-B" },
+    { keyCode: "F", name: "Control-F" },
+    { keyCode: "P", name: "Control-P" },
+    { keyCode: "N", name: "Control-N" },
+    { keyCode: "H", name: "Control-H" },
+    { keyCode: "D", name: "Control-D" },
+    { keyCode: "K", name: "Control-K" },
+    { keyCode: "O", name: "Control-O" },
+    { keyCode: "T", name: "Control-T" }
+  ];
+
+  await startSession(fixture, "alpha");
+  const nativeResults = [];
+  for (const shortcut of shortcuts) {
+    await evaluate(`(() => {
+      let control = document.querySelector("#tether-native-control-shortcut");
+      if (!control) {
+        control = document.createElement("textarea");
+        control.id = "tether-native-control-shortcut";
+        control.style.position = "fixed";
+        control.style.left = "-10000px";
+        document.body.append(control);
+      }
+      control.value = ${JSON.stringify(content)};
+      control.focus();
+      control.setSelectionRange(${caret}, ${caret});
+      return true;
+    })()`);
+    await dispatchNativeKey(shortcut.keyCode, ["control"]);
+    nativeResults.push(await evaluate(`(() => {
+      const control = document.querySelector("#tether-native-control-shortcut");
+      return {
+        value: control?.value ?? null,
+        start: control?.selectionStart ?? null,
+        end: control?.selectionEnd ?? null,
+        direction: control?.selectionDirection ?? null
+      };
+    })()`));
+  }
+  await evaluate(`document.querySelector("#tether-native-control-shortcut")?.remove()`);
+  await stopSession();
+
+  const mismatches = [];
+  for (let index = 0; index < shortcuts.length; index += 1) {
+    const shortcut = shortcuts[index];
+    const native = nativeResults[index];
+    const expectedContent = `${native.value.slice(0, native.start)}X${native.value.slice(native.end)}`;
+    const expectedSource = fixture.replace(content, expectedContent);
+
+    await startSession(fixture, "alpha");
+    await clickElement(".milkdown-code-block .cm-line:nth-child(2)");
+    await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await dispatchKey({
+      key: shortcut.keyCode.toLowerCase(),
+      code: `Key${shortcut.keyCode}`,
+      virtualKeyCode: shortcut.keyCode.charCodeAt(0),
+      modifiers: 2
+    });
+    await cdp.send("Input.insertText", { text: "X" });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitFor(
+      async () => (await readFile(samplePath, "utf8").catch(() => fixture)) !== fixture,
+      `${shortcut.name} comparison did not save its marker insertion`
+    );
+    const actualSource = await readFile(samplePath, "utf8");
+    if (actualSource !== expectedSource) {
+      mismatches.push({
+        shortcut: shortcut.name,
+        native,
+        expectedSource,
+        actualSource
+      });
+    }
+    await stopSession();
+  }
+
+  if (mismatches.length) {
+    throw new Error(`CodeMirror diverged from native source controls:\n${JSON.stringify(mismatches, null, 2)}`);
+  }
+}
+
 async function run() {
   if (process.env.TETHER_PARITY_CASE === "external-markdown-open") {
     await verifyExternalMarkdownOpening();
@@ -4064,6 +4162,11 @@ async function run() {
   if (process.env.TETHER_PARITY_CASE === "code-native-noop-shortcuts") {
     await verifyCodeNativeNoopShortcuts();
     console.log("Verified native no-op shortcuts do not invoke CodeMirror structural commands.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "code-native-control-shortcuts") {
+    await verifyCodeNativeControlShortcuts();
+    console.log("Verified macOS Control shortcuts match native source controls inside code.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "code-option-vertical-navigation") {
@@ -4336,6 +4439,7 @@ async function run() {
   await verifyCodeOptionVerticalNavigation();
   await verifyCodeShiftOptionVerticalSelection();
   await verifyCodeNativeNoopShortcuts();
+  await verifyCodeNativeControlShortcuts();
   await verifyCodeDocumentJumpReplacement();
   await verifyCodeSelectAllEditing();
   await verifyProseSelectAllEditing();

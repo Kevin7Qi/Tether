@@ -63,6 +63,8 @@ contextBridge.exposeInMainWorld("remoteMarkdown", {
   saveLocalSample: (content) => ipcRenderer.invoke("local:saveSample", content),
   resetEditorParity: (fixture) => ipcRenderer.send("test:resetEditorParity", fixture),
   openExternalMarkdownForTest: (filePath) => ipcRenderer.send("test:openExternalMarkdown", filePath),
+  sendNativeKeyForTest: (keyCode, modifiers) =>
+    ipcRenderer.invoke("test:sendNativeKey", keyCode, modifiers),
   onExternalOpen: (callback) => subscribeExternalOpen(callback),
   externalOpenReady: () => ipcRenderer.send("local:externalOpenReady"),
   onEditorCommand: (callback) => subscribe("editor:command", callback),

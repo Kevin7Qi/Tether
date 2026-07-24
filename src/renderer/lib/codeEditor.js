@@ -57,8 +57,34 @@ export function isEditorSelectAllShortcut(event) {
     && String(event.key || "").toLowerCase() === "a";
 }
 
-export function isCodeSourceNativeNoopShortcut(event) {
+const macNativeNoopControlKeys = new Set([
+  "a",
+  "b",
+  "d",
+  "e",
+  "f",
+  "h",
+  "k",
+  "n",
+  "o",
+  "p",
+  "t"
+]);
+
+export function isCodeSourceNativeNoopShortcut(
+  event,
+  platform = globalThis.navigator?.userAgentData?.platform
+    || globalThis.navigator?.platform
+    || ""
+) {
   if (!event || event.shiftKey || event.metaKey === event.ctrlKey) return false;
+  if (
+    event.ctrlKey
+    && !event.metaKey
+    && !event.altKey
+    && /^(?:mac|iphone|ipad|ipod)/i.test(String(platform))
+    && macNativeNoopControlKeys.has(String(event.key || "").toLowerCase())
+  ) return true;
   if (event.key === "Enter") return !event.altKey;
   return Boolean(event.altKey) && ["ArrowUp", "ArrowDown"].includes(event.key);
 }
