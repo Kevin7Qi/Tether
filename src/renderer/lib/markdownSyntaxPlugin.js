@@ -2930,6 +2930,61 @@ export function applyDocumentSourceVerticalJump(view, event, serializer) {
     && activateDocumentSourceMotion(view, next, affinity, serializer);
 }
 
+export function applyDocumentSourcePlainVerticalJump(view, event, serializer) {
+  if (
+    !view?.state
+    || event?.altKey
+    || event?.ctrlKey
+    || event?.metaKey
+    || !["ArrowUp", "ArrowDown"].includes(event?.key)
+  ) return false;
+  const direction = event.key === "ArrowUp" ? "up" : "down";
+  const affinity = direction === "up" ? "backward" : "forward";
+  const existing = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+  const documentSelection = existing || view.state.selection.empty
+    ? null
+    : sourceSelectionFromDocumentSelection(view.state, serializer);
+  // Prefer a literal paragraph mapping when the visual DOM collapses physical
+  // Markdown bytes (most notably soft line endings). The collapsed document
+  // fallback also lets an ordinary rendered caret traverse source lines across
+  // block boundaries; a document with no physical newline remains native
+  // ProseMirror movement so one-line visual wrapping is unaffected.
+  const plainSelection = existing || documentSelection
+    ? null
+    : plainTextMarkdownSourceSelection(view.state, serializer);
+  const collapsedSelection = (
+    !existing
+    && !documentSelection
+    && !plainSelection
+    && view.state.selection.empty
+  )
+    ? collapsedDocumentSourceSelection(view.state, serializer)
+    : null;
+  const sourceSelection = existing
+    || documentSelection
+    || plainSelection
+    || collapsedSelection;
+  if (!sourceSelection?.fullSource.includes("\n")) return false;
+  const next = event.shiftKey
+    ? moveSourceSelectionHead(sourceSelection, direction)
+    : sourceSelectionVerticalJump(sourceSelection, direction);
+  if (!next) return false;
+  if (next.anchor === next.head) {
+    return activateDocumentSourceMotion(view, next, affinity, serializer);
+  }
+  dispatchFocusedSourceSelection(
+    view,
+    view.state.tr
+      .setSelection(documentSourceSelectionCarrier(view.state, next, serializer))
+      .setMeta(markdownSyntaxKey, {
+        action: "source-selection",
+        sourceSelection: next
+      })
+      .scrollIntoView()
+  );
+  return true;
+}
+
 export function documentSourceOffsetAtPosition(state, position, serializer, affinity = "forward") {
   const documentSource = documentSourceSegments(state, serializer);
   if (!documentSource) return null;
@@ -6619,7 +6674,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         if (target?.closest("button, input, select, textarea, .cm-content, .tether-continuous-source")) {
           return;
         }
-        if (!navigateExactSourceSelection(currentView, event)) return;
+        if (
+          !navigateExactSourceSelection(currentView, event)
+          && !applyDocumentSourcePlainVerticalJump(
+            currentView,
+            event,
+            ctx.get(serializerCtx)
+          )
+        ) return;
         event.preventDefault();
         event.stopImmediatePropagation();
       };
@@ -6877,6 +6939,13 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               fullSelection,
               next
             );
+            return true;
+          }
+          if (
+            !activeSourceControl?.element?.isConnected
+            && applyDocumentSourcePlainVerticalJump(_view, event, serializer)
+          ) {
+            event.preventDefault();
             return true;
           }
           if (

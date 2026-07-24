@@ -3242,6 +3242,7 @@ async function verifyProseToCodeReplacement() {
   await startSession(codeFixture, "Before.");
   await placeCaretInText("Before.", anchor);
   await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 8 });
+  await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 8 });
   await cdp.send("Input.insertText", { text: "X" });
   await waitForSaveState(false);
   await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
@@ -3270,6 +3271,10 @@ async function verifyProseToCodeCutPaste() {
 
   await startSession(codeFixture, "Before.");
   await placeCaretInText("Before.", anchor);
+  await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 8 });
+  // A source editor visits the physical blank line between prose and the
+  // opening fence first. The second Shift-Down reaches the same source column
+  // on the fence line, retaining this scenario's cross-block selection.
   await dispatchKey({ key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, modifiers: 8 });
   const cutText = await dispatchCutAndCaptureText();
   if (cutText !== selectedText) {
@@ -4453,13 +4458,165 @@ async function verifyPlatformNativeNavigationShortcuts() {
   }
 }
 
+async function verifyPlatformNativeNavigationShortcutGroup({
+  label,
+  content,
+  activeLine,
+  caretInLine,
+  shortcuts
+}) {
+  const lineStart = content.indexOf(activeLine);
+  const caret = lineStart + caretInLine;
+  const codeFixture = `Before.\n\n\`\`\`text\n${content}\n\`\`\`\n\nAfter.\n`;
+  const nativeResults = [];
+
+  await startSession(codeFixture, activeLine);
+  for (let index = 0; index < shortcuts.length; index += 1) {
+    const shortcut = shortcuts[index];
+    const controlId = `tether-native-${label.toLowerCase().replace(/\W+/g, "-")}-navigation-${index}`;
+    await evaluate(`(() => {
+      const control = document.createElement("textarea");
+      control.id = ${JSON.stringify(controlId)};
+      control.style.position = "fixed";
+      control.style.left = "-10000px";
+      control.value = ${JSON.stringify(content)};
+      document.body.append(control);
+      control.focus();
+      control.setSelectionRange(${caret}, ${caret});
+      return true;
+    })()`);
+    await dispatchNativeKey(shortcut.keyCode, shortcut.nativeModifiers);
+    await delay(25);
+    const selection = await evaluate(`(() => {
+      const control = document.querySelector(${JSON.stringify(`#${controlId}`)});
+      return {
+        start: control?.selectionStart ?? null,
+        end: control?.selectionEnd ?? null,
+        direction: control?.selectionDirection ?? null
+      };
+    })()`);
+    await cdp.send("Input.insertText", { text: "x" });
+    nativeResults.push({
+      value: await evaluate(
+        `document.querySelector(${JSON.stringify(`#${controlId}`)})?.value ?? null`
+      ),
+      selection
+    });
+    await evaluate(`document.querySelector(${JSON.stringify(`#${controlId}`)})?.remove()`);
+  }
+  await stopSession();
+
+  const saveAndRead = async () => {
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForSaveState(true);
+    return readFile(samplePath, "utf8");
+  };
+  const dispatchNavigation = async (shortcut) => {
+    await dispatchKey({
+      key: shortcut.key,
+      code: shortcut.code,
+      virtualKeyCode: shortcut.virtualKeyCode,
+      modifiers: shortcut.modifiers
+    });
+    await delay(25);
+    await dispatchTextKey("x", "KeyX", 88);
+  };
+  const mismatches = [];
+  for (let index = 0; index < shortcuts.length; index += 1) {
+    const shortcut = shortcuts[index];
+    const native = nativeResults[index];
+
+    await startSession(content, activeLine);
+    await placeCaretInText(activeLine, caretInLine);
+    await dispatchNavigation(shortcut);
+    const proseSource = await saveAndRead();
+    if (proseSource !== native.value) {
+      mismatches.push({
+        shortcut: shortcut.name,
+        surface: "prose",
+        native,
+        expectedSource: native.value,
+        actualSource: proseSource
+      });
+    }
+    await stopSession();
+
+    await startSession(codeFixture, activeLine);
+    await clickElement(".milkdown-code-block .cm-line:nth-child(2)");
+    await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+    for (let offset = 0; offset < caretInLine; offset += 1) {
+      await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    }
+    await dispatchNavigation(shortcut);
+    const codeSource = await saveAndRead();
+    const expectedCodeSource = codeFixture.replace(content, native.value);
+    if (codeSource !== expectedCodeSource) {
+      mismatches.push({
+        shortcut: shortcut.name,
+        surface: "code",
+        native,
+        expectedSource: expectedCodeSource,
+        actualSource: codeSource
+      });
+    }
+    await stopSession();
+  }
+  if (mismatches.length) {
+    throw new Error(
+      `Rendered ${label} navigation diverged from native source controls:\n${
+        JSON.stringify(mismatches, null, 2)
+      }`
+    );
+  }
+}
+
+async function verifyPlatformNativePlainVerticalNavigationShortcuts() {
+  const content = "alpha foo-bar\nbravo baz_qux\ncharlie omega";
+  const activeLine = "bravo baz_qux";
+  const caretInLine = activeLine.indexOf("baz_qux") + "baz".length;
+  const baseShortcuts = [
+    {
+      name: "ArrowUp",
+      keyCode: "Up",
+      key: "ArrowUp",
+      code: "ArrowUp",
+      virtualKeyCode: 38
+    },
+    {
+      name: "ArrowDown",
+      keyCode: "Down",
+      key: "ArrowDown",
+      code: "ArrowDown",
+      virtualKeyCode: 40
+    }
+  ];
+  const shortcuts = baseShortcuts.flatMap((shortcut) => [
+    {
+      ...shortcut,
+      nativeModifiers: [],
+      modifiers: 0
+    },
+    {
+      ...shortcut,
+      name: `Shift-${shortcut.name}`,
+      nativeModifiers: ["shift"],
+      modifiers: 8
+    }
+  ]);
+  await verifyPlatformNativeNavigationShortcutGroup({
+    label: "plain vertical",
+    content,
+    activeLine,
+    caretInLine,
+    shortcuts
+  });
+}
+
 async function verifyPlatformNativeOptionNavigationShortcuts() {
   const content = "alpha foo-bar\nbravo baz_qux\ncharlie omega";
   const activeLine = "bravo baz_qux";
-  const lineStart = content.indexOf(activeLine);
   const caretInLine = activeLine.indexOf("baz_qux") + "baz".length;
-  const caret = lineStart + caretInLine;
-  const codeFixture = `Before.\n\n\`\`\`text\n${content}\n\`\`\`\n\nAfter.\n`;
   const baseShortcuts = [
     {
       name: "Option-ArrowLeft",
@@ -4503,107 +4660,13 @@ async function verifyPlatformNativeOptionNavigationShortcuts() {
       modifiers: 9
     }
   ]);
-  const nativeResults = [];
-
-  await startSession(codeFixture, activeLine);
-  for (let index = 0; index < shortcuts.length; index += 1) {
-    const shortcut = shortcuts[index];
-    const controlId = `tether-native-option-navigation-${index}`;
-    await evaluate(`(() => {
-      const control = document.createElement("textarea");
-      control.id = ${JSON.stringify(controlId)};
-      control.style.position = "fixed";
-      control.style.left = "-10000px";
-      control.value = ${JSON.stringify(content)};
-      document.body.append(control);
-      control.focus();
-      control.setSelectionRange(${caret}, ${caret});
-      return true;
-    })()`);
-    await dispatchNativeKey(shortcut.keyCode, shortcut.nativeModifiers);
-    await delay(25);
-    const selection = await evaluate(`(() => {
-      const control = document.querySelector(${JSON.stringify(`#${controlId}`)});
-      return {
-        start: control?.selectionStart ?? null,
-        end: control?.selectionEnd ?? null,
-        direction: control?.selectionDirection ?? null
-      };
-    })()`);
-    await cdp.send("Input.insertText", { text: "x" });
-    nativeResults.push({
-      value: await evaluate(
-        `document.querySelector(${JSON.stringify(`#${controlId}`)})?.value ?? null`
-      ),
-      selection
-    });
-    await evaluate(`document.querySelector(${JSON.stringify(`#${controlId}`)})?.remove()`);
-  }
-  await stopSession();
-
-  const saveAndRead = async () => {
-    await waitForSaveState(false);
-    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-    await waitForSaveState(true);
-    return readFile(samplePath, "utf8");
-  };
-  const dispatchOptionNavigation = async (shortcut) => {
-    await dispatchKey({
-      key: shortcut.key,
-      code: shortcut.code,
-      virtualKeyCode: shortcut.virtualKeyCode,
-      modifiers: shortcut.modifiers
-    });
-    await delay(25);
-    await dispatchTextKey("x", "KeyX", 88);
-  };
-  const mismatches = [];
-  for (let index = 0; index < shortcuts.length; index += 1) {
-    const shortcut = shortcuts[index];
-    const native = nativeResults[index];
-
-    await startSession(content, activeLine);
-    await placeCaretInText(activeLine, caretInLine);
-    await dispatchOptionNavigation(shortcut);
-    const proseSource = await saveAndRead();
-    if (proseSource !== native.value) {
-      mismatches.push({
-        shortcut: shortcut.name,
-        surface: "prose",
-        native,
-        expectedSource: native.value,
-        actualSource: proseSource
-      });
-    }
-    await stopSession();
-
-    await startSession(codeFixture, activeLine);
-    await clickElement(".milkdown-code-block .cm-line:nth-child(2)");
-    await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
-    for (let offset = 0; offset < caretInLine; offset += 1) {
-      await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-    }
-    await dispatchOptionNavigation(shortcut);
-    const codeSource = await saveAndRead();
-    const expectedCodeSource = codeFixture.replace(content, native.value);
-    if (codeSource !== expectedCodeSource) {
-      mismatches.push({
-        shortcut: shortcut.name,
-        surface: "code",
-        native,
-        expectedSource: expectedCodeSource,
-        actualSource: codeSource
-      });
-    }
-    await stopSession();
-  }
-  if (mismatches.length) {
-    throw new Error(
-      `Rendered Option navigation diverged from native source controls:\n${
-        JSON.stringify(mismatches, null, 2)
-      }`
-    );
-  }
+  await verifyPlatformNativeNavigationShortcutGroup({
+    label: "Option",
+    content,
+    activeLine,
+    caretInLine,
+    shortcuts
+  });
 }
 
 async function run() {
@@ -4630,6 +4693,11 @@ async function run() {
   if (process.env.TETHER_PARITY_CASE === "platform-native-navigation") {
     await verifyPlatformNativeNavigationShortcuts();
     console.log("Verified macOS line and document navigation match native source controls.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "platform-native-plain-vertical-navigation") {
+    await verifyPlatformNativePlainVerticalNavigationShortcuts();
+    console.log("Verified plain vertical navigation matches native source controls.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "platform-native-option-navigation") {
@@ -4916,6 +4984,7 @@ async function run() {
   await verifyCodeNativeControlShortcuts();
   await verifyPlatformNativeDocumentShortcuts();
   await verifyPlatformNativeNavigationShortcuts();
+  await verifyPlatformNativePlainVerticalNavigationShortcuts();
   await verifyPlatformNativeOptionNavigationShortcuts();
   await verifyCodeDocumentJumpReplacement();
   await verifyCodeSelectAllEditing();
