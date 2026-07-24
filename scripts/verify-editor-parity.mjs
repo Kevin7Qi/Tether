@@ -4898,6 +4898,8 @@ async function verifyCodeBlockLayout() {
       toolsHeight: toolsRect.height,
       topToText: lineRect.top - blockRect.top,
       textToBottom: blockRect.bottom - lineRect.bottom,
+      textToTools: toolsRect.top - lineRect.bottom,
+      toolsToBottom: blockRect.bottom - toolsRect.bottom,
       guttersWidth: guttersRect.width,
       foldGutterWidth: foldGutterRect.width,
       gutterToText: lineRect.left - guttersRect.right
@@ -4905,14 +4907,18 @@ async function verifyCodeBlockLayout() {
   })()`);
   const compact = geometry
     && geometry.blockHeight >= 60
-    && geometry.blockHeight <= 65
+    && geometry.blockHeight <= 62
     && geometry.toolsHeight <= 24.5
-    && geometry.topToText >= 28
-    && geometry.topToText <= 31
-    && geometry.textToBottom >= 12
-    && geometry.textToBottom <= 15
-    && geometry.guttersWidth >= 41.5
-    && geometry.guttersWidth <= 42.5
+    && geometry.topToText >= 8.5
+    && geometry.topToText <= 9.5
+    && geometry.textToBottom >= 30.5
+    && geometry.textToBottom <= 31.5
+    && geometry.textToTools >= 1.5
+    && geometry.textToTools <= 2.5
+    && geometry.toolsToBottom >= 4.5
+    && geometry.toolsToBottom <= 5.5
+    && geometry.guttersWidth >= 42.5
+    && geometry.guttersWidth <= 43.5
     && geometry.foldGutterWidth === 0
     && geometry.gutterToText >= 7.5
     && geometry.gutterToText <= 8.5;
@@ -4965,8 +4971,9 @@ async function verifyMultilineCodeBlockLayout() {
         && blockRect.right <= proseRect.right + 0.5,
       documentOverflow: prose.scrollWidth - prose.clientWidth,
       horizontalOverflow: scroller.scrollWidth - scroller.clientWidth,
-      toolsToFirstLine: firstRect.top - toolsRect.bottom,
-      lastLineToBlockBottom: blockRect.bottom - lastRect.bottom,
+      firstLineToBlockTop: firstRect.top - blockRect.top,
+      lastLineToTools: toolsRect.top - lastRect.bottom,
+      toolsToBlockBottom: blockRect.bottom - toolsRect.bottom,
       firstMarkerDelta: firstGutterRect.top - firstRect.top,
       lastMarkerDelta: lastGutterRect.top - lastRect.top,
       firstLineHeight: firstRect.height,
@@ -4980,10 +4987,12 @@ async function verifyMultilineCodeBlockLayout() {
     && geometry.blockWithinDocument
     && geometry.documentOverflow <= 1
     && geometry.horizontalOverflow > 80
-    && geometry.toolsToFirstLine >= 0
-    && geometry.toolsToFirstLine <= 3
-    && geometry.lastLineToBlockBottom >= 12
-    && geometry.lastLineToBlockBottom <= 32
+    && geometry.firstLineToBlockTop >= 8.5
+    && geometry.firstLineToBlockTop <= 9.5
+    && geometry.lastLineToTools >= 13.5
+    && geometry.lastLineToTools <= 14.5
+    && geometry.toolsToBlockBottom >= 4.5
+    && geometry.toolsToBlockBottom <= 5.5
     && Math.abs(geometry.firstMarkerDelta) <= 0.5
     && Math.abs(geometry.lastMarkerDelta) <= 0.5
     && Math.abs(geometry.firstLineHeight - geometry.lastLineHeight) <= 0.5;

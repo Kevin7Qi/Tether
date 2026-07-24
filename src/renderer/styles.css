@@ -2901,12 +2901,12 @@ textarea:focus-visible,
 
 .tether-wysiwyg .milkdown-code-block {
   position: relative;
-  margin: 2px 0 28px;
+  margin: 2px 0 22px;
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
   background: color-mix(in srgb, var(--code) 84%, var(--surface));
-  padding: 4px 0 10px;
+  padding: 8px 0 4px;
   color: var(--ink);
   font-family: var(--mono);
   font-size: 13px;
@@ -2915,6 +2915,11 @@ textarea:focus-visible,
     "calt" 0;
   font-variant-ligatures: none;
   line-height: 1.62;
+}
+
+.tether-wysiwyg .milkdown-code-block:not(:has(.preview-panel)) {
+  display: flex;
+  flex-direction: column;
 }
 
 .tether-wysiwyg .milkdown-code-block.selected {
@@ -2936,11 +2941,22 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .milkdown-code-block .tools {
+  order: 2;
   min-height: 24px;
-  padding: 0 7px 0 13px;
+  height: 24px;
+  justify-content: flex-end;
+  gap: 4px;
+  box-sizing: border-box;
+  padding: 0 8px 0 52px;
+}
+
+.tether-wysiwyg .milkdown-code-block:not(:has(.preview-panel)) .codemirror-host {
+  min-width: 0;
+  order: 1;
 }
 
 .tether-wysiwyg .milkdown-code-block .tools .language-button {
+  order: 2;
   margin: 0;
   border-radius: 3px;
   background: transparent;
@@ -2954,6 +2970,11 @@ textarea:focus-visible,
   text-transform: none;
 }
 
+.tether-wysiwyg .milkdown-code-block .tools .tools-button-group {
+  position: static;
+  order: 1;
+}
+
 .tether-wysiwyg .milkdown-code-block:hover .tools .language-button,
 .tether-wysiwyg .milkdown-code-block:focus-within .tools .language-button {
   opacity: 1;
@@ -2961,7 +2982,7 @@ textarea:focus-visible,
 
 .tether-wysiwyg .milkdown-code-block .tools .tools-button-group button {
   min-width: 25px;
-  min-height: 24px;
+  min-height: 22px;
   margin: 0;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -2994,7 +3015,7 @@ textarea:focus-visible,
    control and bring it into the same visual system as formula copying. */
 .tether-wysiwyg .milkdown-code-block .tools button.copy-button {
   min-width: 26px;
-  height: 23px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3037,7 +3058,6 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .milkdown-code-block:hover .tools .copy-button,
-.tether-wysiwyg .milkdown-code-block:focus-within .tools .copy-button,
 .tether-wysiwyg .milkdown-code-block .tools .copy-button:focus-visible {
   opacity: 1;
 }
@@ -3072,6 +3092,7 @@ textarea:focus-visible,
 .tether-wysiwyg .milkdown-code-block .cm-gutters {
   min-width: 42px;
   border: 0;
+  border-right: 1px solid color-mix(in srgb, var(--line-strong) 72%, transparent);
   color: color-mix(in srgb, var(--ink3) 90%, transparent);
   font-size: 11.5px;
 }

@@ -231,8 +231,13 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(styles, /milkdown-code-block \.cm-scroller\s*\{[^}]*font-size:\s*13px[^}]*font-weight:\s*400/s);
   assert.match(styles, /milkdown-code-block \.cm-content\s*\{[^}]*min-height:\s*1\.62em/s);
   assert.match(styles, /milkdown-code-block \.cm-foldGutter\s*\{[^}]*display:\s*none !important/s);
-  assert.match(styles, /milkdown-code-block\s*\{[^}]*padding:\s*4px 0 10px/s);
-  assert.match(styles, /milkdown-code-block \.tools\s*\{[^}]*min-height:\s*24px/s);
+  assert.match(styles, /milkdown-code-block\s*\{[^}]*padding:\s*8px 0 4px/s);
+  assert.match(styles, /milkdown-code-block:not\(:has\(\.preview-panel\)\)\s*\{[^}]*flex-direction:\s*column/s);
+  assert.match(styles, /milkdown-code-block \.tools\s*\{[^}]*order:\s*2[^}]*min-height:\s*24px[^}]*height:\s*24px/s);
+  assert.match(styles, /milkdown-code-block \.tools\s*\{[^}]*justify-content:\s*flex-end[^}]*gap:\s*4px/s);
+  assert.match(styles, /milkdown-code-block \.tools \.language-button\s*\{[^}]*order:\s*2[^}]*margin:\s*0/s);
+  assert.match(styles, /milkdown-code-block \.tools \.tools-button-group\s*\{[^}]*position:\s*static[^}]*order:\s*1/s);
+  assert.match(styles, /milkdown-code-block \.cm-gutters\s*\{[^}]*border-right:\s*1px solid/s);
   assert.match(styles, /cm-editor\.cm-focused \.cm-activeLine/);
   assert.match(styles, /\.tools button\.copy-button\s*\{[^}]*opacity:\s*0/s);
   assert.match(styles, /language-button\[data-expanded="true"\]\)\s*\{[^}]*overflow:\s*visible/s);
