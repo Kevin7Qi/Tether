@@ -965,6 +965,62 @@ async function verifyPlatformNativeInlineBoundaryNavigation() {
       },
       {
         ...fixture,
+        name: `${fixture.name} Delete`,
+        markdown,
+        visibleText: "Before ",
+        visibleOffset: "Before ".length,
+        sourceCaret: sourceStart,
+        keyCode: "Delete",
+        key: "Delete",
+        code: "Delete",
+        virtualKeyCode: 46,
+        nativeModifiers: [],
+        modifiers: 0
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Backspace`,
+        markdown,
+        visibleText: " after.",
+        visibleOffset: 0,
+        sourceCaret: sourceEnd,
+        keyCode: "Backspace",
+        key: "Backspace",
+        code: "Backspace",
+        virtualKeyCode: 8,
+        nativeModifiers: [],
+        modifiers: 0
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Shift-Delete`,
+        markdown,
+        visibleText: "Before ",
+        visibleOffset: "Before ".length,
+        sourceCaret: sourceStart,
+        keyCode: "Delete",
+        key: "Delete",
+        code: "Delete",
+        virtualKeyCode: 46,
+        nativeModifiers: ["shift"],
+        modifiers: 8
+      },
+      {
+        ...fixture,
+        name: `${fixture.name} Shift-Backspace`,
+        markdown,
+        visibleText: " after.",
+        visibleOffset: 0,
+        sourceCaret: sourceEnd,
+        keyCode: "Backspace",
+        key: "Backspace",
+        code: "Backspace",
+        virtualKeyCode: 8,
+        nativeModifiers: ["shift"],
+        modifiers: 8
+      },
+      {
+        ...fixture,
         name: `${fixture.name} Option-Delete`,
         markdown,
         visibleText: "Before ",
@@ -3351,6 +3407,44 @@ async function verifyHardBreakCutPasteHistory() {
     await waitForSaveState(false);
     await save(hardBreakFixture);
     await stopSession();
+
+    await startSession(hardBreakFixture, "Beta");
+    const controlId = `tether-native-hard-break-shift-backspace-${
+      markerSource === "\\" ? "slash" : "spaces"
+    }`;
+    await evaluate(`(() => {
+      const control = document.createElement("textarea");
+      control.id = ${JSON.stringify(controlId)};
+      control.style.position = "fixed";
+      control.style.left = "-10000px";
+      control.value = ${JSON.stringify(hardBreakFixture)};
+      document.body.append(control);
+      control.focus();
+      const caret = control.value.indexOf("Beta");
+      control.setSelectionRange(caret, caret);
+      return true;
+    })()`);
+    await dispatchNativeKey("Backspace", ["shift"]);
+    await cdp.send("Input.insertText", { text: "x" });
+    const normalizedNativeSource = await evaluate(
+      `document.querySelector(${JSON.stringify(`#${controlId}`)})?.value ?? null`
+    );
+    const nativeSource = lineEnding === "\r\n"
+      ? normalizedNativeSource.replaceAll("\n", "\r\n")
+      : normalizedNativeSource;
+    await evaluate(`document.querySelector(${JSON.stringify(`#${controlId}`)})?.remove()`);
+
+    await placeCaretInText("Beta", 0);
+    await dispatchKey({
+      key: "Backspace",
+      code: "Backspace",
+      virtualKeyCode: 8,
+      modifiers: 8
+    });
+    await cdp.send("Input.insertText", { text: "x" });
+    await waitForSaveState(false);
+    await save(nativeSource);
+    await stopSession();
   }
 }
 
@@ -3608,6 +3702,99 @@ async function verifyCodeBoundaryDeletion() {
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(codeFixture.replace(codeBlockSource, closingNewlineDeleted));
   await stopSession();
+}
+
+async function verifyPlatformNativeCodeBoundaryDeletion() {
+  const contentStart = codeFixture.indexOf(codeContent);
+  const blockContentStart = codeBlockSource.indexOf("\n") + 1;
+  const openingNewlineDeleted = `${codeBlockSource.slice(0, blockContentStart - 1)}${
+    codeBlockSource.slice(blockContentStart)
+  }`;
+  const scenarios = [
+    {
+      name: "Shift-Backspace at opening fence",
+      boundary: "start",
+      sourceCaret: contentStart,
+      keyCode: "Backspace",
+      key: "Backspace",
+      code: "Backspace",
+      virtualKeyCode: 8,
+      expectedSourceControl: openingNewlineDeleted
+    },
+    {
+      name: "Shift-Delete at closing fence",
+      boundary: "end",
+      sourceCaret: contentStart + codeContent.length,
+      keyCode: "Delete",
+      key: "Delete",
+      code: "Delete",
+      virtualKeyCode: 46
+    }
+  ];
+  const mismatches = [];
+
+  for (let index = 0; index < scenarios.length; index += 1) {
+    const scenario = scenarios[index];
+    const controlId = `tether-native-code-boundary-deletion-${index}`;
+    await startSession(codeFixture, codeContent);
+    await evaluate(`(() => {
+      const control = document.createElement("textarea");
+      control.id = ${JSON.stringify(controlId)};
+      control.style.position = "fixed";
+      control.style.left = "-10000px";
+      control.value = ${JSON.stringify(codeFixture)};
+      document.body.append(control);
+      control.focus();
+      control.setSelectionRange(${scenario.sourceCaret}, ${scenario.sourceCaret});
+      return true;
+    })()`);
+    await dispatchNativeKey(scenario.keyCode, ["shift"]);
+    await cdp.send("Input.insertText", { text: "x" });
+    const nativeSource = await evaluate(
+      `document.querySelector(${JSON.stringify(`#${controlId}`)})?.value ?? null`
+    );
+    await stopSession();
+
+    await startSession(codeFixture, codeContent);
+    await focusCodeBoundary(scenario.boundary);
+    await dispatchKey({
+      key: scenario.key,
+      code: scenario.code,
+      virtualKeyCode: scenario.virtualKeyCode,
+      modifiers: 8
+    });
+    if (scenario.expectedSourceControl) {
+      await waitForSourceControl(
+        (state) => state?.active
+          && state.value === scenario.expectedSourceControl
+          && state.selectionStart === blockContentStart - 1
+          && state.selectionEnd === blockContentStart - 1,
+        `${scenario.name} did not hand the caret to the exact physical fence source`
+      );
+    }
+    await cdp.send("Input.insertText", { text: "x" });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForSaveState(true);
+    const actualSource = await readFile(samplePath, "utf8");
+    if (actualSource !== nativeSource) {
+      mismatches.push({
+        scenario: scenario.name,
+        expectedSource: nativeSource,
+        actualSource,
+        state: await editorState()
+      });
+    }
+    await stopSession();
+  }
+
+  if (mismatches.length) {
+    throw new Error(
+      `Fenced-code boundary deletion diverged from native source controls:\n${
+        JSON.stringify(mismatches, null, 2)
+      }`
+    );
+  }
 }
 
 async function verifyCodeToProseBackspace() {
@@ -4504,6 +4691,78 @@ async function verifyPlatformNativeDocumentShortcuts() {
         },
         { text: "x" }
       ]
+    },
+    {
+      name: "Shift-Backspace",
+      steps: [
+        {
+          keyCode: "Backspace",
+          key: "Backspace",
+          code: "Backspace",
+          virtualKeyCode: 8,
+          nativeModifiers: ["shift"],
+          modifiers: 8
+        },
+        { text: "x" }
+      ]
+    },
+    {
+      name: "Shift-Delete",
+      steps: [
+        {
+          keyCode: "Delete",
+          key: "Delete",
+          code: "Delete",
+          virtualKeyCode: 46,
+          nativeModifiers: ["shift"],
+          modifiers: 8
+        },
+        { text: "x" }
+      ]
+    },
+    {
+      name: "Shift-Delete with selection",
+      steps: [
+        {
+          keyCode: "Left",
+          key: "ArrowLeft",
+          code: "ArrowLeft",
+          virtualKeyCode: 37,
+          nativeModifiers: ["shift"],
+          modifiers: 8
+        },
+        {
+          keyCode: "Delete",
+          key: "Delete",
+          code: "Delete",
+          virtualKeyCode: 46,
+          nativeModifiers: ["shift"],
+          modifiers: 8
+        },
+        { text: "x" }
+      ]
+    },
+    {
+      name: "Shift-Backspace with selection",
+      steps: [
+        {
+          keyCode: "Left",
+          key: "ArrowLeft",
+          code: "ArrowLeft",
+          virtualKeyCode: 37,
+          nativeModifiers: ["shift"],
+          modifiers: 8
+        },
+        {
+          keyCode: "Backspace",
+          key: "Backspace",
+          code: "Backspace",
+          virtualKeyCode: 8,
+          nativeModifiers: ["shift"],
+          modifiers: 8
+        },
+        { text: "x" }
+      ]
     }
   ];
   const runNativeSteps = async (scenario, index) => {
@@ -5052,6 +5311,11 @@ async function run() {
     console.log("Verified code-boundary deletion publishes exact fence source immediately.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "platform-native-code-boundary-deletion") {
+    await verifyPlatformNativeCodeBoundaryDeletion();
+    console.log("Verified fenced-code Shift deletion matches native source controls.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-editing-history") {
     await verifyEmptyCodeEditing();
     await verifyCodeEditing();
@@ -5302,6 +5566,7 @@ async function run() {
   await verifyProseToCodeReplacement();
   await verifyProseToCodeCutPaste();
   await verifyCodeBoundaryDeletion();
+  await verifyPlatformNativeCodeBoundaryDeletion();
   await verifyCodeToProseBackspace();
   await verifyProseToCodeDelete();
   await verifyProseToCodeDeletionHistory();

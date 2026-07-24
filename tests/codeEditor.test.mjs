@@ -217,6 +217,21 @@ test("macOS source-native navigation no-ops bypass structured editor keymaps", (
     );
   }
   assert.equal(
+    isMacSourceNativeNoopShortcut({ key: "Delete", shiftKey: true }, "MacIntel"),
+    true,
+    "Shift-Delete"
+  );
+  assert.equal(
+    isMacSourceNativeNoopShortcut({ key: "Backspace", shiftKey: true }, "MacIntel"),
+    false,
+    "Shift-Backspace"
+  );
+  assert.equal(
+    isMacSourceNativeNoopShortcut({ key: "Delete", shiftKey: true }, "Win32"),
+    false,
+    "Windows Shift-Delete"
+  );
+  assert.equal(
     isMacSourceNativeNoopShortcut({ key: "Home" }, "MacIntel"),
     false
   );
@@ -748,6 +763,10 @@ test("CodeMirror fence deletion preserves native word and line modifiers at the 
   );
   assert.equal(
     codeBoundaryDeletionKeyDirection(codeState(0), { key: "Backspace", shiftKey: true }),
+    "backward"
+  );
+  assert.equal(
+    codeBoundaryDeletionKeyDirection(codeState(10), { key: "Delete", shiftKey: true }),
     null
   );
   assert.equal(codeBoundarySourcePosition(20, 12, "backward"), 21);

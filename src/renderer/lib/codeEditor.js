@@ -110,6 +110,14 @@ export function isMacSourceNativeNoopShortcut(
   platform = currentEditorPlatform()
 ) {
   if (!event || !isMacEditorPlatform(platform)) return false;
+  const key = String(event.key || "");
+  if (
+    key === "Delete"
+    && event.shiftKey
+    && !event.altKey
+    && !event.ctrlKey
+    && !event.metaKey
+  ) return true;
   if (event.altKey) {
     return Boolean(
       event.shiftKey
@@ -119,7 +127,6 @@ export function isMacSourceNativeNoopShortcut(
     );
   }
   if (isMacSourceControlNoopShortcut(event, platform)) return true;
-  const key = String(event.key || "");
   if (event.metaKey && !event.ctrlKey) {
     return [
       "ArrowUp",
@@ -274,8 +281,9 @@ export function codeBoundaryDeletionKeyDirection(state, event) {
   // Word/line deletion modifiers still consume the immediately adjacent
   // physical newline before they can reach the word or line on the fence.
   // Hand those keys into the source control just like native Source mode.
-  // Keep Shift-Delete native because it is the platform cut shortcut.
-  if (event.shiftKey) return null;
+  // Shift-Backspace remains an ordinary backward deletion on macOS, while
+  // Shift-Delete is a source-native no-op (and a cut shortcut elsewhere).
+  if (event.shiftKey && event.key !== "Backspace") return null;
   return codeBoundaryDeletionDirection(state, event.key);
 }
 

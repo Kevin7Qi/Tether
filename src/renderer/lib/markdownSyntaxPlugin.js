@@ -6693,7 +6693,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const plainDeletion = !event.altKey
           && !event.ctrlKey
           && !event.metaKey
-          && !event.shiftKey
+          && (!event.shiftKey || event.key === "Backspace")
           && ["Backspace", "Delete"].includes(event.key);
         if (!lineDirection && !wordDirection && !plainDeletion) return;
         const target = event.target instanceof Element ? event.target : null;
@@ -7343,7 +7343,6 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             && !event.altKey
             && !event.ctrlKey
             && !event.metaKey
-            && !event.shiftKey
             && !activeSourceControl?.element?.isConnected
           ) {
             const transaction = hardbreakBoundaryBackspaceTransaction(_view.state);
@@ -7357,7 +7356,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             !event.altKey
             && !event.ctrlKey
             && !event.metaKey
-            && !event.shiftKey
+            && (!event.shiftKey || event.key === "Backspace")
             && ["Backspace", "Delete"].includes(event.key)
             && !activeSourceControl?.element?.isConnected
           ) {
