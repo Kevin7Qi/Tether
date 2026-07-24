@@ -1,9 +1,19 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 function subscribe(channel, callback) {
   const handler = (_event, payload) => callback(payload);
   ipcRenderer.on(channel, handler);
   return () => ipcRenderer.removeListener(channel, handler);
+}
+
+function subscribeExternalOpen(callback) {
+  const handler = (_event, payload) => {
+    Promise.resolve(callback(payload))
+      .catch(() => {})
+      .finally(() => ipcRenderer.send("local:externalOpenHandled"));
+  };
+  ipcRenderer.on("local:externalOpen", handler);
+  return () => ipcRenderer.removeListener("local:externalOpen", handler);
 }
 
 contextBridge.exposeInMainWorld("remoteMarkdown", {
@@ -28,6 +38,21 @@ contextBridge.exposeInMainWorld("remoteMarkdown", {
   deleteRemoteFile: (remotePath) => ipcRenderer.invoke("remote:deleteFile", remotePath),
   readLocalSample: () => ipcRenderer.invoke("local:readSample"),
   openLocalFile: () => ipcRenderer.invoke("local:openFile"),
+  openDroppedLocalFile: (file) => {
+    let filePath = "";
+    try {
+      filePath = webUtils.getPathForFile(file);
+    } catch {
+      filePath = "";
+    }
+    if (!filePath) {
+      return Promise.resolve({
+        ok: false,
+        error: { code: "LOCAL_PATH_INVALID", message: "The dropped file path is unavailable." }
+      });
+    }
+    return ipcRenderer.invoke("local:openDroppedFile", filePath);
+  },
   readLocalFile: (filePath) => ipcRenderer.invoke("local:readFile", filePath),
   openLocalDirectory: () => ipcRenderer.invoke("local:openDirectory"),
   listLocalDirectory: (directory) => ipcRenderer.invoke("local:listDirectory", directory),
@@ -37,6 +62,9 @@ contextBridge.exposeInMainWorld("remoteMarkdown", {
   deleteLocalFile: (filePath) => ipcRenderer.invoke("local:deleteFile", filePath),
   saveLocalSample: (content) => ipcRenderer.invoke("local:saveSample", content),
   resetEditorParity: (fixture) => ipcRenderer.send("test:resetEditorParity", fixture),
+  openExternalMarkdownForTest: (filePath) => ipcRenderer.send("test:openExternalMarkdown", filePath),
+  onExternalOpen: (callback) => subscribeExternalOpen(callback),
+  externalOpenReady: () => ipcRenderer.send("local:externalOpenReady"),
   onEditorCommand: (callback) => subscribe("editor:command", callback),
   onStatus: (callback) => subscribe("remote:status", callback),
   onUpdate: (callback) => subscribe("remote:update", callback),

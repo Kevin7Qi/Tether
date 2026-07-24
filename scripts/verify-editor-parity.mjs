@@ -107,13 +107,13 @@ const requestedWindowsPerProcess = Number.parseInt(
   10
 );
 // A fixture reset destroys the old renderer and creates a fresh offscreen
-// BrowserWindow, which is enough isolation for the normal suite. Keeping the
-// background-only Electron host alive avoids asking macOS to launch an app 95
-// times during one verification run. Set TETHER_PARITY_WINDOWS_PER_PROCESS=1
-// when diagnosing state that may genuinely be process-global.
+// BrowserWindow. Rotate the background-only host after a small group as well:
+// Chromium input state can otherwise leak across a long run even though each
+// renderer is new. The accessory/offscreen host keeps these rotations invisible.
+// Set TETHER_PARITY_WINDOWS_PER_PROCESS=1 for strict process-level isolation.
 const maxWindowsPerElectronSession = requestedWindowsPerProcess > 0
   ? requestedWindowsPerProcess
-  : Number.POSITIVE_INFINITY;
+  : 4;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -562,25 +562,34 @@ async function connectRendererTarget(excludedTargetId = null) {
   await cdp.send("Page.enable");
 }
 
-async function startSession(fixture, visibleText) {
-  // Rotate the background-only Electron host only when explicitly requested.
-  // Normal runs keep one macOS application process and replace just the hidden
-  // BrowserWindow between fixtures, avoiding repeated launch-time flashes.
+async function startSession(fixture, visibleText, options = {}) {
+  // Reuse each invisible Electron host for a bounded fixture group, replacing
+  // only its offscreen BrowserWindow until the isolation threshold is reached.
   if (child && sessionWindowCount >= maxWindowsPerElectronSession) {
     await stopSession(true);
   }
   electronOutput = "";
+  let expectedSource = fixture;
   if (!child) {
     profilePath = await mkdtemp(path.join(os.tmpdir(), "tether-editor-parity-"));
     samplePath = path.join(profilePath, "sample.md");
     remoteDebugPort = await availablePort();
     await writeFile(samplePath, fixture, "utf8");
+    const launchArguments = [];
+    if (typeof options.externalFixture === "string") {
+      const externalFileName = options.externalFileName || "opened-from-finder.md";
+      const externalPath = path.join(profilePath, externalFileName);
+      await writeFile(externalPath, options.externalFixture, "utf8");
+      launchArguments.push(externalPath);
+      expectedSource = options.externalFixture;
+    }
     child = spawn(
       backgroundElectron.executable,
       [
         `--remote-debugging-port=${remoteDebugPort}`,
         `--user-data-dir=${profilePath}`,
-        root
+        root,
+        ...launchArguments
       ],
       {
         cwd: root,
@@ -629,13 +638,16 @@ async function startSession(fixture, visibleText) {
   );
   try {
     await waitFor(
-      () => evaluate(`document.querySelector(".tether-wysiwyg-host")?.tetherGetLoadedSource?.() === ${JSON.stringify(fixture)}`),
+      () => evaluate(`document.querySelector(".tether-wysiwyg-host")?.tetherGetLoadedSource?.() === ${JSON.stringify(expectedSource)}`),
       "Tether editor did not adopt the exact fixture source"
     );
   } catch (error) {
     const actual = await evaluate(`document.querySelector(".tether-wysiwyg-host")?.tetherGetLoadedSource?.()`)
       .catch(() => null);
-    throw new Error(`${error.message}; expected ${JSON.stringify(fixture)}, received ${JSON.stringify(actual)}`);
+    throw new Error(
+      `${error.message}; expected ${JSON.stringify(expectedSource)}, received ${JSON.stringify(actual)}`
+      + `\nElectron output:\n${electronOutput}`
+    );
   }
   await waitFor(
     () => evaluate(`document.querySelector(".ProseMirror")?.textContent.includes(${JSON.stringify(visibleText)})`),
@@ -678,6 +690,69 @@ async function stopSession(force = false) {
     }
   }
   if (sessionProfilePath) await rm(sessionProfilePath, { recursive: true, force: true });
+}
+
+async function waitForLoadedSource(source, message) {
+  try {
+    await waitFor(
+      () => evaluate(`document.querySelector(".tether-wysiwyg-host")?.tetherGetLoadedSource?.() === ${JSON.stringify(source)}`),
+      message
+    );
+  } catch (error) {
+    const state = await editorState().catch(() => null);
+    throw new Error(`${error.message}\nEditor state: ${JSON.stringify(state)}\nElectron output:\n${electronOutput}`);
+  }
+}
+
+async function verifyExternalMarkdownOpening() {
+  const launchContent = "# Finder launch\n\nOpened from Finder.\n";
+  await startSession(inlineFixture, "Opened from Finder.", {
+    externalFixture: launchContent,
+    externalFileName: "opened-from-finder.md"
+  });
+  await waitFor(
+    () => evaluate(`document.body.textContent.includes("opened-from-finder.md")`),
+    "cold-launch Markdown path did not become the active local file"
+  );
+
+  const liveContent = "# Already running\n\nOpened while Tether was running.\n";
+  const livePath = path.join(profilePath, "opened-while-running.markdown");
+  await writeFile(livePath, liveContent, "utf8");
+  await evaluate(`window.remoteMarkdown.openExternalMarkdownForTest(${JSON.stringify(livePath)})`);
+  await waitForLoadedSource(
+    liveContent,
+    "an already-running Tether window did not adopt the external Markdown file"
+  );
+
+  const droppedContent = "# Dropped file\n\nOpened by drag and drop.\n";
+  const droppedPath = path.join(profilePath, "dropped-document.mdown");
+  await writeFile(droppedPath, droppedContent, "utf8");
+  const point = await evaluate(`(() => {
+    const rect = document.querySelector(".app-shell")?.getBoundingClientRect();
+    return rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
+  })()`);
+  if (!point) throw new Error("could not locate the app shell for the file-drop regression");
+  const dragData = {
+    items: [],
+    files: [droppedPath],
+    dragOperationsMask: 1
+  };
+  await cdp.send("Input.dispatchDragEvent", { type: "dragEnter", ...point, data: dragData });
+  await waitFor(
+    () => evaluate(`Boolean(document.querySelector(".file-drop-overlay"))`),
+    "dragging a Markdown file did not show the drop affordance"
+  );
+  await cdp.send("Input.dispatchDragEvent", { type: "dragOver", ...point, data: dragData });
+  await cdp.send("Input.dispatchDragEvent", { type: "drop", ...point, data: dragData });
+  await waitForLoadedSource(droppedContent, "dropping a Markdown file did not open it");
+  await waitFor(
+    () => evaluate(`!document.querySelector(".file-drop-overlay")`),
+    "the Markdown file drop affordance remained visible after opening"
+  );
+  // This scenario deliberately changes the native file bound to the window
+  // several times. Rotate its hidden host so later source-fidelity fixtures
+  // start with the same pristine process-level file state as an ordinary run.
+  await stopSession(true);
 }
 
 async function verifyInlineEditing() {
@@ -3981,6 +4056,11 @@ async function verifyCodeNativeNoopShortcuts() {
 }
 
 async function run() {
+  if (process.env.TETHER_PARITY_CASE === "external-markdown-open") {
+    await verifyExternalMarkdownOpening();
+    console.log("Verified cold-launch, already-running, and drag-drop Markdown opening.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-native-noop-shortcuts") {
     await verifyCodeNativeNoopShortcuts();
     console.log("Verified native no-op shortcuts do not invoke CodeMirror structural commands.");

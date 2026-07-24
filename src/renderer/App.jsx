@@ -262,6 +262,30 @@ const fallbackRemoteApi = {
     file: createLocalSampleFile(window.localStorage.getItem(LOCAL_SAMPLE_KEY) || sampleMarkdown)
   }),
   openLocalFile: async () => openBrowserLocalFile(),
+  openDroppedLocalFile: async (file) => {
+    if (!file || !/\.(md|markdown|mdown|mkd|txt)$/i.test(file.name || "")) {
+      return {
+        ok: false,
+        error: { code: "LOCAL_FILE_TYPE", message: "Drop a Markdown or text file." }
+      };
+    }
+    const content = await file.text();
+    const filePath = `/${file.name}`;
+    const localFile = createBrowserLocalFile(filePath, content);
+    return {
+      ok: true,
+      canceled: false,
+      file: localFile,
+      directory: "/",
+      entries: [{
+        name: file.name,
+        path: filePath,
+        type: "file",
+        size: file.size,
+        isMarkdown: true
+      }]
+    };
+  },
   readLocalFile: async (filePath) => {
     const storedContent = window.localStorage.getItem(`remoteMarkdownPreview.localFile:${filePath}`);
     if (storedContent === null) {
@@ -329,6 +353,8 @@ const fallbackRemoteApi = {
   },
   copyText: async (text) => ({ ok: await copyTextToBrowserClipboard(text) }),
   saveTextAs: async ({ content, defaultPath }) => saveTextAsBrowserDownload(content, defaultPath),
+  externalOpenReady: () => {},
+  onExternalOpen: () => () => {},
   onEditorCommand: () => () => {},
   onStatus: () => () => {},
   onUpdate: () => () => {},
@@ -402,6 +428,7 @@ export default function App() {
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeRefreshNotice, setTreeRefreshNotice] = useState(null);
   const [copyNotice, setCopyNotice] = useState(null);
+  const [fileDropActive, setFileDropActive] = useState(false);
   const [expandedDirs, setExpandedDirs] = useState(() => new Set());
   const [childrenByDir, setChildrenByDir] = useState({});
   const [loadingDirs, setLoadingDirs] = useState(() => new Set());
@@ -432,6 +459,7 @@ export default function App() {
   const saveActionRef = useRef(null);
   const openFileActionRef = useRef(null);
   const openFolderActionRef = useRef(null);
+  const externalOpenActionRef = useRef(null);
   const findInputRef = useRef(null);
   const editorModeMenuRef = useRef(null);
 
@@ -556,6 +584,14 @@ export default function App() {
   useEffect(() => {
     const pendingCommands = new Set();
     const removeEditorCommand = remoteApi.onEditorCommand((command) => {
+      if (command === "open-file") {
+        openFileActionRef.current?.();
+        return;
+      }
+      if (command === "open-folder") {
+        openFolderActionRef.current?.();
+        return;
+      }
       // A native menu click returns focus to the web contents after its click
       // callback and its next paint. Let that handoff settle before refocusing
       // the structured editor and dispatching history, otherwise macOS can
@@ -572,6 +608,73 @@ export default function App() {
     return () => {
       removeEditorCommand();
       for (const timer of pendingCommands) window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => remoteApi.onExternalOpen(
+    (response) => externalOpenActionRef.current?.(response, "Opened Markdown file")
+  ), []);
+
+  useEffect(() => {
+    let dragDepth = 0;
+    const hasFiles = (event) => Array.from(event.dataTransfer?.types || []).includes("Files");
+
+    function onDragEnter(event) {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepth += 1;
+      setFileDropActive(true);
+    }
+
+    function onDragOver(event) {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    }
+
+    function onDragLeave(event) {
+      if (!hasFiles(event)) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) setFileDropActive(false);
+    }
+
+    async function onDrop(event) {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepth = 0;
+      setFileDropActive(false);
+      const files = Array.from(event.dataTransfer?.files || []);
+      const file = files.find((candidate) => /\.(md|markdown|mdown|mkd|txt)$/i.test(candidate.name || ""));
+      if (!file) {
+        setError({ code: "LOCAL_FILE_TYPE", message: "Drop a Markdown or text file." });
+        return;
+      }
+      setBusy(true);
+      let response;
+      try {
+        response = await remoteApi.openDroppedLocalFile(file);
+      } catch (dropError) {
+        response = {
+          ok: false,
+          error: {
+            code: "LOCAL_OPEN_FAILED",
+            message: dropError?.message || "The dropped file could not be opened."
+          }
+        };
+      }
+      setBusy(false);
+      await externalOpenActionRef.current?.(response, "Opened dropped Markdown file");
+    }
+
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
     };
   }, []);
 
@@ -983,23 +1086,31 @@ export default function App() {
     if (documentSource !== "sample" || selectedPath !== sampleEntry.path || dirty) return undefined;
 
     let canceled = false;
-    remoteApi.readLocalSample().then((response) => {
-      if (canceled || !response?.ok || !response.file) return;
-      setLocalSampleContent(response.file.content);
-      dispatchDocument({ type: "LOAD_FRESH", file: response.file });
-      setFileMetadata(response.file.metadata);
-      setLastRefresh(response.file.refreshedAt);
-      setFileEntries([
-        {
-          ...sampleEntry,
-          size: response.file.metadata?.size ?? response.file.content.length
+    let readyFrame = 0;
+    remoteApi.readLocalSample()
+      .then((response) => {
+        if (canceled || !response?.ok || !response.file) return;
+        setLocalSampleContent(response.file.content);
+        dispatchDocument({ type: "LOAD_FRESH", file: response.file });
+        setFileMetadata(response.file.metadata);
+        setLastRefresh(response.file.refreshedAt);
+        setFileEntries([
+          {
+            ...sampleEntry,
+            size: response.file.metadata?.size ?? response.file.content.length
+          }
+        ]);
+        setStatus((current) => ({ ...current, state: "idle", metadata: response.file.metadata }));
+      })
+      .finally(() => {
+        if (!canceled) {
+          readyFrame = window.requestAnimationFrame(() => remoteApi.externalOpenReady());
         }
-      ]);
-      setStatus((current) => ({ ...current, state: "idle", metadata: response.file.metadata }));
-    });
+      });
 
     return () => {
       canceled = true;
+      if (readyFrame) window.cancelAnimationFrame(readyFrame);
     };
   }, [dirty, documentSource, selectedPath]);
 
@@ -1453,24 +1564,20 @@ export default function App() {
     }));
   }
 
-  async function openLocalFile() {
-    // Opening via the native picker disconnects any remote session and switches
-    // the workspace, which hides the current document's tab — so even a snapshotted
-    // outgoing tab becomes unreachable. Confirm whenever there are unsaved edits,
-    // regardless of whether a tab backs them.
-    if (!confirmDiscardEdits("open a file")) return;
-    setBusy(true);
-    setError(null);
-    const response = await remoteApi.openLocalFile();
-    setBusy(false);
-
+  async function adoptOpenedLocalFile(
+    response,
+    { confirmDiscard = true, statusMessage = "Opened local file" } = {}
+  ) {
     if (!response.ok) {
       setError(response.error);
       setStatus((current) => ({ ...current, state: "error", message: response.error.message }));
-      return;
+      return false;
     }
 
-    if (response.canceled || !response.file) return;
+    if (response.canceled || !response.file) return false;
+    // Opening from Finder, the native picker, or a drop can switch the active
+    // workspace and hide its prior tab. Never discard unsaved edits implicitly.
+    if (confirmDiscard && !confirmDiscardEdits("open a file")) return false;
 
     if (watching) {
       await remoteApi.stopWatching();
@@ -1494,7 +1601,19 @@ export default function App() {
       file: response.file
     });
     rememberSourceSession(buildLocalWorkspaceSourceSession(response.file.path, response.directory || localDirname(response.file.path)));
-    setStatus({ state: "idle", message: "Opened local file", checkedAt: null, metadata: response.file.metadata });
+    setStatus({ state: "idle", message: statusMessage, checkedAt: null, metadata: response.file.metadata });
+    return true;
+  }
+
+  async function openLocalFile() {
+    // The picker itself should not interrupt the current workflow with a native
+    // dialog if the user declines to leave an unsaved workspace.
+    if (!confirmDiscardEdits("open a file")) return;
+    setBusy(true);
+    setError(null);
+    const response = await remoteApi.openLocalFile();
+    setBusy(false);
+    await adoptOpenedLocalFile(response, { confirmDiscard: false });
   }
 
   async function openLocalDirectory() {
@@ -2951,6 +3070,11 @@ export default function App() {
     setSettingsPanelOpen(false);
     openLocalDirectory();
   };
+  externalOpenActionRef.current = async (response, statusMessage = "Opened Markdown file") => {
+    setConnectionPaletteOpen(false);
+    setSettingsPanelOpen(false);
+    return adoptOpenedLocalFile(response, { statusMessage });
+  };
 
   return (
     <div
@@ -2965,6 +3089,15 @@ export default function App() {
         "--page-width": `${preferences.pageWidthPx}px`
       }}
     >
+      {fileDropActive && (
+        <div className="file-drop-overlay" aria-live="polite">
+          <div className="file-drop-card">
+            <File size={28} aria-hidden="true" />
+            <strong>Drop Markdown file to open</strong>
+            <span>.md, .markdown, .mdown, .mkd, or .txt</span>
+          </div>
+        </div>
+      )}
       {sidebarVisible && (
         <aside
           className="navigation-panel"

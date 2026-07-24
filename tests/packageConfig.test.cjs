@@ -11,6 +11,31 @@ test("macOS packaging includes shared main-process runtime files", () => {
   assert.match(packageJson.scripts["package:mac"], /verify-mac-package\.cjs/);
 });
 
+test("Markdown files can open from the OS, app menu, or drag and drop", () => {
+  const main = fs.readFileSync(path.join(root, "src", "main", "main.cjs"), "utf8");
+  const preload = fs.readFileSync(path.join(root, "src", "main", "preload.cjs"), "utf8");
+  const app = fs.readFileSync(path.join(root, "src", "renderer", "App.jsx"), "utf8");
+  const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
+  const associations = packageJson.build.fileAssociations?.[0];
+  assert.deepEqual(associations?.ext, ["md", "markdown", "mdown", "mkd"]);
+  assert.equal(associations?.role, "Editor");
+  assert.match(main, /requestSingleInstanceLock\(\)/);
+  assert.match(main, /app\.on\("open-file"/);
+  assert.match(main, /app\.on\("second-instance"/);
+  assert.match(main, /externalDocumentPathsFromArgv\(commandLine, workingDirectory\)/);
+  assert.match(main, /externalDocumentPathsFromArgv\(process\.argv\.slice\(1\)\)/);
+  assert.match(main, /mainWindow\.webContents\.send\("local:externalOpen", response\)/);
+  assert.match(main, /ipcMain\.handle\("local:openDroppedFile"/);
+  assert.match(preload, /webUtils\.getPathForFile\(file\)/);
+  assert.match(preload, /onExternalOpen: \(callback\) => subscribeExternalOpen\(callback\)/);
+  assert.match(preload, /externalOpenReady: \(\) => ipcRenderer\.send\("local:externalOpenReady"\)/);
+  assert.match(app, /requestAnimationFrame\(\(\) => remoteApi\.externalOpenReady\(\)\)/);
+  assert.match(app, /remoteApi\.onExternalOpen/);
+  assert.match(app, /window\.addEventListener\("drop", onDrop\)/);
+  assert.match(app, /Drop Markdown file to open/);
+  assert.match(styles, /\.file-drop-overlay/);
+});
+
 test("real Electron editor verification keeps its windows hidden", () => {
   const main = fs.readFileSync(path.join(root, "src", "main", "main.cjs"), "utf8");
   const verifier = fs.readFileSync(path.join(root, "scripts", "verify-editor-parity.mjs"), "utf8");
@@ -36,7 +61,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /TETHER_EDITOR_PARITY:\s*"1"/);
   assert.match(verifier, /prepareBackgroundElectron\(electronPath\)/);
   assert.match(verifier, /TETHER_PARITY_WINDOWS_PER_PROCESS \|\| "0"/);
-  assert.match(verifier, /Number\.POSITIVE_INFINITY/);
+  assert.match(verifier, /maxWindowsPerElectronSession[\s\S]*?: 4;/);
   assert.match(verifier, /sessionWindowCount >= maxWindowsPerElectronSession/);
   assert.match(verifier, /async function stopSession\(force = false\)/);
   assert.match(verifier, /await stopSession\(true\)/);
@@ -53,6 +78,7 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /TETHER_PARITY_CASE === "code-option-vertical-navigation"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-shift-option-vertical-selection"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-native-noop-shortcuts"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "external-markdown-open"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-control-select-all"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-line-delete"/);
   assert.match(verifier, /TETHER_PARITY_CASE === "source-word-delete"/);

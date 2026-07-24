@@ -9,12 +9,20 @@ const {
   getDefaultPrivateKeyPath,
   isRemoteMarkdownPath
 } = require("./remoteFileProvider.cjs");
+const {
+  externalDocumentPathsFromArgv,
+  isSupportedLocalDocumentPath,
+  normalizeExternalDocumentPath
+} = require("./externalFileOpen.cjs");
 
 let mainWindow;
+let externalOpenRendererReady = false;
+let externalOpenWaiting = false;
+let externalOpenCurrentPath = "";
+const pendingExternalOpenPaths = [];
 const provider = new RemoteFileProvider();
 const bundledSamplePath = path.join(__dirname, "../../samples/sample.md");
 const appIconPath = path.join(__dirname, "../../resources/tether-icon.png");
-const localMarkdownExtensions = new Set([".md", ".markdown", ".mdown", ".mkd", ".txt"]);
 const zoomStep = 0.1;
 const minZoomFactor = 0.5;
 const maxZoomFactor = 2.5;
@@ -31,6 +39,25 @@ if (process.platform === "win32") app.setAppUserModelId("app.tether.markdown");
 // keeps hidden BrowserWindows functional without a Dock or menu-bar presence.
 if (editorParityRun && process.platform === "darwin") app.setActivationPolicy("accessory");
 
+const hasSingleInstanceLock = editorParityRun || app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", (_event, commandLine, workingDirectory) => {
+    queueExternalDocumentPaths(externalDocumentPathsFromArgv(commandLine, workingDirectory));
+    focusOrCreateMainWindow();
+  });
+}
+
+app.on("open-file", (event, filePath) => {
+  event.preventDefault();
+  queueExternalDocumentPath(filePath);
+});
+
+if (hasSingleInstanceLock) {
+  queueExternalDocumentPaths(externalDocumentPathsFromArgv(process.argv.slice(1)));
+}
+
 function installApplicationMenu() {
   // Windows/Linux keep a menu-less window by design. macOS requires an
   // application menu for the standard editing and window shortcuts. Undo and
@@ -44,6 +71,23 @@ function installApplicationMenu() {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       { role: "appMenu" },
+      {
+        label: "File",
+        submenu: [
+          {
+            label: "Open Markdown File…",
+            accelerator: "CmdOrCtrl+O",
+            click: (_item, browserWindow) => sendEditorCommand("open-file", browserWindow)
+          },
+          {
+            label: "Open Folder…",
+            accelerator: "Shift+CmdOrCtrl+O",
+            click: (_item, browserWindow) => sendEditorCommand("open-folder", browserWindow)
+          },
+          { type: "separator" },
+          { role: "close" }
+        ]
+      },
       {
         label: "Edit",
         submenu: [
@@ -86,7 +130,7 @@ function sendEditorCommand(command, browserWindow = mainWindow) {
 }
 
 function isLocalMarkdownPath(filePath) {
-  return localMarkdownExtensions.has(path.extname(filePath).toLowerCase());
+  return isSupportedLocalDocumentPath(filePath);
 }
 
 function getUserSamplePath() {
@@ -296,6 +340,94 @@ async function listLocalDirectoryEntries(directory) {
   });
 }
 
+async function openLocalDocumentPath(filePath) {
+  const normalized = normalizeExternalDocumentPath(filePath);
+  if (!normalized || !isLocalMarkdownPath(normalized)) {
+    throw userError("LOCAL_FILE_TYPE", "Only Markdown and text files can be opened.");
+  }
+  const metadata = await fs.stat(normalized);
+  if (!metadata.isFile()) {
+    throw userError("LOCAL_FILE_TYPE", "Choose a Markdown or text file, not a folder.");
+  }
+  grantLocalRoot(path.dirname(normalized));
+  const [content, entries] = await Promise.all([
+    fs.readFile(normalized, "utf8"),
+    listLocalDirectoryEntries(path.dirname(normalized))
+  ]);
+  return {
+    ok: true,
+    canceled: false,
+    file: localFilePayload(normalized, content, metadata),
+    directory: path.dirname(normalized),
+    entries
+  };
+}
+
+function externalOpenError(error) {
+  return { ok: false, error: toRendererError(error) };
+}
+
+function focusOrCreateMainWindow() {
+  if (!app.isReady() || editorParityRun) return;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function queueExternalDocumentPath(filePath) {
+  const normalized = normalizeExternalDocumentPath(filePath);
+  if (!normalized) return false;
+  const identity = process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  const currentIdentity = process.platform === "win32"
+    ? externalOpenCurrentPath.toLowerCase()
+    : externalOpenCurrentPath;
+  const alreadyQueued = pendingExternalOpenPaths.some((queuedPath) => (
+    process.platform === "win32"
+      ? queuedPath.toLowerCase() === identity
+      : queuedPath === identity
+  ));
+  if (identity === currentIdentity || alreadyQueued) return false;
+  pendingExternalOpenPaths.push(normalized);
+  focusOrCreateMainWindow();
+  void flushExternalDocumentQueue();
+  return true;
+}
+
+function queueExternalDocumentPaths(filePaths) {
+  for (const filePath of filePaths || []) queueExternalDocumentPath(filePath);
+}
+
+async function flushExternalDocumentQueue() {
+  if (
+    externalOpenWaiting
+    || !externalOpenRendererReady
+    || !mainWindow
+    || mainWindow.isDestroyed()
+    || pendingExternalOpenPaths.length === 0
+  ) return;
+
+  externalOpenCurrentPath = pendingExternalOpenPaths.shift();
+  externalOpenWaiting = true;
+  let response;
+  try {
+    response = await openLocalDocumentPath(externalOpenCurrentPath);
+  } catch (error) {
+    response = externalOpenError(error);
+  }
+
+  if (!mainWindow || mainWindow.isDestroyed() || !externalOpenRendererReady) {
+    pendingExternalOpenPaths.unshift(externalOpenCurrentPath);
+    externalOpenCurrentPath = "";
+    externalOpenWaiting = false;
+    return;
+  }
+  mainWindow.webContents.send("local:externalOpen", response);
+}
+
 function sendToRenderer(channel, payload) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send(channel, payload);
@@ -319,6 +451,12 @@ function loadEditorWindow(window) {
 }
 
 function createWindow({ deferLoad = false } = {}) {
+  if (externalOpenWaiting && externalOpenCurrentPath) {
+    pendingExternalOpenPaths.unshift(externalOpenCurrentPath);
+  }
+  externalOpenRendererReady = false;
+  externalOpenWaiting = false;
+  externalOpenCurrentPath = "";
   const backgroundColor = getResolvedWindowBackground();
   const window = new BrowserWindow({
     width: 1320,
@@ -346,6 +484,16 @@ function createWindow({ deferLoad = false } = {}) {
     }
   });
   mainWindow = window;
+  window.on("closed", () => {
+    if (mainWindow !== window) return;
+    if (externalOpenWaiting && externalOpenCurrentPath) {
+      pendingExternalOpenPaths.unshift(externalOpenCurrentPath);
+    }
+    externalOpenRendererReady = false;
+    externalOpenWaiting = false;
+    externalOpenCurrentPath = "";
+    mainWindow = null;
+  });
   window.setMenuBarVisibility(false);
   window.setAutoHideMenuBar(true);
 
@@ -478,6 +626,23 @@ provider.on("error", (error) => sendToRenderer("remote:error", toRendererError(e
 
 ipcMain.on("state:getUiState", (event) => {
   event.returnValue = readUiState();
+});
+
+ipcMain.on("local:externalOpenReady", (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
+  externalOpenRendererReady = true;
+  void flushExternalDocumentQueue();
+});
+
+ipcMain.on("local:externalOpenHandled", (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
+  externalOpenWaiting = false;
+  externalOpenCurrentPath = "";
+  void flushExternalDocumentQueue();
+});
+
+ipcMain.on("test:openExternalMarkdown", (_event, filePath) => {
+  if (editorParityRun) queueExternalDocumentPath(filePath);
 });
 
 ipcMain.on("test:resetEditorParity", (event, fixture) => {
@@ -863,18 +1028,17 @@ ipcMain.handle("local:openFile", async () => {
       return { ok: true, canceled: true, file: null };
     }
 
-    const filePath = response.filePaths[0];
-    if (!isLocalMarkdownPath(filePath)) {
-      throw userError("LOCAL_FILE_TYPE", "Only Markdown and text files can be opened.");
-    }
-    grantLocalRoot(path.dirname(filePath));
-    const content = await fs.readFile(filePath, "utf8");
-    const metadata = await fs.stat(filePath);
-    const directory = path.dirname(filePath);
-    const entries = await listLocalDirectoryEntries(directory);
-    return { ok: true, canceled: false, file: localFilePayload(filePath, content, metadata), directory, entries };
+    return openLocalDocumentPath(response.filePaths[0]);
   } catch (error) {
     return { ok: false, error: toRendererError(error) };
+  }
+});
+
+ipcMain.handle("local:openDroppedFile", async (_event, filePath) => {
+  try {
+    return await openLocalDocumentPath(filePath);
+  } catch (error) {
+    return externalOpenError(error);
   }
 });
 
@@ -1025,6 +1189,7 @@ function assertString(value, label) {
 }
 
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
   // Packaged macOS builds must use the bundle's multi-resolution .icns. A
   // runtime PNG override changes how macOS composites the transparent glyph.
   if (process.platform === "darwin" && app.dock && !app.isPackaged && !editorParityRun) {

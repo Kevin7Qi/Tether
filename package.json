@@ -34,6 +34,20 @@
       "samples/**",
       "resources/**"
     ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "md",
+          "markdown",
+          "mdown",
+          "mkd"
+        ],
+        "name": "Markdown Document",
+        "description": "Markdown document",
+        "role": "Editor",
+        "mimeType": "text/markdown"
+      }
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "resources/tether-icon.icns",
