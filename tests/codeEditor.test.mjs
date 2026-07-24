@@ -216,6 +216,22 @@ test("macOS source-native navigation no-ops bypass structured editor keymaps", (
     isMacSourceNativeNoopShortcut({ key: "ArrowLeft", metaKey: true, altKey: true }, "MacIntel"),
     false
   );
+  assert.equal(
+    isMacSourceNativeNoopShortcut({
+      key: "ArrowUp",
+      altKey: true,
+      shiftKey: true
+    }, "MacIntel"),
+    true
+  );
+  assert.equal(
+    isMacSourceNativeNoopShortcut({
+      key: "ArrowDown",
+      altKey: true,
+      shiftKey: true
+    }, "Win32"),
+    false
+  );
 });
 
 test("CodeMirror Tab edits preserve the source editor's literal bytes and selection", () => {
@@ -634,16 +650,16 @@ test("Option-Up and Option-Down navigate code without reordering source lines", 
     key: "ArrowDown",
     altKey: true
   }), { anchor: 13, head: 13 });
-  assert.deepEqual(codeOptionVerticalSelection(state, {
+  assert.equal(codeOptionVerticalSelection(state, {
     key: "ArrowUp",
     altKey: true,
     shiftKey: true
-  }), { anchor: 8, head: 2 });
-  assert.deepEqual(codeOptionVerticalSelection(state, {
+  }), null);
+  assert.equal(codeOptionVerticalSelection(state, {
     key: "ArrowDown",
     altKey: true,
     shiftKey: true
-  }), { anchor: 8, head: 13 });
+  }), null);
   assert.equal(state.doc.toString(), source);
 
   const extended = EditorState.create({

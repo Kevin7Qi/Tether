@@ -2805,6 +2805,131 @@ export function applyDocumentSourceLineJump(
   return true;
 }
 
+function activateDocumentSourceMotion(
+  view,
+  sourceSelection,
+  direction,
+  serializer
+) {
+  const renderedPosition = documentPositionAtSourceOffset(
+    view.state,
+    sourceSelection.head,
+    serializer
+  );
+  if (renderedPosition == null) {
+    return activateDocumentSourceOffset(
+      view,
+      sourceSelection,
+      sourceSelection.head,
+      direction,
+      serializer
+    );
+  }
+  dispatchFocusedSourceSelection(
+    view,
+    view.state.tr
+      .setSelection(TextSelection.create(view.state.doc, renderedPosition))
+      .setMeta(markdownSyntaxKey, {
+        action: "source-selection",
+        sourceSelection
+      })
+      .scrollIntoView()
+  );
+  return true;
+}
+
+export function applyDocumentSourceWordJump(view, event, serializer) {
+  if (
+    !view?.state
+    || !event?.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || !["ArrowLeft", "ArrowRight"].includes(event.key)
+  ) return false;
+  const direction = event.key === "ArrowLeft" ? "backward" : "forward";
+  const documentSource = documentSourceSegments(view.state, serializer);
+  const existing = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+  const head = Number.isFinite(existing?.head)
+    ? existing.head
+    : documentSourceOffsetAtPosition(
+        view.state,
+        view.state.selection.head,
+        serializer,
+        direction === "backward" ? "forward" : "backward"
+      );
+  const anchor = Number.isFinite(existing?.anchor)
+    ? existing.anchor
+    : documentSourceOffsetAtPosition(
+        view.state,
+        view.state.selection.anchor,
+        serializer,
+        "forward"
+      );
+  if (!documentSource || !Number.isFinite(head) || !Number.isFinite(anchor)) return false;
+  const next = sourceSelectionWordJump({
+    anchor,
+    head,
+    fullSource: documentSource.fullSource,
+    boundary: view.state.selection.head
+  }, direction, Boolean(event.shiftKey));
+  if (!next) return false;
+  if (!event.shiftKey || next.anchor === next.head) {
+    return activateDocumentSourceMotion(view, next, direction, serializer);
+  }
+  dispatchFocusedSourceSelection(
+    view,
+    view.state.tr
+      .setSelection(documentSourceSelectionCarrier(view.state, next, serializer))
+      .setMeta(markdownSyntaxKey, {
+        action: "source-selection",
+        sourceSelection: next
+      })
+      .scrollIntoView()
+  );
+  return true;
+}
+
+export function applyDocumentSourceVerticalJump(view, event, serializer) {
+  if (
+    !view?.state
+    || !event?.altKey
+    || event.shiftKey
+    || event.ctrlKey
+    || event.metaKey
+    || !["ArrowUp", "ArrowDown"].includes(event.key)
+  ) return false;
+  const direction = event.key === "ArrowUp" ? "up" : "down";
+  const affinity = direction === "up" ? "backward" : "forward";
+  const documentSource = documentSourceSegments(view.state, serializer);
+  const existing = markdownSyntaxKey.getState(view.state)?.sourceSelection;
+  const head = Number.isFinite(existing?.head)
+    ? existing.head
+    : documentSourceOffsetAtPosition(
+        view.state,
+        view.state.selection.head,
+        serializer,
+        affinity
+      );
+  const anchor = Number.isFinite(existing?.anchor)
+    ? existing.anchor
+    : documentSourceOffsetAtPosition(
+        view.state,
+        view.state.selection.anchor,
+        serializer,
+        affinity
+      );
+  if (!documentSource || !Number.isFinite(head) || !Number.isFinite(anchor)) return false;
+  const next = sourceSelectionVerticalJump({
+    anchor,
+    head,
+    fullSource: documentSource.fullSource,
+    boundary: view.state.selection.head,
+    verticalColumn: existing?.verticalColumn ?? null
+  }, direction);
+  return Boolean(next)
+    && activateDocumentSourceMotion(view, next, affinity, serializer);
+}
+
 export function documentSourceOffsetAtPosition(state, position, serializer, affinity = "forward") {
   const documentSource = documentSourceSegments(state, serializer);
   if (!documentSource) return null;
@@ -6456,6 +6581,37 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         event.preventDefault();
         event.stopImmediatePropagation();
       };
+      const captureExactTyping = (event) => {
+        const currentView = editorView || view;
+        if (
+          !currentView.editable
+          || isSourceInputComposing(event)
+          || event.altKey
+          || event.ctrlKey
+          || event.metaKey
+          || String(event.key || "").length !== 1
+        ) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest("button, input, select, textarea, .cm-content, .tether-continuous-source")) {
+          return;
+        }
+        if (markdownSyntaxKey.getState(currentView.state)?.sourceSelection) return;
+        const sourceSelection = collapsedDocumentSourceSelection(
+          currentView.state,
+          ctx.get(serializerCtx)
+        );
+        if (!sourceSelection) return;
+        // Install the physical Markdown caret before ProseMirror handles the
+        // printable key. Its ensuing text-input transaction can then replace
+        // the exact source offset instead of regenerating nearby literals such
+        // as `foo_bar` as `foo\_bar`.
+        currentView.dispatch(
+          currentView.state.tr.setMeta(markdownSyntaxKey, {
+            action: "source-selection",
+            sourceSelection
+          })
+        );
+      };
       const captureExactNavigation = (event) => {
         const target = event.target instanceof Element ? event.target : null;
         const currentView = editorView || view;
@@ -6489,6 +6645,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (editorView) activateCapturedTarget(editorView, target, mapping);
         });
       };
+      view.dom.addEventListener("keydown", captureExactTyping, true);
       view.dom.addEventListener("keydown", captureExactDeletion, true);
       navigationWindow?.addEventListener("keydown", captureExactNavigation, true);
       view.dom.addEventListener("copy", captureExactClipboard, true);
@@ -6499,6 +6656,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           editorView = nextView;
         },
         destroy() {
+          view.dom.removeEventListener("keydown", captureExactTyping, true);
           view.dom.removeEventListener("keydown", captureExactDeletion, true);
           navigationWindow?.removeEventListener("keydown", captureExactNavigation, true);
           view.dom.removeEventListener("copy", captureExactClipboard, true);
@@ -6721,37 +6879,18 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             );
             return true;
           }
-          const exactWordDirection = sourceSelection
-            && event.altKey
-            && !event.ctrlKey
-            && !event.metaKey
-            && ["ArrowLeft", "ArrowRight"].includes(event.key)
-            ? event.key === "ArrowLeft" ? "backward" : "forward"
-            : null;
-          if (exactWordDirection) {
-            const next = sourceSelectionWordJump(
-              sourceSelection,
-              exactWordDirection,
-              Boolean(event.shiftKey)
-            );
+          if (
+            !activeSourceControl?.element?.isConnected
+            && applyDocumentSourceWordJump(_view, event, serializer)
+          ) {
             event.preventDefault();
-            if (
-              next.anchor === next.head
-              && activateDocumentSourceOffset(
-                _view,
-                next,
-                next.head,
-                exactWordDirection,
-                serializer
-              )
-            ) return true;
-            _view.dispatch(
-              _view.state.tr.setMeta(markdownSyntaxKey, {
-                action: "source-selection",
-                sourceSelection: next
-              })
-            );
-            focusProseMirrorRoot(_view);
+            return true;
+          }
+          if (
+            !activeSourceControl?.element?.isConnected
+            && applyDocumentSourceVerticalJump(_view, event, serializer)
+          ) {
+            event.preventDefault();
             return true;
           }
           const wordJump = sourceWordJumpTarget(_view.state, event, serializer);

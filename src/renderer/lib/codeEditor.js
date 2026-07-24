@@ -109,7 +109,15 @@ export function isMacSourceNativeNoopShortcut(
   event,
   platform = currentEditorPlatform()
 ) {
-  if (!event || event.altKey || !isMacEditorPlatform(platform)) return false;
+  if (!event || !isMacEditorPlatform(platform)) return false;
+  if (event.altKey) {
+    return Boolean(
+      event.shiftKey
+      && !event.ctrlKey
+      && !event.metaKey
+      && ["ArrowUp", "ArrowDown"].includes(event.key)
+    );
+  }
   if (isMacSourceControlNoopShortcut(event, platform)) return true;
   const key = String(event.key || "");
   if (event.metaKey && !event.ctrlKey) {
@@ -205,6 +213,7 @@ export function codeBoundaryNavigationKeyDirection(state, event) {
 export function codeOptionVerticalSelection(state, event) {
   if (
     !event?.altKey
+    || event.shiftKey
     || event.ctrlKey
     || event.metaKey
     || !["ArrowUp", "ArrowDown"].includes(event.key)

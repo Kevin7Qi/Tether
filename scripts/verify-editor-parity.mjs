@@ -3955,84 +3955,65 @@ async function verifyCodeShiftOptionVerticalSelection() {
   const content = "alpha\nbeta\ngamma";
   const block = `\`\`\`text\n${content}\n\`\`\``;
   const fixture = `Before.\n\n${block}\n\nAfter.\n`;
-  const save = async (source) => {
-    await waitForSaveState(false);
+  const verify = async (line, edge, key, marker, expectedContent, message) => {
+    await startSession(fixture, "alpha");
+    await clickElement(`.milkdown-code-block .cm-line:nth-child(${line})`);
+    await dispatchKey({
+      key: edge,
+      code: edge,
+      virtualKeyCode: edge === "Home" ? 36 : 35
+    });
+    if (edge === "Home") {
+      await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+      await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    }
+    await dispatchKey({
+      key,
+      code: key,
+      virtualKeyCode: key === "ArrowUp" ? 38 : 40,
+      modifiers: 9
+    });
+    await cdp.send("Input.insertText", { text: marker });
+    await waitForSaveState(false).catch(async (error) => {
+      throw new Error(`${message}: ${error.message}`);
+    });
     await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-    await waitForCompletedSave(source);
+    await waitForCompletedSave(fixture.replace(content, expectedContent));
+    await stopSession();
   };
 
-  await startSession(fixture, "alpha");
-  await clickElement(".milkdown-code-block .cm-line:nth-child(2)");
-  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
-  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-  await dispatchKey({
-    key: "ArrowUp",
-    code: "ArrowUp",
-    virtualKeyCode: 38,
-    modifiers: 9
-  });
-  await cdp.send("Input.insertText", { text: "X" });
-  await save(fixture.replace(content, "alXta\ngamma"));
-  await stopSession();
-
-  await startSession(fixture, "alpha");
-  await clickElement(".milkdown-code-block .cm-line:nth-child(2)");
-  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
-  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-  await dispatchKey({
-    key: "ArrowDown",
-    code: "ArrowDown",
-    virtualKeyCode: 40,
-    modifiers: 9
-  });
-  await cdp.send("Input.insertText", { text: "Y" });
-  await save(fixture.replace(content, "alpha\nbeYmma"));
-  await stopSession();
-
-  const contentStart = block.indexOf("\n") + 1;
-  await startSession(fixture, "alpha");
-  await clickElement(".milkdown-code-block .cm-line:first-child");
-  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
-  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-  await dispatchKey({
-    key: "ArrowUp",
-    code: "ArrowUp",
-    virtualKeyCode: 38,
-    modifiers: 9
-  });
-  await waitForSourceControl(
-    (state) => state?.active && state.value === block
-      && state.selectionStart === 2
-      && state.selectionEnd === contentStart + 2
-      && state.selectionDirection === "backward",
-    "Shift-Option-ArrowUp did not extend the code selection onto the opening fence line"
+  await verify(
+    2,
+    "Home",
+    "ArrowUp",
+    "X",
+    "alpha\nbeXta\ngamma",
+    "Shift-Option-Up changed the middle code caret"
   );
-  await stopSession();
-
-  const lastLineHead = contentStart + content.indexOf("gamma") + 2;
-  const closingStart = block.lastIndexOf("\n") + 1;
-  await startSession(fixture, "alpha");
-  await clickElement(".milkdown-code-block .cm-line:last-child");
-  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
-  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-  await dispatchKey({
-    key: "ArrowDown",
-    code: "ArrowDown",
-    virtualKeyCode: 40,
-    modifiers: 9
-  });
-  await waitForSourceControl(
-    (state) => state?.active && state.value === block
-      && state.selectionStart === lastLineHead
-      && state.selectionEnd === closingStart + 2
-      && state.selectionDirection === "forward",
-    "Shift-Option-ArrowDown did not extend the code selection onto the closing fence line"
+  await verify(
+    2,
+    "Home",
+    "ArrowDown",
+    "Y",
+    "alpha\nbeYta\ngamma",
+    "Shift-Option-Down changed the middle code caret"
   );
-  await stopSession();
+  await verify(
+    1,
+    "Home",
+    "ArrowUp",
+    "X",
+    "alXpha\nbeta\ngamma",
+    "Shift-Option-Up crossed into the opening fence"
+  );
+  await verify(
+    3,
+    "Home",
+    "ArrowDown",
+    "Y",
+    "alpha\nbeta\ngaYmma",
+    "Shift-Option-Down crossed into the closing fence"
+  );
 }
 
 async function verifyCodeNativeNoopShortcuts() {
@@ -4472,6 +4453,159 @@ async function verifyPlatformNativeNavigationShortcuts() {
   }
 }
 
+async function verifyPlatformNativeOptionNavigationShortcuts() {
+  const content = "alpha foo-bar\nbravo baz_qux\ncharlie omega";
+  const activeLine = "bravo baz_qux";
+  const lineStart = content.indexOf(activeLine);
+  const caretInLine = activeLine.indexOf("baz_qux") + "baz".length;
+  const caret = lineStart + caretInLine;
+  const codeFixture = `Before.\n\n\`\`\`text\n${content}\n\`\`\`\n\nAfter.\n`;
+  const baseShortcuts = [
+    {
+      name: "Option-ArrowLeft",
+      keyCode: "Left",
+      key: "ArrowLeft",
+      code: "ArrowLeft",
+      virtualKeyCode: 37
+    },
+    {
+      name: "Option-ArrowRight",
+      keyCode: "Right",
+      key: "ArrowRight",
+      code: "ArrowRight",
+      virtualKeyCode: 39
+    },
+    {
+      name: "Option-ArrowUp",
+      keyCode: "Up",
+      key: "ArrowUp",
+      code: "ArrowUp",
+      virtualKeyCode: 38
+    },
+    {
+      name: "Option-ArrowDown",
+      keyCode: "Down",
+      key: "ArrowDown",
+      code: "ArrowDown",
+      virtualKeyCode: 40
+    }
+  ];
+  const shortcuts = baseShortcuts.flatMap((shortcut) => [
+    {
+      ...shortcut,
+      nativeModifiers: ["alt"],
+      modifiers: 1
+    },
+    {
+      ...shortcut,
+      name: `Shift-${shortcut.name}`,
+      nativeModifiers: ["shift", "alt"],
+      modifiers: 9
+    }
+  ]);
+  const nativeResults = [];
+
+  await startSession(codeFixture, activeLine);
+  for (let index = 0; index < shortcuts.length; index += 1) {
+    const shortcut = shortcuts[index];
+    const controlId = `tether-native-option-navigation-${index}`;
+    await evaluate(`(() => {
+      const control = document.createElement("textarea");
+      control.id = ${JSON.stringify(controlId)};
+      control.style.position = "fixed";
+      control.style.left = "-10000px";
+      control.value = ${JSON.stringify(content)};
+      document.body.append(control);
+      control.focus();
+      control.setSelectionRange(${caret}, ${caret});
+      return true;
+    })()`);
+    await dispatchNativeKey(shortcut.keyCode, shortcut.nativeModifiers);
+    await delay(25);
+    const selection = await evaluate(`(() => {
+      const control = document.querySelector(${JSON.stringify(`#${controlId}`)});
+      return {
+        start: control?.selectionStart ?? null,
+        end: control?.selectionEnd ?? null,
+        direction: control?.selectionDirection ?? null
+      };
+    })()`);
+    await cdp.send("Input.insertText", { text: "x" });
+    nativeResults.push({
+      value: await evaluate(
+        `document.querySelector(${JSON.stringify(`#${controlId}`)})?.value ?? null`
+      ),
+      selection
+    });
+    await evaluate(`document.querySelector(${JSON.stringify(`#${controlId}`)})?.remove()`);
+  }
+  await stopSession();
+
+  const saveAndRead = async () => {
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForSaveState(true);
+    return readFile(samplePath, "utf8");
+  };
+  const dispatchOptionNavigation = async (shortcut) => {
+    await dispatchKey({
+      key: shortcut.key,
+      code: shortcut.code,
+      virtualKeyCode: shortcut.virtualKeyCode,
+      modifiers: shortcut.modifiers
+    });
+    await delay(25);
+    await dispatchTextKey("x", "KeyX", 88);
+  };
+  const mismatches = [];
+  for (let index = 0; index < shortcuts.length; index += 1) {
+    const shortcut = shortcuts[index];
+    const native = nativeResults[index];
+
+    await startSession(content, activeLine);
+    await placeCaretInText(activeLine, caretInLine);
+    await dispatchOptionNavigation(shortcut);
+    const proseSource = await saveAndRead();
+    if (proseSource !== native.value) {
+      mismatches.push({
+        shortcut: shortcut.name,
+        surface: "prose",
+        native,
+        expectedSource: native.value,
+        actualSource: proseSource
+      });
+    }
+    await stopSession();
+
+    await startSession(codeFixture, activeLine);
+    await clickElement(".milkdown-code-block .cm-line:nth-child(2)");
+    await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+    for (let offset = 0; offset < caretInLine; offset += 1) {
+      await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    }
+    await dispatchOptionNavigation(shortcut);
+    const codeSource = await saveAndRead();
+    const expectedCodeSource = codeFixture.replace(content, native.value);
+    if (codeSource !== expectedCodeSource) {
+      mismatches.push({
+        shortcut: shortcut.name,
+        surface: "code",
+        native,
+        expectedSource: expectedCodeSource,
+        actualSource: codeSource
+      });
+    }
+    await stopSession();
+  }
+  if (mismatches.length) {
+    throw new Error(
+      `Rendered Option navigation diverged from native source controls:\n${
+        JSON.stringify(mismatches, null, 2)
+      }`
+    );
+  }
+}
+
 async function run() {
   if (process.env.TETHER_PARITY_CASE === "external-markdown-open") {
     await verifyExternalMarkdownOpening();
@@ -4498,6 +4632,11 @@ async function run() {
     console.log("Verified macOS line and document navigation match native source controls.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "platform-native-option-navigation") {
+    await verifyPlatformNativeOptionNavigationShortcuts();
+    console.log("Verified macOS Option navigation matches native source controls.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-option-vertical-navigation") {
     await verifyCodeOptionVerticalNavigation();
     console.log("Verified Option-Up/Down navigate fenced source without reordering code lines.");
@@ -4505,7 +4644,7 @@ async function run() {
   }
   if (process.env.TETHER_PARITY_CASE === "code-shift-option-vertical-selection") {
     await verifyCodeShiftOptionVerticalSelection();
-    console.log("Verified Shift-Option-Up/Down extend fenced source without copying code lines.");
+    console.log("Verified Shift-Option-Up/Down stay inert like native macOS source controls.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "source-selection-movement") {
@@ -4551,6 +4690,12 @@ async function run() {
   if (process.env.TETHER_PARITY_CASE === "code-boundary-deletion") {
     await verifyCodeBoundaryDeletion();
     console.log("Verified code-boundary deletion publishes exact fence source immediately.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "code-editing-history") {
+    await verifyEmptyCodeEditing();
+    await verifyCodeEditing();
+    console.log("Verified empty and populated fenced-code editing retain document Undo history.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "code-jump-navigation") {
@@ -4771,6 +4916,7 @@ async function run() {
   await verifyCodeNativeControlShortcuts();
   await verifyPlatformNativeDocumentShortcuts();
   await verifyPlatformNativeNavigationShortcuts();
+  await verifyPlatformNativeOptionNavigationShortcuts();
   await verifyCodeDocumentJumpReplacement();
   await verifyCodeSelectAllEditing();
   await verifyProseSelectAllEditing();
