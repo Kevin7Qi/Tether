@@ -5301,15 +5301,38 @@ async function verifyCodeBlockLayout() {
     const gutters = block?.querySelector(".cm-gutters");
     const foldGutter = block?.querySelector(".cm-foldGutter");
     const line = block?.querySelector(".cm-line");
+    const language = block?.querySelector(".language-button");
+    const copy = block?.querySelector(".copy-button");
+    const copyIcon = copy?.querySelector("svg");
     const blockRect = block?.getBoundingClientRect();
     const toolsRect = tools?.getBoundingClientRect();
     const guttersRect = gutters?.getBoundingClientRect();
     const foldGutterRect = foldGutter?.getBoundingClientRect();
     const lineRect = line?.getBoundingClientRect();
-    if (!blockRect || !toolsRect || !guttersRect || !foldGutterRect || !lineRect) return null;
+    const languageRect = language?.getBoundingClientRect();
+    const copyRect = copy?.getBoundingClientRect();
+    const copyIconRect = copyIcon?.getBoundingClientRect();
+    if (
+      !blockRect || !toolsRect || !guttersRect || !foldGutterRect
+      || !lineRect || !languageRect || !copyRect || !copyIconRect
+    ) return null;
     return {
       blockHeight: blockRect.height,
       toolsHeight: toolsRect.height,
+      toolsBorderTop: Number.parseFloat(getComputedStyle(tools).borderTopWidth) || 0,
+      languageCenterDelta: (
+        languageRect.top + languageRect.height / 2
+      ) - (
+        toolsRect.top + toolsRect.height / 2
+      ),
+      copyHeight: copyRect.height,
+      copyCenterDelta: (
+        copyRect.top + copyRect.height / 2
+      ) - (
+        toolsRect.top + toolsRect.height / 2
+      ),
+      copyIconTopInset: copyIconRect.top - copyRect.top,
+      copyIconBottomInset: copyRect.bottom - copyIconRect.bottom,
       topToText: lineRect.top - blockRect.top,
       textToBottom: blockRect.bottom - lineRect.bottom,
       textToTools: toolsRect.top - lineRect.bottom,
@@ -5320,13 +5343,21 @@ async function verifyCodeBlockLayout() {
     };
   })()`);
   const compact = geometry
-    && geometry.blockHeight >= 60
-    && geometry.blockHeight <= 62
-    && geometry.toolsHeight <= 24.5
+    && geometry.blockHeight >= 54
+    && geometry.blockHeight <= 56
+    && geometry.toolsHeight >= 17.5
+    && geometry.toolsHeight <= 18.5
+    && geometry.toolsBorderTop === 1
+    && Math.abs(geometry.languageCenterDelta) <= 0.5
+    && geometry.copyHeight >= 17.5
+    && geometry.copyHeight <= 18.5
+    && Math.abs(geometry.copyCenterDelta) <= 0.5
+    && geometry.copyIconTopInset >= 2
+    && geometry.copyIconBottomInset >= 2
     && geometry.topToText >= 8.5
     && geometry.topToText <= 9.5
-    && geometry.textToBottom >= 30.5
-    && geometry.textToBottom <= 31.5
+    && geometry.textToBottom >= 24.5
+    && geometry.textToBottom <= 25.5
     && geometry.textToTools >= 1.5
     && geometry.textToTools <= 2.5
     && geometry.toolsToBottom >= 4.5

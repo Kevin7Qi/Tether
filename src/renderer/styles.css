@@ -2942,11 +2942,13 @@ textarea:focus-visible,
 
 .tether-wysiwyg .milkdown-code-block .tools {
   order: 2;
-  min-height: 24px;
-  height: 24px;
+  min-height: 18px;
+  height: 18px;
   justify-content: flex-end;
   gap: 4px;
   box-sizing: border-box;
+  border-top: 1px solid color-mix(in srgb, var(--line-strong) 55%, transparent);
+  background: color-mix(in srgb, var(--surface) 24%, transparent);
   padding: 0 8px 0 52px;
 }
 
@@ -2957,14 +2959,17 @@ textarea:focus-visible,
 
 .tether-wysiwyg .milkdown-code-block .tools .language-button {
   order: 2;
+  min-height: 0;
+  height: 17px;
   margin: 0;
   border-radius: 3px;
   background: transparent;
-  padding: 2px 4px;
+  padding: 0 4px;
   color: var(--ink2);
   font-family: var(--mono);
   font-size: 10.5px;
   font-weight: 500;
+  line-height: 16px;
   letter-spacing: 0.03em;
   opacity: 0.82;
   text-transform: none;
@@ -2982,12 +2987,13 @@ textarea:focus-visible,
 
 .tether-wysiwyg .milkdown-code-block .tools .tools-button-group button {
   min-width: 25px;
-  min-height: 22px;
+  min-height: 18px;
+  height: 18px;
   margin: 0;
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
-  padding: 3px 6px;
+  padding: 1px 6px;
   color: var(--ink2);
   font-family: var(--mono);
   font-size: 10px;
@@ -3015,7 +3021,8 @@ textarea:focus-visible,
    control and bring it into the same visual system as formula copying. */
 .tether-wysiwyg .milkdown-code-block .tools button.copy-button {
   min-width: 26px;
-  height: 22px;
+  min-height: 18px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
