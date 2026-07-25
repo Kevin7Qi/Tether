@@ -2795,24 +2795,49 @@ export function sourceFaithfulHeadingKeymapConfig(config) {
   };
 }
 
-export function downgradeAtxHeadingAtCursor(state, dispatch = null) {
+export function sourceFaithfulHeadingBoundaryDeletionTarget(
+  state,
+  serializer,
+  direction
+) {
   const { selection } = state;
   const { $from } = selection;
-  const heading = $from.parent;
+  const atRenderedBoundary = direction === "backward"
+    ? $from.parentOffset === 0
+    : direction === "forward"
+      && $from.parentOffset === $from.parent.content.size;
   if (
     !selection.empty
-    || $from.parentOffset !== 0
-    || heading.type.name !== "heading"
-    || heading.attrs.markdownStyle === "setext"
-  ) return false;
-
-  const position = $from.before();
-  const level = Number(heading.attrs.level) - 1;
-  const transaction = level > 0
-    ? state.tr.setNodeMarkup(position, undefined, { ...heading.attrs, level })
-    : state.tr.setNodeMarkup(position, state.schema.nodes.paragraph);
-  dispatch?.(transaction.scrollIntoView());
-  return true;
+    || !atRenderedBoundary
+    || $from.parent.type.name !== "heading"
+    || typeof serializer !== "function"
+  ) return null;
+  const unit = activeMarkdownBlockSyntax(state);
+  if (!unit) return null;
+  const source = continuousMarkdownSource(state, unit, serializer);
+  const sourceSelection = plainTextMarkdownSourceSelection(
+    state,
+    serializer,
+    selection
+  ) || collapsedDocumentSourceSelection(state, serializer, selection);
+  if (
+    !sourceSelection
+    || sourceSelection.anchor !== sourceSelection.head
+    || sourceSelection.head <= 0
+  ) return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const segment = documentSource?.segments.find(({ position, node }) => (
+    position === unit.from && node === $from.parent
+  ));
+  if (!segment) return null;
+  const sourceOffset = sourceSelection.head - segment.from;
+  if (
+    (direction === "backward" && sourceOffset <= 0)
+    || (direction === "forward" && sourceOffset >= source.length)
+    || sourceOffset < 0
+    || sourceOffset > source.length
+  ) return null;
+  return { unit, source, sourceOffset };
 }
 
 export function textSelectionAcrossBoundary(state, boundaryPosition, direction) {
@@ -5193,11 +5218,60 @@ export const structuralMarkerBackspaceKeymap = $shortcut((ctx) => ({
   }
 }));
 
-export const sourceFaithfulHeadingBackspaceKeymap = $shortcut(() => ({
+export const sourceFaithfulHeadingBackspaceKeymap = $shortcut((ctx) => ({
   Backspace: {
     key: "Backspace",
     priority: 100,
-    onRun: () => downgradeAtxHeadingAtCursor
+    onRun: () => (state, _dispatch, view) => {
+      const target = sourceFaithfulHeadingBoundaryDeletionTarget(
+        state,
+        ctx.get(serializerCtx),
+        "backward"
+      );
+      if (!target || !view) return false;
+      activateMarkdownSourceDeletionAt(
+        view,
+        state.selection.from,
+        {
+          explicitUnitPosition: target.unit.from,
+          sourceOffset: target.sourceOffset,
+          initialDeleteDirection: "backward",
+          focusLock: true
+        },
+        target.unit,
+        target.source,
+        ctx.get(parserCtx),
+        ctx.get(serializerCtx)
+      );
+      return true;
+    }
+  },
+  Delete: {
+    key: "Delete",
+    priority: 100,
+    onRun: () => (state, _dispatch, view) => {
+      const target = sourceFaithfulHeadingBoundaryDeletionTarget(
+        state,
+        ctx.get(serializerCtx),
+        "forward"
+      );
+      if (!target || !view) return false;
+      activateMarkdownSourceDeletionAt(
+        view,
+        state.selection.from,
+        {
+          explicitUnitPosition: target.unit.from,
+          sourceOffset: target.sourceOffset,
+          initialDeleteDirection: "forward",
+          focusLock: true
+        },
+        target.unit,
+        target.source,
+        ctx.get(parserCtx),
+        ctx.get(serializerCtx)
+      );
+      return true;
+    }
   }
 }));
 

@@ -41,7 +41,9 @@ import {
   documentSourceUnitBoundaryNavigationOffset,
   plainTextMarkdownSourceSelection,
   plainTextMarkdownSourceToken,
-  replaceSourceSelectionTransaction
+  replaceSourceSelectionTransaction,
+  sourceControlInitialDeletion,
+  sourceFaithfulHeadingBoundaryDeletionTarget
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
 const milkdownTimerEvents = new EventTarget();
@@ -165,6 +167,72 @@ test("Milkdown preserves a setext underline through text edits and exposes its r
   );
   const editedDoc = doc.type.create(null, [editedHeading]);
   assert.equal(serialize(editedDoc), "Renamed\n=====\n");
+});
+
+test("Backspace at rendered heading starts deletes the adjacent physical source byte", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  for (const [source, expected] of [
+    ["## Title\n", "##Title\n"],
+    ["### Title ###\n", "###Title ###\n"]
+  ]) {
+    const doc = parse(source);
+    const state = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, 1)
+    });
+    const target = sourceFaithfulHeadingBoundaryDeletionTarget(
+      state,
+      serialize,
+      "backward"
+    );
+    assert.ok(target);
+    assert.equal(
+      sourceControlInitialDeletion(
+        target.source,
+        target.sourceOffset,
+        "backward"
+      )?.afterValue,
+      expected.trimEnd()
+    );
+  }
+
+  const setext = parse("Title\n=====\n");
+  assert.equal(
+    sourceFaithfulHeadingBoundaryDeletionTarget(
+      EditorState.create({
+        doc: setext,
+        selection: TextSelection.create(setext, 1)
+      }),
+      serialize,
+      "backward"
+    ),
+    null
+  );
+
+  for (const [source, expected] of [
+    ["## Title ##\n", "## Title##"],
+    ["Title\n=====\n", "Title====="]
+  ]) {
+    const doc = parse(source);
+    const state = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, 1 + "Title".length)
+    });
+    const target = sourceFaithfulHeadingBoundaryDeletionTarget(
+      state,
+      serialize,
+      "forward"
+    );
+    assert.ok(target);
+    assert.equal(
+      sourceControlInitialDeletion(
+        target.source,
+        target.sourceOffset,
+        "forward"
+      )?.afterValue,
+      expected
+    );
+  }
 });
 
 test("heading literals navigate and edit through their exact physical source", async () => {

@@ -22,7 +22,6 @@ import {
   documentPositionAtSourceOffset,
   documentSourceOffsetFromPointerTarget,
   documentSourceTarget,
-  downgradeAtxHeadingAtCursor,
   enclosingCodeBlock,
   exactSourceHistoryStep,
   exactSourceSelectionAfterUndo,
@@ -1432,33 +1431,6 @@ test("the built-in heading keymap yields Backspace to the source-aware handler",
   assert.equal(next.DowngradeHeading.priority, 50);
   assert.deepEqual(next.TurnIntoH1, config.TurnIntoH1);
   assert.deepEqual(config.DowngradeHeading.shortcuts, ["Delete", "Backspace"]);
-});
-
-test("Backspace downgrades ATX headings but leaves setext line boundaries native", () => {
-  const atx = blockSchema.node("heading", { level: 2, markdownStyle: "atx" }, [blockSchema.text("ATX")]);
-  const atxDoc = blockSchema.node("doc", null, [atx]);
-  const atxState = EditorState.create({ doc: atxDoc, selection: TextSelection.create(atxDoc, 1) });
-  let atxTransaction = null;
-  assert.equal(downgradeAtxHeadingAtCursor(atxState, (transaction) => {
-    atxTransaction = transaction;
-  }), true);
-  assert.equal(atxTransaction.doc.firstChild.type.name, "heading");
-  assert.equal(atxTransaction.doc.firstChild.attrs.level, 1);
-  assert.equal(atxTransaction.doc.firstChild.attrs.markdownStyle, "atx");
-
-  const setext = blockSchema.node("heading", { level: 1, markdownStyle: "setext" }, [blockSchema.text("Setext")]);
-  const setextDoc = blockSchema.node("doc", null, [setext]);
-  const setextState = EditorState.create({ doc: setextDoc, selection: TextSelection.create(setextDoc, 1) });
-  assert.equal(downgradeAtxHeadingAtCursor(setextState), false);
-
-  const h1 = blockSchema.node("heading", { level: 1, markdownStyle: "atx" }, [blockSchema.text("Title")]);
-  const h1Doc = blockSchema.node("doc", null, [h1]);
-  const h1State = EditorState.create({ doc: h1Doc, selection: TextSelection.create(h1Doc, 1) });
-  let h1Transaction = null;
-  assert.equal(downgradeAtxHeadingAtCursor(h1State, (transaction) => {
-    h1Transaction = transaction;
-  }), true);
-  assert.equal(h1Transaction.doc.firstChild.type.name, "paragraph");
 });
 
 test("sourceCaretOffset distinguishes repeated text in separate list items", () => {

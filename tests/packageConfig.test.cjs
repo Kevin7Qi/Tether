@@ -33,6 +33,7 @@ test("Markdown files can open from the OS, app menu, or drag and drop", () => {
   assert.match(app, /requestAnimationFrame\(\(\) => remoteApi\.externalOpenReady\(\)\)/);
   assert.match(app, /remoteApi\.onExternalOpen/);
   assert.match(surface, /transaction = transaction\.setDocAttribute\(name, value\)/);
+  assert.match(surface, /\.setMeta\("addToHistory", false\)/);
   assert.match(app, /window\.addEventListener\("drop", onDrop\)/);
   assert.match(app, /Drop Markdown file to open/);
   assert.match(styles, /\.file-drop-overlay/);

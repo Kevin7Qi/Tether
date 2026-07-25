@@ -168,7 +168,14 @@ function replaceAllMarkdown(markdown) {
         transaction = transaction.setDocAttribute(name, value);
       }
     }
-    view.dispatch(transaction.setMeta(externalMarkdownTransactionMeta, true));
+    view.dispatch(
+      transaction
+        .setMeta(externalMarkdownTransactionMeta, true)
+        // Opening or reloading a file establishes a new document baseline.
+        // It must not sit underneath the user's first edit in undo history,
+        // where Cmd-Z could resurrect the startup/sample document.
+        .setMeta("addToHistory", false)
+    );
   };
 }
 

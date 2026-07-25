@@ -1109,6 +1109,27 @@ async function verifyInlineEditing() {
 async function verifyRenderedPointerInsertion() {
   const fixtures = [
     {
+      name: "ATX heading",
+      source: "## Alpha Beta\n",
+      visible: "Alpha Beta",
+      offset: 5,
+      expected: "## AlphaX Beta\n"
+    },
+    {
+      name: "closed ATX heading",
+      source: "## Alpha Beta ##\n",
+      visible: "Alpha Beta",
+      offset: 5,
+      expected: "## AlphaX Beta ##\n"
+    },
+    {
+      name: "setext heading",
+      source: "Alpha Beta\n---\n",
+      visible: "Alpha Beta",
+      offset: 5,
+      expected: "AlphaX Beta\n---\n"
+    },
+    {
       name: "strong",
       source: "Before **bold** after.\n",
       visible: "bold",
@@ -1243,6 +1264,65 @@ async function verifyRenderedPointerInsertion() {
     await waitForCompletedSave(fixture.source.replace(fixture.token, `X${fixture.token}`));
     await stopSession();
   }
+}
+
+async function verifyHeadingSourceEditing() {
+  const backspaceCases = [
+    {
+      name: "ATX H2 start",
+      source: "## Title\n",
+      selector: "h2",
+      expected: "##Title\n"
+    },
+    {
+      name: "closed ATX H3 start",
+      source: "### Title ###\n",
+      selector: "h3",
+      expected: "###Title ###\n"
+    }
+  ];
+
+  for (const testCase of backspaceCases) {
+    await startSession(testCase.source, "Title");
+    await placeCaretInText("Title", 0, ".ProseMirror", testCase.selector);
+    await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(testCase.expected);
+    await stopSession();
+  }
+
+  const closedSource = "## Title ##\n";
+  await startSession(closedSource, "Title");
+  await placeCaretInText("Title", "Title".length, ".ProseMirror", "h2");
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave("## Title##\n");
+  await stopSession();
+
+  const setextSource = "Title\n=====\n";
+  await startSession(setextSource, "Title");
+  await placeCaretInText("Title", 0, ".ProseMirror", "h1");
+  await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+  await delay(200);
+  const setextState = await editorState();
+  if (setextState.dirty) {
+    throw new Error(
+      `Backspace at physical source offset zero changed a setext title: ${
+        JSON.stringify(setextState)
+      }`
+    );
+  }
+  await stopSession();
+
+  await startSession(setextSource, "Title");
+  await placeCaretInText("Title", "Title".length, ".ProseMirror", "h1");
+  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave("Title=====\n");
+  await stopSession();
 }
 
 async function verifyRenderedPointerSelection() {
@@ -6807,6 +6887,11 @@ async function run() {
     console.log("Verified pointer insertion inside rendered inline Markdown preserves exact source.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "heading-source-editing") {
+    await verifyHeadingSourceEditing();
+    console.log("Verified heading boundary edits follow exact physical Markdown source.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "rendered-pointer-selection") {
     await verifyRenderedPointerSelection();
     console.log("Verified pointer selection across rendered inline Markdown preserves exact source.");
@@ -7143,6 +7228,7 @@ async function run() {
   await verifyMixedDocumentInsertionOffsets();
   await verifyInlineEditing();
   await verifyRenderedPointerInsertion();
+  await verifyHeadingSourceEditing();
   await verifyRenderedPointerSelection();
   await stopSession();
   await verifyInlineBoundaryNavigation();
