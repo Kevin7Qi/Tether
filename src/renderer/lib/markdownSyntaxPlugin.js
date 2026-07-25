@@ -1469,6 +1469,18 @@ function replaceInlineSource(view, parser, serializer, unit, source, afterCommit
   transaction = selectionAfter(transaction, unit.from + replacement.size);
   transaction.setMeta(markdownSyntaxKey, "close");
   dispatchSourceReplacement(view, transaction, afterCommit, sync);
+  if (documentEdit) {
+    // The rendered model can serialize a valid adjacent construct differently
+    // from the bytes just edited (for example `X[^note]` as `X\[^note]`).
+    // Retain the exact committed draft alongside this specific document
+    // snapshot so Save can prefer it, while any later document edit
+    // automatically invalidates it through `doc.eq`.
+    view.dom.tetherCommittedSourceDraft = {
+      doc: view.state.doc,
+      markdown: documentEdit.fullSource
+    };
+    publishMarkdownSourceDraft(view, documentEdit.fullSource);
+  }
 }
 
 export function hardbreakSourceReplacement(schema, node, source) {
@@ -6148,6 +6160,16 @@ export function isInlineMathPointerEdge(distance) {
   return Number.isFinite(distance) && distance >= 0 && distance <= 1;
 }
 
+export function sourcePointerOffsetAtRatio(source, ratio) {
+  const value = String(source ?? "");
+  if (!value) return 0;
+  const boundedRatio = Math.max(0, Math.min(1, Number(ratio) || 0));
+  const target = boundedRatio * value.length;
+  return sourceCaretBoundaries(value).reduce((nearest, boundary) =>
+    Math.abs(boundary - target) < Math.abs(nearest - target) ? boundary : nearest
+  , 0);
+}
+
 function capturedTargetAtPointer(view, event) {
   let math = event.target instanceof Element
     ? event.target.closest('span[data-type="math_inline"]')
@@ -6179,15 +6201,26 @@ function capturedTargetAtPointer(view, event) {
   }
   if (!math) {
     const targetElement = event.target instanceof Element ? event.target : null;
-    const atomElement = targetElement?.closest("img:not(.ProseMirror-separator), hr, sup");
+    const atomElement = targetElement?.closest([
+      "img:not(.ProseMirror-separator)",
+      "hr",
+      'sup[data-type="footnote_reference"]',
+      ".tether-html-block",
+      ".tether-reference-definition"
+    ].join(", "));
     if (atomElement) {
       try {
         const domPosition = view.posAtDOM(atomElement, 0, -1);
         const atom = sourceAtomNearPosition(view.state, domPosition);
         if (atom) {
+          const rect = atomElement.getBoundingClientRect();
+          const sourceRatio = rect.width > 0
+            ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+            : 0;
           return {
             position: atom.from,
             atomPosition: atom.from,
+            sourceRatio,
             assoc: 1
           };
         }
@@ -6691,11 +6724,26 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     focusProseMirrorRoot(view);
     return true;
   };
+  const capturedAtomTargetWithSourceOffset = (view, target) => {
+    if (Number.isFinite(target?.sourceOffset)) return target;
+    if (!Number.isFinite(target?.atomPosition) || !Number.isFinite(target?.sourceRatio)) {
+      return target;
+    }
+    const unit = markdownAtomSyntaxAt(view.state, target.atomPosition);
+    const source = unit
+      ? continuousMarkdownSource(view.state, unit, ctx.get(serializerCtx))
+      : "";
+    return {
+      ...target,
+      sourceOffset: sourcePointerOffsetAtRatio(source, target.sourceRatio)
+    };
+  };
   const beginCapturedAtomPointer = (view, target, event) => {
+    const sourceTarget = capturedAtomTargetWithSourceOffset(view, target);
     if (
       event.button !== 0
-      || !Number.isFinite(target?.atomPosition)
-      || !Number.isFinite(target?.sourceOffset)
+      || !Number.isFinite(sourceTarget?.atomPosition)
+      || !Number.isFinite(sourceTarget?.sourceOffset)
     ) return false;
     const pointerWindow = view.dom.ownerDocument?.defaultView;
     if (!pointerWindow) return false;
@@ -6720,12 +6768,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     const handleUp = (upEvent) => {
       cleanup();
       if (!view.dom.isConnected) return;
-      if (moved && selectFromCapturedAtomPointer(view, target, upEvent)) {
+      if (moved && selectFromCapturedAtomPointer(view, sourceTarget, upEvent)) {
         upEvent.preventDefault();
         upEvent.stopPropagation();
         return;
       }
-      activateCapturedTarget(view, target);
+      activateCapturedTarget(view, sourceTarget);
     };
     const handleBlur = () => cleanup();
     pendingAtomPointerCleanup = cleanup;

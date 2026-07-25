@@ -88,6 +88,7 @@ import {
   sourceLineJumpEdge,
   sourcePointerSelectionRange,
   sourcePointerDragSelection,
+  sourcePointerOffsetAtRatio,
   sourceAtomNearPosition,
   sourceAwareClipboardText,
   sourceNewlineClipboardText,
@@ -145,6 +146,13 @@ test("inline math pointer capture leaves adjacent prose available for drag selec
   assert.equal(isInlineMathPointerEdge(1.01), false);
   assert.equal(isInlineMathPointerEdge(2.414), false);
   assert.equal(isInlineMathPointerEdge(10), false);
+});
+
+test("rendered atom pointer positions map to valid physical source carets", () => {
+  assert.equal(sourcePointerOffsetAtRatio("![Alt](image.png)", 0), 0);
+  assert.equal(sourcePointerOffsetAtRatio("![Alt](image.png)", 1), 17);
+  assert.equal(sourcePointerOffsetAtRatio("[^note]", 0.5), 3);
+  assert.equal(sourcePointerOffsetAtRatio("A😀B", 0.5), 1);
 });
 
 const literalSchema = new Schema({

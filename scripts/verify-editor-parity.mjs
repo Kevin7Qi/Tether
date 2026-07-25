@@ -936,6 +936,58 @@ async function verifyRenderedPointerInsertion() {
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave("Before $Xx + y$ after.\n");
   await stopSession();
+
+  const atomClickFixtures = [
+    {
+      name: "image",
+      source: "Before ![Alt](https://example.com/image.png) after.\n",
+      selector: "img:not(.ProseMirror-separator)",
+      token: "![Alt](https://example.com/image.png)"
+    },
+    {
+      name: "footnote reference",
+      source: "Before [^note] after.\n\n[^note]: Footnote\n",
+      selector: 'sup[data-type="footnote_reference"]',
+      token: "[^note]"
+    }
+  ];
+  for (const fixture of atomClickFixtures) {
+    await startSession(fixture.source, "Before");
+    const point = await waitFor(
+      () => evaluate(`(() => {
+        const atom = document.querySelector(${JSON.stringify(fixture.selector)});
+        const rect = atom?.getBoundingClientRect();
+        return rect ? { x: rect.left + 0.01, y: rect.top + rect.height / 2 } : null;
+      })()`),
+      `rendered ${fixture.name} did not expose a click target`
+    );
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+      ...point
+    });
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+      ...point
+    });
+    await waitForSourceControl(
+      (state) => state?.active
+        && state.value === fixture.token
+        && state.selectionStart === 0
+        && state.selectionEnd === 0,
+      `a rendered ${fixture.name} click did not open its exact source start`
+    );
+    await cdp.send("Input.insertText", { text: "X" });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(fixture.source.replace(fixture.token, `X${fixture.token}`));
+    await stopSession();
+  }
 }
 
 async function verifyRenderedPointerSelection() {
@@ -1061,6 +1113,55 @@ async function verifyRenderedPointerSelection() {
       throw new Error(
         `Rendered ${fixture.name} pointer Copy emitted ${JSON.stringify(atomCopied)} instead of `
         + `${JSON.stringify(expectedSelection)}\nEditor state: ${JSON.stringify(state)}`
+      );
+    }
+    await stopSession();
+  }
+
+  const atomOriginFixtures = [
+    {
+      name: "image",
+      source: "Before ![Alt](https://example.com/image.png) after.\n",
+      selector: "img:not(.ProseMirror-separator)",
+      token: "![Alt](https://example.com/image.png)"
+    },
+    {
+      name: "footnote reference",
+      source: "Before [^note] after.\n\n[^note]: Footnote\n",
+      selector: 'sup[data-type="footnote_reference"]',
+      token: "[^note]"
+    }
+  ];
+  for (const fixture of atomOriginFixtures) {
+    await startSession(fixture.source, "Before");
+    const atomStart = await waitFor(
+      () => evaluate(`(() => {
+        const atom = document.querySelector(${JSON.stringify(fixture.selector)});
+        const rect = atom?.getBoundingClientRect();
+        return rect ? { x: rect.left + 0.01, y: rect.top + rect.height / 2 } : null;
+      })()`),
+      `rendered ${fixture.name} did not expose an origin-drag target`
+    );
+    const atomEnd = await textBoundaryPoint(" after.", 1, ".ProseMirror");
+    await dragBetweenTextBoundaries(atomStart, atomEnd);
+    await waitFor(
+      () => evaluate(`Boolean(
+        document.querySelector(".ProseMirror")?.tetherGetActiveSourceSelection?.()
+      )`),
+      `pointer drag originating on rendered ${fixture.name} lost its source selection`
+    );
+    const copied = await dispatchCopyAndCaptureText();
+    const expected = fixture.source.slice(
+      fixture.source.indexOf(fixture.token),
+      fixture.source.indexOf("after.")
+    );
+    if (copied !== expected) {
+      const state = await editorState().catch(() => null);
+      const control = await sourceControlState().catch(() => null);
+      throw new Error(
+        `${fixture.name} origin-drag Copy emitted ${JSON.stringify(copied)} instead of `
+        + `${JSON.stringify(expected)}\nSource control: ${JSON.stringify(control)}`
+        + `\nEditor state: ${JSON.stringify(state)}`
       );
     }
     await stopSession();

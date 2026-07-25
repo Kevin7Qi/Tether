@@ -340,12 +340,20 @@ export default function WysiwygSurface({
         } catch {
           return null;
         }
+        const committedSourceDraft = view?.dom?.tetherCommittedSourceDraft;
+        const exactCommittedMarkdown = (
+          typeof committedSourceDraft?.markdown === "string"
+          && committedSourceDraft.doc?.eq?.(view.state.doc)
+        )
+          ? committedSourceDraft.markdown
+          : null;
         const settledDoc = markSyntheticTrailingParagraph(crepe, true);
-        const markdown = normalizeSerializedMarkdown(
+        const serializedMarkdown = normalizeSerializedMarkdown(
           crepe.getMarkdown(),
           settledDoc,
           baselineSourceRef.current
         );
+        const markdown = exactCommittedMarkdown ?? serializedMarkdown;
         const pendingSourceDraft = pendingSourceDraftRef.current;
         lastMarkdownRef.current = markdown;
         if (markdown === baselineMarkdownRef.current) {
