@@ -247,6 +247,7 @@ async function captureElementsScreenshot(selectors, outputPath) {
 async function editorState() {
   return evaluate(`(() => {
     const root = document.querySelector(".ProseMirror");
+    const host = document.querySelector(".tether-wysiwyg-host");
     const selection = getSelection();
     const anchorNode = selection?.anchorNode || null;
     const anchorOffset = selection?.anchorOffset ?? null;
@@ -267,6 +268,7 @@ async function editorState() {
       saveDisabled: document.querySelector(".save-button")?.disabled ?? null,
       status: document.querySelector(".status-copy")?.textContent || null,
       exactSourceSelection: root?.tetherGetActiveSourceSelection?.() || null,
+      baselineSource: host?.tetherGetLoadedSource?.() || null,
       text: root?.textContent || null,
       html: root?.innerHTML || null
     };
@@ -787,6 +789,25 @@ async function verifyExternalMarkdownOpening() {
     "an already-running Tether window did not adopt the external Markdown file"
   );
 
+  // Opening another document is a tab switch, not a destructive replacement:
+  // keep the exact unsaved source in the outgoing tab and never ask to discard
+  // it merely because the next document arrived through Finder or drag/drop.
+  const liveEditedContent = liveContent.replace("Already running", "Already Xrunning");
+  await placeCaretInText("Already running", "Already ".length);
+  await cdp.send("Input.insertText", { text: "X" });
+  await waitFor(
+    () => evaluate(`document.querySelector(".ProseMirror")?.textContent.includes("Already Xrunning")`),
+    "the outgoing Markdown tab did not render its unsaved edit before a drop"
+  );
+  await waitForSaveState(false);
+  await evaluate(`(() => {
+    window.__tetherParityConfirmCount = 0;
+    window.confirm = () => {
+      window.__tetherParityConfirmCount += 1;
+      return false;
+    };
+  })()`);
+
   const droppedContent = "# Dropped file\n\nOpened by drag and drop.\n";
   const droppedPath = path.join(profilePath, "dropped-document.mdown");
   await writeFile(droppedPath, droppedContent, "utf8");
@@ -812,6 +833,37 @@ async function verifyExternalMarkdownOpening() {
     () => evaluate(`!document.querySelector(".file-drop-overlay")`),
     "the Markdown file drop affordance remained visible after opening"
   );
+  const confirmCount = await evaluate("window.__tetherParityConfirmCount");
+  if (confirmCount !== 0) {
+    throw new Error(`dropping a Markdown file prompted to discard a preserved tab ${confirmCount} time(s)`);
+  }
+  await waitFor(
+    () => evaluate(`(() => {
+      const button = [...document.querySelectorAll(".tab-label")]
+        .find((candidate) => candidate.title === ${JSON.stringify(livePath)});
+      return Boolean(button?.closest(".tab")?.querySelector(".tab-dirty"));
+    })()`),
+    "the outgoing Markdown tab did not remain visibly unsaved after the drop"
+  );
+  const restored = await evaluate(`(() => {
+    const button = [...document.querySelectorAll(".tab-label")]
+      .find((candidate) => candidate.title === ${JSON.stringify(livePath)});
+    button?.click();
+    return Boolean(button);
+  })()`);
+  if (!restored) throw new Error("the preserved outgoing Markdown tab was missing after the drop");
+  await waitFor(
+    () => evaluate(`document.querySelector(".ProseMirror")?.textContent.includes("Already Xrunning")`),
+    "returning to the outgoing Markdown tab did not restore its unsaved edit"
+  );
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitFor(
+    async () => (await readFile(livePath, "utf8").catch(() => null)) === liveEditedContent,
+    "saving the restored outgoing tab did not preserve its exact Markdown source"
+  );
+  await delay(400);
+  await waitForSaveState(true);
   // This scenario deliberately changes the native file bound to the window
   // several times. Rotate its hidden host so later source-fidelity fixtures
   // start with the same pristine process-level file state as an ordinary run.
@@ -6866,6 +6918,7 @@ async function run() {
     console.log("Verified inline delimiter deletion stays source-faithful.");
     return;
   }
+  await verifyExternalMarkdownOpening();
   await verifyInlineEditing();
   await verifyRenderedPointerInsertion();
   await verifyRenderedPointerSelection();
@@ -6943,7 +6996,7 @@ async function run() {
   await verifyMultilineCodeBlockLayout();
   await verifyCodeLanguagePickerPresentation();
   await verifyCodeLanguagePickerSourceFidelity();
-  console.log("Verified real Electron typing, saving, history, and fenced-code presentation.");
+  console.log("Verified real Electron Markdown opening, typing, saving, history, and fenced-code presentation.");
 }
 
 let exitCode = 0;

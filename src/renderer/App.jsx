@@ -1581,9 +1581,10 @@ export default function App() {
     }
 
     if (response.canceled || !response.file) return false;
-    // Opening from Finder, the native picker, or a drop can switch the active
-    // workspace and hide its prior tab. Never discard unsaved edits implicitly.
-    if (confirmDiscard && !confirmDiscardEdits("open a file")) return false;
+    // An active tab can always be snapshotted by adoptFileIntoTab before this
+    // document becomes live, even when Finder or a drop switches workspaces.
+    // Only the tab-less placeholder has nowhere to retain pending edits.
+    if (confirmDiscard && !activeTabId && !confirmDiscardEdits("open a file")) return false;
 
     if (watching) {
       await remoteApi.stopWatching();
@@ -1612,9 +1613,10 @@ export default function App() {
   }
 
   async function openLocalFile() {
-    // The picker itself should not interrupt the current workflow with a native
-    // dialog if the user declines to leave an unsaved workspace.
-    if (!confirmDiscardEdits("open a file")) return;
+    // A live tab is preserved when the picked document is adopted. The prompt
+    // is only needed for edits in the tab-less placeholder, which cannot be
+    // snapshotted into the tab strip.
+    if (!activeTabId && !confirmDiscardEdits("open a file")) return;
     setBusy(true);
     setError(null);
     const response = await remoteApi.openLocalFile();
