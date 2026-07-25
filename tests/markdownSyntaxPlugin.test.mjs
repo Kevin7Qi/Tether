@@ -17,6 +17,7 @@ import {
   collapsedDocumentSourceSelection,
   continuousMarkdownSource,
   documentSelectionFromCodeBoundary,
+  documentSourceAtomTarget,
   documentSourceUnitStartOffset,
   documentPositionAtSourceOffset,
   documentSourceOffsetFromPointerTarget,
@@ -60,6 +61,7 @@ import {
   moveSourceSelectionHead,
   plainTextMarkdownSourceToken,
   rootBoundarySourceSelection,
+  redirectPendingSourceTextInput,
   sourceCaretOffset,
   sourceTabEdit,
   sourceCaretBoundaries,
@@ -79,6 +81,7 @@ import {
   sourceLineSelectionAcrossUnitBoundary,
   sourceOffsetAfterCharacter,
   sourceBoundarySelectionRange,
+  sourceInputHorizontalSelection,
   sourceInputSelection,
   sourceInputWordJumpDirection,
   sourceSelectionAcrossUnitBoundary,
@@ -940,6 +943,60 @@ test("an in-progress fenced source edit publishes the complete draft without mut
   );
   assert.equal(state.doc, doc);
   assert.equal(state.doc.child(1).attrs.language, "js");
+});
+
+test("a block source draft preserves malformed list bytes without inventing block gaps", () => {
+  const paragraph = (text) => blockSchema.node("paragraph", null, [blockSchema.text(text)]);
+  const item = (text, checked = null) => blockSchema.node(
+    "list_item",
+    { checked, listType: "bullet", label: "•" },
+    [paragraph(text)]
+  );
+  const before = paragraph("Before");
+  const list = blockSchema.node("bullet_list", null, [
+    item("item"),
+    item("task", true)
+  ]);
+  const after = paragraph("After");
+  const doc = blockSchema.node("doc", null, [before, list, after]);
+  const state = EditorState.create({ doc });
+  const unit = {
+    from: before.nodeSize,
+    to: before.nodeSize + list.nodeSize,
+    kind: "block",
+    name: "bullet_list"
+  };
+  const serializer = (value) => {
+    const blocks = [];
+    value.forEach((node) => {
+      if (node.type.name !== "bullet_list") {
+        blocks.push(node.textContent);
+        return;
+      }
+      const lines = [];
+      node.forEach((listItem) => {
+        lines.push(`- ${listItem.attrs.checked ? "[x] " : ""}${listItem.textContent}`);
+      });
+      blocks.push(lines.join("\n"));
+    });
+    return blocks.join("\n\n");
+  };
+  const parser = () => blockSchema.node("doc", null, [
+    paragraph("-X item"),
+    blockSchema.node("bullet_list", null, [item("task", true)])
+  ]);
+
+  assert.equal(
+    markdownSourceDraftMarkdown(
+      state,
+      parser,
+      serializer,
+      unit,
+      "-X item\n- [x] task"
+    ),
+    "Before\n\n-X item\n- [x] task\n\nAfter"
+  );
+  assert.equal(state.doc, doc);
 });
 
 test("sourceCaretOffset maps the clicked code character past the fence prefix", () => {
@@ -2437,6 +2494,18 @@ test("source controls preserve the selection anchor while crossing their outer b
   assert.deepEqual(sourceInputSelection(0, 4, "backward"), { anchor: 4, head: 0 });
   assert.deepEqual(sourceInputSelection(2, 8, "forward"), { anchor: 2, head: 8 });
   assert.deepEqual(sourceInputSelection(3, 3, "none"), { anchor: 3, head: 3 });
+  assert.deepEqual(
+    sourceInputHorizontalSelection("- item", 0, 0, "none", "ArrowRight"),
+    { start: 1, end: 1, direction: "none" }
+  );
+  assert.deepEqual(
+    sourceInputHorizontalSelection("- item", 1, 4, "backward", "ArrowLeft", true),
+    { start: 0, end: 4, direction: "backward" }
+  );
+  assert.deepEqual(
+    sourceInputHorizontalSelection("- item", 1, 4, "forward", "ArrowRight"),
+    { start: 4, end: 4, direction: "none" }
+  );
 
   const source = "before **bold**\r\nafter";
   const unitStart = source.indexOf("**bold**");
@@ -2592,6 +2661,71 @@ test("physical source offsets map back to rendered text but not hidden delimiter
   assert.equal(
     documentSourceOffsetFromPointerTarget(state, { position: 1 + "Bold ".length, assoc: 1 }, serialize),
     source.indexOf("after")
+  );
+});
+
+test("physical source offsets inside rendered atoms target the atom source directly", () => {
+  const image = blockSchema.nodes.image.create({
+    src: "image.png",
+    alt: "Alt"
+  });
+  const paragraph = blockSchema.node("paragraph", null, [image]);
+  const doc = blockSchema.node("doc", {
+    markdownBlockGaps: JSON.stringify(["", ""])
+  }, [paragraph]);
+  const source = "![Alt](image.png)";
+  const serialize = () => source;
+  const state = EditorState.create({
+    doc,
+    selection: NodeSelection.create(doc, 1)
+  });
+  const offset = source.indexOf("image.png") + 5;
+
+  assert.deepEqual(
+    documentSourceAtomTarget(state, offset, serialize),
+    {
+      position: 1,
+      unit: {
+        from: 1,
+        to: 2,
+      kind: "inline",
+        name: "image"
+      },
+      sourceOffset: offset
+    }
+  );
+});
+
+test("pending source controls synchronously own text input during focus handoff", () => {
+  const calls = [];
+  const control = {
+    isConnected: true,
+    focus: (options) => calls.push(["focus", options]),
+    tetherApplyPendingText: (text) => calls.push(["insert", text])
+  };
+  const event = {
+    defaultPrevented: false,
+    isComposing: false,
+    inputType: "insertText",
+    data: "X",
+    target: { closest: () => null },
+    preventDefault: () => calls.push(["prevent"]),
+    stopImmediatePropagation: () => calls.push(["stop"])
+  };
+
+  assert.equal(redirectPendingSourceTextInput(event, control), true);
+  assert.deepEqual(calls, [
+    ["prevent"],
+    ["stop"],
+    ["focus", { preventScroll: true }],
+    ["insert", "X"]
+  ]);
+  assert.equal(
+    redirectPendingSourceTextInput(
+      { ...event, target: { closest: () => control } },
+      control
+    ),
+    false
   );
 });
 

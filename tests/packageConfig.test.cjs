@@ -15,6 +15,7 @@ test("Markdown files can open from the OS, app menu, or drag and drop", () => {
   const main = fs.readFileSync(path.join(root, "src", "main", "main.cjs"), "utf8");
   const preload = fs.readFileSync(path.join(root, "src", "main", "preload.cjs"), "utf8");
   const app = fs.readFileSync(path.join(root, "src", "renderer", "App.jsx"), "utf8");
+  const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
   const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
   const associations = packageJson.build.fileAssociations?.[0];
   assert.deepEqual(associations?.ext, ["md", "markdown", "mdown", "mkd"]);
@@ -31,9 +32,12 @@ test("Markdown files can open from the OS, app menu, or drag and drop", () => {
   assert.match(preload, /externalOpenReady: \(\) => ipcRenderer\.send\("local:externalOpenReady"\)/);
   assert.match(app, /requestAnimationFrame\(\(\) => remoteApi\.externalOpenReady\(\)\)/);
   assert.match(app, /remoteApi\.onExternalOpen/);
+  assert.match(surface, /transaction = transaction\.setDocAttribute\(name, value\)/);
   assert.match(app, /window\.addEventListener\("drop", onDrop\)/);
   assert.match(app, /Drop Markdown file to open/);
   assert.match(styles, /\.file-drop-overlay/);
+  assert.match(surface, /if \(lastMarkdownRef\.current !== nextMarkdown\)/);
+  assert.match(surface, /pendingSourceDraftRef\.current != null/);
 });
 
 test("real Electron editor verification keeps its windows hidden", () => {

@@ -268,6 +268,8 @@ async function editorState() {
       saveDisabled: document.querySelector(".save-button")?.disabled ?? null,
       status: document.querySelector(".status-copy")?.textContent || null,
       exactSourceSelection: root?.tetherGetActiveSourceSelection?.() || null,
+      committedSourceDraft: root?.tetherCommittedSourceDraft?.markdown ?? null,
+      documentAttrs: root?.pmViewDesc?.node?.attrs || null,
       baselineSource: host?.tetherGetLoadedSource?.() || null,
       text: root?.textContent || null,
       html: root?.innerHTML || null
@@ -595,7 +597,12 @@ async function waitForSaveState(saved) {
   } catch (error) {
     const actual = await readFile(samplePath, "utf8").catch(() => null);
     const state = await editorState().catch(() => null);
-    throw new Error(`${error.message}\nActual source: ${JSON.stringify(actual)}\nEditor state: ${JSON.stringify(state)}`);
+    const control = await sourceControlState().catch(() => null);
+    throw new Error(
+      `${error.message}\nActual source: ${JSON.stringify(actual)}`
+      + `\nEditor state: ${JSON.stringify(state)}`
+      + `\nSource control: ${JSON.stringify(control)}`
+    );
   }
 }
 
@@ -868,6 +875,202 @@ async function verifyExternalMarkdownOpening() {
   // several times. Rotate its hidden host so later source-fidelity fixtures
   // start with the same pristine process-level file state as an ordinary run.
   await stopSession(true);
+}
+
+async function verifyWholeDocumentSourceTraversal() {
+  const fixture = [
+    "# Heading *em*",
+    "",
+    "- item `code`",
+    "- [x] task",
+    "",
+    "> Quote [link](https://example.test)",
+    "",
+    "```js",
+    "const value = 1;",
+    "```",
+    "",
+    "| A | B |",
+    "| :- | -: |",
+    "| x | y |",
+    "",
+    "![Alt](image.png)",
+    "",
+    "$x + y$",
+    "",
+    "Reference[^n].",
+    "",
+    "[^n]: Footnote",
+    ""
+  ].join("\n");
+
+  await startSession(fixture, "Heading");
+  await placeCaretInText("Heading", 0, ".ProseMirror", "h1");
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active
+      && state.value === "# Heading *em*"
+      && state.selectionStart === 1
+      && state.selectionEnd === 1,
+    "ArrowLeft did not enter the first physical heading marker"
+  );
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active
+      && state.selectionStart === 0
+      && state.selectionEnd === 0,
+    "ArrowLeft did not reach physical Markdown offset zero"
+  );
+
+  for (let offset = 1; offset <= fixture.length; offset += 1) {
+    await dispatchKey({
+      key: "ArrowRight",
+      code: "ArrowRight",
+      virtualKeyCode: 39,
+      modifiers: 8
+    });
+    const copied = await dispatchCopyAndCaptureText();
+    const expected = fixture.slice(0, offset);
+    if (copied !== expected) {
+      const state = await editorState().catch(() => null);
+      const control = await sourceControlState().catch(() => null);
+      throw new Error(
+        `Shift+ArrowRight diverged at physical source offset ${offset}; `
+        + `copied ${JSON.stringify(copied)} instead of ${JSON.stringify(expected)}`
+        + `\nEditor state: ${JSON.stringify(state)}`
+        + `\nSource control: ${JSON.stringify(control)}`
+      );
+    }
+  }
+
+  // Collapse the completed forward selection at the physical document end,
+  // then grow a new backward selection across the same mixed source. This
+  // exercises the opposite anchor/head direction through every handoff.
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  for (let offset = fixture.length - 1; offset >= 0; offset -= 1) {
+    await dispatchKey({
+      key: "ArrowLeft",
+      code: "ArrowLeft",
+      virtualKeyCode: 37,
+      modifiers: 8
+    });
+    const copied = await dispatchCopyAndCaptureText();
+    const expected = fixture.slice(offset);
+    if (copied !== expected) {
+      const state = await editorState().catch(() => null);
+      const control = await sourceControlState().catch(() => null);
+      throw new Error(
+        `Shift+ArrowLeft diverged at physical source offset ${offset}; `
+        + `copied ${JSON.stringify(copied)} instead of ${JSON.stringify(expected)}`
+        + `\nEditor state: ${JSON.stringify(state)}`
+        + `\nSource control: ${JSON.stringify(control)}`
+      );
+    }
+  }
+  await stopSession();
+}
+
+async function verifyMixedDocumentInsertionOffsets() {
+  const fixture = [
+    "# Heading *em*",
+    "",
+    "- item `code`",
+    "- [x] task",
+    "",
+    "> Quote [link](https://example.test)",
+    "",
+    "```js",
+    "const value = 1;",
+    "```",
+    "",
+    "| A | B |",
+    "| :- | -: |",
+    "| x | y |",
+    "",
+    "![Alt](image.png)",
+    "",
+    "$x + y$",
+    "",
+    "Reference[^n].",
+    "",
+    "[^n]: Footnote",
+    ""
+  ].join("\n");
+  const at = (needle, delta = 0) => fixture.indexOf(needle) + delta;
+  const scenarios = [
+    { name: "heading marker", offset: 1 },
+    { name: "emphasis opener", offset: at("*em*", 1) },
+    { name: "root separator", offset: at("\n\n") + 1 },
+    { name: "bullet marker", offset: at("- item", 1) },
+    { name: "task checkbox", offset: at("[x]", 2) },
+    { name: "quote block start", offset: at("> Quote") },
+    { name: "quote marker", offset: at("> Quote", 1) },
+    { name: "link destination", offset: at("example.test", 7) },
+    { name: "opening fence", offset: at("```js", 2) },
+    { name: "code content", offset: at("value", 3) },
+    { name: "closing fence", offset: fixture.indexOf("```", at("const value")) + 1 },
+    { name: "table alignment marker", offset: at("| :- |", 3) },
+    { name: "image destination", offset: at("image.png", 5) },
+    { name: "math source", offset: at("$x + y$", 4) },
+    { name: "footnote reference", offset: at("[^n].", 2) },
+    { name: "footnote definition marker", offset: at("[^n]: Footnote", 4) }
+  ];
+
+  const requestedScenario = process.env.TETHER_PARITY_OFFSET_CASE || "";
+  const selectedScenarios = requestedScenario
+    ? scenarios.filter(({ name }) => name === requestedScenario)
+    : scenarios;
+  if (!selectedScenarios.length) {
+    throw new Error(`Unknown mixed-document insertion scenario ${JSON.stringify(requestedScenario)}`);
+  }
+
+  for (const scenario of selectedScenarios) {
+    await startSession(fixture, "Heading");
+    await placeCaretInText("Heading", 0, ".ProseMirror", "h1");
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    for (let offset = 0; offset < scenario.offset; offset += 1) {
+      await dispatchKey({
+        key: "ArrowRight",
+        code: "ArrowRight",
+        virtualKeyCode: 39,
+        modifiers: 8
+      });
+    }
+    // Collapse the exact physical prefix selection at its forward edge, as a
+    // native source editor does before typing at that offset. Whole-document
+    // traversal above separately proves that every Shift+Arrow step selects
+    // the expected byte.
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    const cursorStateBeforeInsert = {
+      exactSourceSelection: (await editorState().catch(() => null))?.exactSourceSelection || null,
+      sourceControl: await sourceControlState().catch(() => null)
+    };
+    await cdp.send("Input.insertText", { text: "X" });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    try {
+      await waitForCompletedSave(
+        `${fixture.slice(0, scenario.offset)}X${fixture.slice(scenario.offset)}`
+      );
+    } catch (error) {
+      const actualSource = await readFile(samplePath, "utf8").catch(() => null);
+      const state = await editorState().catch(() => null);
+      const control = await sourceControlState().catch(() => null);
+      throw new Error(
+        `${scenario.name} insertion did not save at physical source offset ${scenario.offset}`
+        + `\nActual source: ${JSON.stringify(actualSource)}`
+        + `\nCursor before insertion: ${JSON.stringify(cursorStateBeforeInsert)}`
+        + `\nEditor state: ${JSON.stringify(state)}`
+        + `\nSource control: ${JSON.stringify(control)}`,
+        { cause: error }
+      );
+    }
+    // Every case starts from physical source offset zero. Give it a fresh
+    // Chromium input process so a prior fixture's temporary-control focus
+    // cannot shift the next case before its first key event.
+    await stopSession(true);
+  }
 }
 
 async function verifyInlineEditing() {
@@ -1660,7 +1863,9 @@ async function verifyPlatformNativeInlineBoundaryNavigation() {
         scenario: scenario.name,
         expectedSource: nativeSource,
         actualSource: renderedSource,
-        renderedNavigation
+        renderedNavigation,
+        postSaveState: await editorState().catch(() => null),
+        postSaveSourceControl: await sourceControlState().catch(() => null)
       });
     }
     await stopSession();
@@ -6587,6 +6792,16 @@ async function run() {
     console.log("Verified cold-launch, already-running, and drag-drop Markdown opening.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "whole-document-source-traversal") {
+    await verifyWholeDocumentSourceTraversal();
+    console.log("Verified continuous forward and backward selection traverses every physical Markdown source byte.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "mixed-document-insertion-offsets") {
+    await verifyMixedDocumentInsertionOffsets();
+    console.log("Verified mixed rendered constructs insert at their exact physical Markdown offsets.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "rendered-pointer-insertion") {
     await verifyRenderedPointerInsertion();
     console.log("Verified pointer insertion inside rendered inline Markdown preserves exact source.");
@@ -6690,6 +6905,11 @@ async function run() {
   if (process.env.TETHER_PARITY_CASE === "code-boundary-deletion") {
     await verifyCodeBoundaryDeletion();
     console.log("Verified code-boundary deletion publishes exact fence source immediately.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "code-boundary-selection") {
+    await verifyCodeBoundarySelection();
+    console.log("Verified extended code-boundary selections edit exact fence source.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "platform-native-code-boundary-deletion") {
@@ -6919,6 +7139,8 @@ async function run() {
     return;
   }
   await verifyExternalMarkdownOpening();
+  await verifyWholeDocumentSourceTraversal();
+  await verifyMixedDocumentInsertionOffsets();
   await verifyInlineEditing();
   await verifyRenderedPointerInsertion();
   await verifyRenderedPointerSelection();
@@ -6996,7 +7218,7 @@ async function run() {
   await verifyMultilineCodeBlockLayout();
   await verifyCodeLanguagePickerPresentation();
   await verifyCodeLanguagePickerSourceFidelity();
-  console.log("Verified real Electron Markdown opening, typing, saving, history, and fenced-code presentation.");
+  console.log("Verified real Electron Markdown opening, source traversal, exact insertion, typing, saving, history, and fenced-code presentation.");
 }
 
 let exitCode = 0;

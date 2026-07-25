@@ -158,6 +158,16 @@ test("serialized edits preserve the source file's exact terminal newline convent
     ),
     "AlXpha\r\nBeta\r\n"
   );
+
+  const preservedSingleLf = {
+    attrs: { markdownBlockGaps: JSON.stringify(["", "\n"]) },
+    childCount: 1,
+    lastChild: null
+  };
+  assert.equal(
+    normalizeSerializedMarkdown("After\n\n", preservedSingleLf, "After\n"),
+    "After\n"
+  );
 });
 
 test("root serialization preserves a single source newline through a block edit", () => {

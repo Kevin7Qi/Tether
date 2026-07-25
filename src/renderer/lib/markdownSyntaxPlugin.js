@@ -388,6 +388,18 @@ function activateDocumentSourceOffset(
     return true;
   }
   if (target.kind === "block") {
+    const atomTarget = documentSourceAtomTarget(
+      view.state,
+      sourceOffset,
+      serializer
+    );
+    if (atomTarget) {
+      activateMarkdownSourceAt(view, atomTarget.position, {
+        atomPosition: atomTarget.position,
+        sourceOffset: atomTarget.sourceOffset
+      });
+      return true;
+    }
     if (target.node.type.name === "code_block") {
       const blockSource = target.documentSource.fullSource.slice(
         target.segment.from,
@@ -1516,7 +1528,43 @@ function replaceHardbreakSource(view, parser, serializer, unit, source, afterCom
   dispatchSourceReplacement(view, transaction, afterCommit, sync);
 }
 
-function replaceBlockSource(view, parser, unit, source, afterCommit = null, sync = false) {
+function blockSourceDocumentEdit(state, unit, source, serializer) {
+  if (!state?.doc || unit?.kind !== "block" || typeof serializer !== "function") return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const currentSource = continuousMarkdownSource(state, unit, serializer);
+  const exactSegment = documentSource?.segments.find(({ position, node }) => (
+    unit.from === position
+    && unit.to === position + node.nodeSize
+  ));
+  // Root structural units already have an exact segment boundary. Prefer it
+  // over probing a rendered caret: quote/list prefixes contain multiple
+  // physical offsets that intentionally collapse onto the same visual edge.
+  const unitStart = exactSegment?.from
+    ?? documentSourceUnitStartOffset(state, unit, serializer);
+  if (
+    !documentSource
+    || !Number.isFinite(unitStart)
+    || documentSource.fullSource.slice(unitStart, unitStart + currentSource.length) !== currentSource
+  ) return null;
+  return {
+    fullSource: `${documentSource.fullSource.slice(0, unitStart)}${source}${
+      documentSource.fullSource.slice(unitStart + currentSource.length)
+    }`,
+    unitStart,
+    currentSource
+  };
+}
+
+function replaceBlockSource(
+  view,
+  parser,
+  serializer,
+  unit,
+  source,
+  afterCommit = null,
+  sync = false
+) {
+  const documentEdit = blockSourceDocumentEdit(view.state, unit, source, serializer);
   const parsed = parser(source);
   const fallback = view.state.schema.nodes.paragraph.create();
   const replacement = parsed?.content?.size ? parsed.content : Fragment.from(fallback);
@@ -1524,6 +1572,17 @@ function replaceBlockSource(view, parser, unit, source, afterCommit = null, sync
   transaction = selectionAfter(transaction, unit.from + replacement.size);
   transaction.setMeta(markdownSyntaxKey, "close");
   dispatchSourceReplacement(view, transaction, afterCommit, sync);
+  if (documentEdit) {
+    // A source edit can intentionally stop being the block it rendered as
+    // (for example `- item` becoming `-X item`). Keep those literal bytes
+    // beside this exact document snapshot instead of letting the parsed block
+    // split serialize with newly invented blank lines.
+    view.dom.tetherCommittedSourceDraft = {
+      doc: view.state.doc,
+      markdown: documentEdit.fullSource
+    };
+    publishMarkdownSourceDraft(view, documentEdit.fullSource);
+  }
 }
 
 export function markdownSourceDraftMarkdown(state, parser, serializer, unit, source) {
@@ -1533,6 +1592,10 @@ export function markdownSourceDraftMarkdown(state, parser, serializer, unit, sou
   let transaction;
   if (unit.kind === "inline") {
     const documentEdit = inlineSourceDocumentEdit(state, unit, source, serializer);
+    if (documentEdit) return documentEdit.fullSource;
+  }
+  if (unit.kind === "block") {
+    const documentEdit = blockSourceDocumentEdit(state, unit, source, serializer);
     if (documentEdit) return documentEdit.fullSource;
   }
   if (unit.name === "hardbreak") {
@@ -1710,6 +1773,62 @@ export function sourceInputSelection(
     anchor: backward ? selectionEnd : selectionStart,
     head: backward ? selectionStart : selectionEnd
   };
+}
+
+export function sourceInputHorizontalSelection(
+  source,
+  selectionStart,
+  selectionEnd,
+  selectionDirection,
+  key,
+  shiftKey = false
+) {
+  if (!["ArrowLeft", "ArrowRight"].includes(key)) return null;
+  const direction = key === "ArrowLeft" ? "backward" : "forward";
+  const current = sourceInputSelection(
+    selectionStart,
+    selectionEnd,
+    selectionDirection
+  );
+  let anchor;
+  let head;
+  if (shiftKey) {
+    anchor = current.anchor;
+    head = sourceOffsetAfterCharacter(source, current.head, direction);
+  } else if (current.anchor !== current.head) {
+    head = direction === "backward"
+      ? Math.min(current.anchor, current.head)
+      : Math.max(current.anchor, current.head);
+    anchor = head;
+  } else {
+    head = sourceOffsetAfterCharacter(source, current.head, direction);
+    anchor = head;
+  }
+  return {
+    start: Math.min(anchor, head),
+    end: Math.max(anchor, head),
+    direction: anchor === head
+      ? "none"
+      : anchor > head ? "backward" : "forward"
+  };
+}
+
+export function redirectPendingSourceTextInput(event, control) {
+  if (
+    !event
+    || event.defaultPrevented
+    || event.isComposing
+    || !["insertText", "insertReplacementText"].includes(event.inputType)
+    || typeof event.data !== "string"
+    || !control?.isConnected
+    || typeof control.tetherApplyPendingText !== "function"
+    || event.target?.closest?.(".tether-continuous-source")
+  ) return false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  control.focus?.({ preventScroll: true });
+  control.tetherApplyPendingText(event.data);
+  return true;
 }
 
 export function sourceInputWordJumpDirection(
@@ -3670,10 +3789,51 @@ export function documentSourceUnitStartOffset(state, unit, serializer) {
     : null;
 }
 
+export function documentSourceAtomTarget(state, sourceOffset, serializer) {
+  if (!state?.doc || !Number.isFinite(sourceOffset) || typeof serializer !== "function") {
+    return null;
+  }
+  let result = null;
+  state.doc.descendants((node, position) => {
+    if (result || !sourceAtomNames.has(node.type.name)) return !result;
+    const unit = markdownAtomSyntaxAt(state, position);
+    const start = unit
+      ? documentSourceUnitStartOffset(state, unit, serializer)
+      : null;
+    const source = unit
+      ? continuousMarkdownSource(state, unit, serializer)
+      : "";
+    if (
+      Number.isFinite(start)
+      && sourceOffset >= start
+      && sourceOffset <= start + source.length
+    ) {
+      result = {
+        position,
+        unit,
+        sourceOffset: sourceOffset - start
+      };
+      return false;
+    }
+    return true;
+  });
+  return result;
+}
+
 export function documentPositionAtSourceOffset(state, sourceOffset, serializer) {
   if (!state?.doc || !Number.isFinite(sourceOffset) || typeof serializer !== "function") {
     return null;
   }
+  const exactRenderedPosition = (position) => {
+    const selection = TextSelection.create(state.doc, position);
+    // Validate with the same precedence used by text input. Structural
+    // paragraphs often know their exact visible source start (for example the
+    // byte after `- `), while a generic block probe can also map that visual
+    // edge onto an interior hidden-marker offset. Only the typing round trip
+    // is safe to hand back to a rendered caret.
+    const roundTrip = renderedDocumentSourceSelection(state, serializer, selection);
+    return roundTrip?.head === sourceOffset ? position : null;
+  };
   const forwardTarget = documentSourceTarget(state, sourceOffset, serializer, "forward");
   const backwardTarget = documentSourceTarget(state, sourceOffset, serializer, "backward");
   // At a block endpoint followed by a physical separator, forward affinity
@@ -3700,7 +3860,10 @@ export function documentPositionAtSourceOffset(state, sourceOffset, serializer) 
     if (!resolved.parent.isTextblock) continue;
     const literalOffset = literalTextblockDocumentSourceOffset(state, position, serializer);
     if (Number.isFinite(literalOffset)) {
-      if (literalOffset === sourceOffset) return position;
+      if (literalOffset === sourceOffset) {
+        const exactPosition = exactRenderedPosition(position);
+        if (exactPosition != null) return exactPosition;
+      }
       continue;
     }
     const localOffset = sourceCaretOffset(
@@ -3711,7 +3874,10 @@ export function documentPositionAtSourceOffset(state, sourceOffset, serializer) 
       null,
       serializer
     );
-    if (target.segment.from + localOffset === sourceOffset) return position;
+    if (target.segment.from + localOffset === sourceOffset) {
+      const exactPosition = exactRenderedPosition(position);
+      if (exactPosition != null) return exactPosition;
+    }
   }
   return null;
 }
@@ -5144,6 +5310,22 @@ function continuousSourceEditor(
       initialSelectionDirection
     );
   }
+  const applyStartingSelection = () => {
+    const caret = Math.max(0, Math.min(editor.value.length, startingCaret));
+    if (startingSelection) {
+      editor.setSelectionRange(
+        startingSelection.start,
+        startingSelection.end,
+        startingSelection.direction
+      );
+    } else {
+      editor.setSelectionRange(caret, caret);
+    }
+  };
+  // A second key can arrive before the widget's first animation frame (for
+  // example while an arrow key is held). Seed its selection immediately so
+  // that key advances from the requested physical source offset.
+  applyStartingSelection();
 
   const resize = () => {
     if (isBlock) {
@@ -5233,9 +5415,13 @@ function continuousSourceEditor(
     }
     pointerDragWindow = null;
     delete editor.tetherHandleHistoryCommand;
+    delete editor.tetherApplyPendingText;
     const value = editor.value;
     const run = () => {
-      setActiveControl(null);
+      // A boundary handoff can mount its destination control before a
+      // deferred finish from the previous widget runs. Only clear the
+      // ownership record if this editor still owns it.
+      setActiveControl(null, editor);
       // Committing an untouched value would still rewrite the block through the
       // parser (dirtying the document and polluting undo); treat it as a cancel.
       if (commit && value !== source) onCommit(value, afterFinish, sync);
@@ -5453,6 +5639,7 @@ function continuousSourceEditor(
     }));
     return edit;
   };
+  editor.tetherApplyPendingText = (text) => applyClipboardEdit(text, "insertText");
   editor.addEventListener("copy", (event) => {
     if (!event.clipboardData) return;
     const { selectedText } = sourceControlClipboardEdit(
@@ -5776,6 +5963,22 @@ function continuousSourceEditor(
     }
   });
   resize();
+  const focusStartingSelection = () => {
+    if (finished || !editor.isConnected || !shouldFocus()) return false;
+    // The microtask normally claims focus first. If the user has already
+    // moved or extended the seeded selection by the animation-frame fallback,
+    // do not reset it to the activation range.
+    if (editor.ownerDocument.activeElement !== editor) {
+      editor.focus();
+      applyStartingSelection();
+    }
+    return true;
+  };
+  // ProseMirror inserts the decoration synchronously after this constructor
+  // returns. A microtask can therefore claim the caret before the next
+  // keyboard event, while the animation frame below remains the layout-safe
+  // fallback for a decoration that settles later.
+  queueMicrotask(focusStartingSelection);
   requestAnimationFrame(() => {
     if (finished || !editor.isConnected) return;
     resize();
@@ -5794,18 +5997,7 @@ function continuousSourceEditor(
       };
       republishInitialDraft();
     }
-    if (!shouldFocus()) return;
-    editor.focus();
-    const caret = Math.max(0, Math.min(editor.value.length, startingCaret));
-    if (startingSelection) {
-      editor.setSelectionRange(
-        startingSelection.start,
-        startingSelection.end,
-        startingSelection.direction
-      );
-    } else {
-      editor.setSelectionRange(caret, caret);
-    }
+    focusStartingSelection();
   });
   return editor;
 }
@@ -7562,6 +7754,39 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const target = event.target instanceof Element ? event.target : null;
         const currentView = editorView || view;
         if (!target || !currentView.dom.contains(target)) return;
+        const pendingControl = activeSourceControl?.element?.isConnected
+          ? activeSourceControl.element
+          : null;
+        if (
+          pendingControl
+          && !event.altKey
+          && !event.ctrlKey
+          && !event.metaKey
+          && ["ArrowLeft", "ArrowRight"].includes(event.key)
+        ) {
+          const next = sourceInputHorizontalSelection(
+            pendingControl.value,
+            pendingControl.selectionStart ?? 0,
+            pendingControl.selectionEnd ?? pendingControl.selectionStart ?? 0,
+            pendingControl.selectionDirection || "none",
+            event.key,
+            Boolean(event.shiftKey)
+          );
+          const selectionChanged = next && (
+            next.start !== pendingControl.selectionStart
+            || next.end !== pendingControl.selectionEnd
+            || next.direction !== (pendingControl.selectionDirection || "none")
+          );
+          if (selectionChanged) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            if (target !== pendingControl) {
+              pendingControl.focus({ preventScroll: true });
+            }
+            pendingControl.setSelectionRange(next.start, next.end, next.direction);
+            return;
+          }
+        }
         if (target?.closest("button, input, select, textarea, .cm-content, .tether-continuous-source")) {
           return;
         }
@@ -7616,9 +7841,17 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (editorView) activateCapturedTarget(editorView, target, mapping);
         });
       };
+      const capturePendingSourceInput = (event) => {
+        const pendingControl = activeSourceControl?.element?.isConnected
+          ? activeSourceControl.element
+          : null;
+        if (!view.editable || !pendingControl) return;
+        redirectPendingSourceTextInput(event, pendingControl);
+      };
       view.dom.addEventListener("keydown", captureExactTyping, true);
       view.dom.addEventListener("keydown", captureExactDeletion, true);
       navigationWindow?.addEventListener("keydown", captureExactNavigation, true);
+      navigationWindow?.addEventListener("beforeinput", capturePendingSourceInput, true);
       view.dom.addEventListener("copy", captureExactClipboard, true);
       view.dom.addEventListener("cut", captureExactClipboard, true);
       view.dom.addEventListener("mousedown", captureSourceHandoff, true);
@@ -7630,6 +7863,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           view.dom.removeEventListener("keydown", captureExactTyping, true);
           view.dom.removeEventListener("keydown", captureExactDeletion, true);
           navigationWindow?.removeEventListener("keydown", captureExactNavigation, true);
+          navigationWindow?.removeEventListener("beforeinput", capturePendingSourceInput, true);
           view.dom.removeEventListener("copy", captureExactClipboard, true);
           view.dom.removeEventListener("cut", captureExactClipboard, true);
           view.dom.removeEventListener("mousedown", captureSourceHandoff, true);
@@ -8478,7 +8712,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           if (unit.name === "hardbreak") {
             replaceHardbreakSource(editorView, parser, serializer, unit, value, afterCommit, sync);
           } else if (unit.kind === "inline") replaceInlineSource(editorView, parser, serializer, unit, value, afterCommit, sync);
-          else replaceBlockSource(editorView, parser, unit, value, afterCommit, sync);
+          else replaceBlockSource(editorView, parser, serializer, unit, value, afterCommit, sync);
         };
         const navigateFromBoundary = (direction, mapping = null) => {
           if (!editorView?.dom.isConnected) return;
@@ -9209,7 +9443,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           tabFromInlineSource,
           publishDraft,
           () => true,
-          (control) => {
+          (control, expectedElement = null) => {
+            if (
+              !control
+              && expectedElement
+              && activeSourceControl?.element !== expectedElement
+            ) return;
             activeSourceControl = control;
             if (editorView) {
               if (control) liveSourceControls.set(editorView.dom, control);

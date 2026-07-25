@@ -45,6 +45,7 @@ import {
   activeMarkdownAtomSyntax,
   activeMarkdownBlockSyntax,
   continuousMarkdownSource,
+  markdownSourceDraftMarkdown,
   sourceCaretOffset,
   sourceFaithfulListMarkerBackspaceTransaction
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
@@ -175,6 +176,16 @@ test("footnote references and definitions expose exact source controls", async (
   });
   const referenceUnit = activeMarkdownAtomSyntax(referenceState);
   assert.equal(continuousMarkdownSource(referenceState, referenceUnit, serialize), "[^Case]");
+  assert.equal(
+    markdownSourceDraftMarkdown(
+      referenceState,
+      parse,
+      serialize,
+      referenceUnit,
+      "^Case]"
+    ),
+    "A^Case].\n\n[^Case]: body &copy;\n"
+  );
 
   const body = textPosition(doc, "body ©");
   const definitionState = EditorState.create({

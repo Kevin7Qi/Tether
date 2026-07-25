@@ -79,12 +79,26 @@ function sourceSuffix(context, fallbackSource = null) {
 export function normalizeSerializedMarkdown(markdown, context = null, fallbackSource = null) {
   if (!markdown) return markdown;
   const contextSuffix = sourceSuffix(context, fallbackSource);
-  let normalized = contextSuffix === "" && markdown.endsWith("\n")
-    ? markdown.slice(0, -1)
-    : markdown;
+  const serializedSuffix = sourceSuffix(markdown);
+  const normalizedContextSuffix = contextSuffix?.replace(/\r\n|\r/g, "\n");
+  const normalizedSerializedSuffix = serializedSuffix.replace(/\r\n|\r/g, "\n");
+  let normalized;
+  if (contextSuffix === "" && markdown.endsWith("\n")) {
+    normalized = markdown.slice(0, -1);
+  } else if (
+    contextSuffix
+    && normalizedSerializedSuffix === `${normalizedContextSuffix}\n`
+  ) {
+    // The root compiler can append its own final LF even when the preserved
+    // physical suffix already supplies one. Remove only that single compiler
+    // character; all deliberate terminal blank lines remain represented by
+    // the exact suffix captured from the source document.
+    normalized = `${markdown.slice(0, markdown.length - serializedSuffix.length)}${contextSuffix}`;
+  } else {
+    normalized = markdown;
+  }
   if (context && typeof fallbackSource === "string") {
     const fallbackSuffix = sourceSuffix(fallbackSource);
-    const normalizedContextSuffix = contextSuffix?.replace(/\r\n|\r/g, "\n");
     const normalizedFallbackSuffix = fallbackSuffix.replace(/\r\n|\r/g, "\n");
     if (
       contextSuffix

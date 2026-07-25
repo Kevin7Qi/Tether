@@ -158,11 +158,17 @@ function replaceAllMarkdown(markdown) {
     const parsed = ctx.get(parserCtx)(markdown);
     if (!parsed) return;
     const doc = normalizeEmptyMarkdownDocument(parsed, markdown);
-    view.dispatch(
-      view.state.tr
-        .replace(0, view.state.doc.content.size, new Slice(doc.content, 0, 0))
-        .setMeta(externalMarkdownTransactionMeta, true)
+    let transaction = view.state.tr.replace(
+      0,
+      view.state.doc.content.size,
+      new Slice(doc.content, 0, 0)
     );
+    for (const [name, value] of Object.entries(doc.attrs || {})) {
+      if (transaction.doc.attrs[name] !== value) {
+        transaction = transaction.setDocAttribute(name, value);
+      }
+    }
+    view.dispatch(transaction.setMeta(externalMarkdownTransactionMeta, true));
   };
 }
 
@@ -248,6 +254,20 @@ function markSyntheticTrailingParagraph(crepe, allowStructuralFallback = false) 
       .setMeta("addToHistory", false)
   );
   return view.state.doc;
+}
+
+function exactCommittedMarkdown(
+  view,
+  doc = view?.state?.doc,
+  fallbackSource = null
+) {
+  const draft = view?.dom?.tetherCommittedSourceDraft;
+  return (
+    typeof draft?.markdown === "string"
+    && draft.doc?.eq?.(doc)
+  )
+    ? normalizeSerializedMarkdown(draft.markdown, doc, fallbackSource)
+    : null;
 }
 
 export default function WysiwygSurface({
@@ -340,20 +360,18 @@ export default function WysiwygSurface({
         } catch {
           return null;
         }
-        const committedSourceDraft = view?.dom?.tetherCommittedSourceDraft;
-        const exactCommittedMarkdown = (
-          typeof committedSourceDraft?.markdown === "string"
-          && committedSourceDraft.doc?.eq?.(view.state.doc)
-        )
-          ? committedSourceDraft.markdown
-          : null;
+        const committedMarkdown = exactCommittedMarkdown(
+          view,
+          view?.state?.doc,
+          baselineSourceRef.current
+        );
         const settledDoc = markSyntheticTrailingParagraph(crepe, true);
         const serializedMarkdown = normalizeSerializedMarkdown(
           crepe.getMarkdown(),
           settledDoc,
           baselineSourceRef.current
         );
-        const markdown = exactCommittedMarkdown ?? serializedMarkdown;
+        const markdown = committedMarkdown ?? serializedMarkdown;
         const pendingSourceDraft = pendingSourceDraftRef.current;
         lastMarkdownRef.current = markdown;
         if (markdown === baselineMarkdownRef.current) {
@@ -465,6 +483,12 @@ export default function WysiwygSurface({
     let draftEventTarget = null;
     let codeSourceOnlyHistory = null;
     const ensureSyntheticTrailing = (event = null) => {
+      const eventTarget = event?.target instanceof Element ? event.target : null;
+      // A temporary source control owns one exact Markdown editing session.
+      // Marking the trailing paragraph during its beforeinput replaces the
+      // decoration widget before Save can synchronously commit its live value.
+      // Reconcile the synthetic paragraph after that source session closes.
+      if (eventTarget?.closest(".tether-continuous-source")) return;
       // Composition owns the editor until it commits. Even a history-free
       // structural transaction can make the browser restart or drop an IME
       // candidate, so postpone this housekeeping to the resulting update.
@@ -474,11 +498,17 @@ export default function WysiwygSurface({
       const before = crepe.editor.action((ctx) => ctx.get(editorViewCtx).state.doc);
       const after = markSyntheticTrailingParagraph(crepe, true);
       if (after === before) return;
-      const markdown = normalizeSerializedMarkdown(
-        crepe.getMarkdown(),
+      const currentView = crepe.editor.action((ctx) => ctx.get(editorViewCtx));
+      const markdown = exactCommittedMarkdown(
+        currentView,
         after,
         baselineSourceRef.current
-      );
+      )
+        ?? normalizeSerializedMarkdown(
+          crepe.getMarkdown(),
+          after,
+          baselineSourceRef.current
+        );
       lastMarkdownRef.current = markdown;
       if (markdown === baselineMarkdownRef.current) {
         baselineDocRef.current = after;
@@ -506,7 +536,10 @@ export default function WysiwygSurface({
         baselineSourceRef.current
       );
       lastMarkdownRef.current = markdown;
-      if (applyingExternalRef.current) return;
+      // This event is emitted only by a live Markdown source control after a
+      // user edit. Hidden/offscreen renderers can stretch the two-frame
+      // external-content settling window; suppressing the draft during that
+      // window silently loses the user's first character.
       if (markdown === baselineSourceRef.current) {
         pendingSourceDraftRef.current = null;
         hasUserChangeRef.current = false;
@@ -1962,11 +1995,26 @@ export default function WysiwygSurface({
           // The view may be between replacement and teardown. The loaded
           // source still supplies the correct terminal-newline convention.
         }
-        const markdown = normalizeSerializedMarkdown(
-          rawMarkdown,
+        if (
+          pendingSourceDraftRef.current != null
+          && currentView?.dom?.querySelector?.(".tether-continuous-source")
+        ) {
+          // The ProseMirror document intentionally remains unchanged while a
+          // raw source control contains an in-progress (possibly malformed)
+          // draft. A late model serialization must not overwrite that newer
+          // literal source or clear the dirty state.
+          return;
+        }
+        const markdown = exactCommittedMarkdown(
+          currentView,
           currentDoc,
           baselineSourceRef.current
-        );
+        )
+          ?? normalizeSerializedMarkdown(
+            rawMarkdown,
+            currentDoc,
+            baselineSourceRef.current
+          );
         lastMarkdownRef.current = markdown;
         if (
           lastFocusedCodeTarget
@@ -2115,10 +2163,27 @@ export default function WysiwygSurface({
     applyingExternalRef.current = true;
     crepe.editor.action(replaceAllMarkdown(nextMarkdown));
     lastMarkdownRef.current = nextMarkdown;
+    const appliedDoc = crepe.editor.action((ctx) => ctx.get(editorViewCtx).state.doc);
+    baselineMarkdownRef.current = normalizeSerializedMarkdown(
+      crepe.getMarkdown(),
+      appliedDoc,
+      nextMarkdown
+    );
+    baselineSourceRef.current = nextMarkdown;
+    baselineDocRef.current = appliedDoc;
+    pendingSourceDraftRef.current = null;
+    hasUserChangeRef.current = false;
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {
       secondFrame = window.requestAnimationFrame(() => {
         if (crepeRef.current !== crepe) return;
+        // A source control or rendered edit may have published newer Markdown
+        // while an offscreen renderer waited for these settling frames. Never
+        // let late load bookkeeping redefine that user edit as the baseline.
+        if (lastMarkdownRef.current !== nextMarkdown) {
+          applyingExternalRef.current = false;
+          return;
+        }
         const nextDoc = markSyntheticTrailingParagraph(crepe, true);
         baselineMarkdownRef.current = normalizeSerializedMarkdown(
           crepe.getMarkdown(),
