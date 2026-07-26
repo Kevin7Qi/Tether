@@ -1279,27 +1279,87 @@ async function verifyHeadingSourceEditing() {
       source: "### Title ###\n",
       selector: "h3",
       expected: "###Title ###\n"
+    },
+    {
+      name: "quoted closed ATX start",
+      source: "> ## Title ##\n",
+      selector: "h2",
+      expected: "> ##Title ##\n",
+      history: true
+    },
+    {
+      name: "list ATX start",
+      source: "- ## Title\n",
+      selector: "h2",
+      expected: "- ##Title\n",
+      exactDraftControl: true
+    },
+    {
+      name: "quoted setext start",
+      source: "> Title\n> =====\n",
+      selector: "h1",
+      expected: ">Title\n> =====\n"
     }
   ];
 
-  for (const testCase of backspaceCases) {
+  const selectedBackspaceCases = process.env.TETHER_PARITY_SCENARIO
+    ? backspaceCases.filter(({ name }) => name.includes(process.env.TETHER_PARITY_SCENARIO))
+    : backspaceCases;
+  for (const testCase of selectedBackspaceCases) {
     await startSession(testCase.source, "Title");
     await placeCaretInText("Title", 0, ".ProseMirror", testCase.selector);
     await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
+    if (testCase.exactDraftControl) {
+      await waitForSourceControl(
+        (state) => state?.active && state.value === testCase.expected.trimEnd(),
+        `${testCase.name} did not retain the exact nested heading draft`
+      );
+    }
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(testCase.expected);
+    if (testCase.history) {
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.source);
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.expected);
+    }
+    await stopSession();
+  }
+
+  const deleteCases = [
+    {
+      name: "closed ATX end",
+      source: "## Title ##\n",
+      selector: "h2",
+      expected: "## Title##\n"
+    },
+    {
+      name: "quoted closed ATX end",
+      source: "> ## Title ##\n",
+      selector: "h2",
+      expected: "> ## Title##\n"
+    },
+    {
+      name: "quoted setext end",
+      source: "> Title\n> =====\n",
+      selector: "h1",
+      expected: "> Title> =====\n"
+    }
+  ];
+  for (const testCase of deleteCases) {
+    await startSession(testCase.source, "Title");
+    await placeCaretInText("Title", "Title".length, ".ProseMirror", testCase.selector);
+    await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
     await waitForSaveState(false);
     await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
     await waitForCompletedSave(testCase.expected);
     await stopSession();
   }
-
-  const closedSource = "## Title ##\n";
-  await startSession(closedSource, "Title");
-  await placeCaretInText("Title", "Title".length, ".ProseMirror", "h2");
-  await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
-  await waitForSaveState(false);
-  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-  await waitForCompletedSave("## Title##\n");
-  await stopSession();
 
   const setextSource = "Title\n=====\n";
   await startSession(setextSource, "Title");

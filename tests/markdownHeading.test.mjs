@@ -235,6 +235,63 @@ test("Backspace at rendered heading starts deletes the adjacent physical source 
   }
 });
 
+test("nested heading boundaries edit the nearest byte in their enclosing physical source", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const cases = [
+    {
+      source: "> ## Title ##\n",
+      direction: "backward",
+      offset: 0,
+      expected: "> ##Title ##"
+    },
+    {
+      source: "> Title\n> =====\n",
+      direction: "backward",
+      offset: 0,
+      expected: ">Title\n> ====="
+    },
+    {
+      source: "> ## Title ##\n",
+      direction: "forward",
+      offset: "Title".length,
+      expected: "> ## Title##"
+    },
+    {
+      source: "> Title\n> =====\n",
+      direction: "forward",
+      offset: "Title".length,
+      expected: "> Title> ====="
+    }
+  ];
+
+  for (const testCase of cases) {
+    const doc = parse(testCase.source);
+    const titleStart = textPosition(doc, "Title");
+    const state = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, titleStart + testCase.offset)
+    });
+    const target = sourceFaithfulHeadingBoundaryDeletionTarget(
+      state,
+      serialize,
+      testCase.direction,
+      parse
+    );
+    assert.ok(target, `${testCase.direction} target for ${JSON.stringify(testCase.source)}`);
+    assert.equal(target.source, testCase.source.trimEnd());
+    assert.equal(target.unit.documentSource, testCase.source);
+    assert.equal(target.unit.sourceStart, 0);
+    assert.equal(
+      sourceControlInitialDeletion(
+        target.source,
+        target.sourceOffset,
+        testCase.direction
+      )?.afterValue,
+      testCase.expected
+    );
+  }
+});
+
 test("heading literals navigate and edit through their exact physical source", async () => {
   const { parse, serialize } = await milkdownTransformer();
   const source = "## A &copy; and \\*literal\\* ##\n\noutside\n";

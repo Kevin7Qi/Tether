@@ -1530,6 +1530,23 @@ function replaceHardbreakSource(view, parser, serializer, unit, source, afterCom
 
 function blockSourceDocumentEdit(state, unit, source, serializer) {
   if (!state?.doc || unit?.kind !== "block" || typeof serializer !== "function") return null;
+  if (
+    typeof unit.documentSource === "string"
+    && Number.isFinite(unit.sourceStart)
+    && typeof unit.source === "string"
+    && unit.documentSource.slice(
+      unit.sourceStart,
+      unit.sourceStart + unit.source.length
+    ) === unit.source
+  ) {
+    return {
+      fullSource: `${unit.documentSource.slice(0, unit.sourceStart)}${source}${
+        unit.documentSource.slice(unit.sourceStart + unit.source.length)
+      }`,
+      unitStart: unit.sourceStart,
+      currentSource: unit.source
+    };
+  }
   const documentSource = documentSourceSegments(state, serializer);
   const currentSource = continuousMarkdownSource(state, unit, serializer);
   const exactSegment = documentSource?.segments.find(({ position, node }) => (
@@ -2798,7 +2815,8 @@ export function sourceFaithfulHeadingKeymapConfig(config) {
 export function sourceFaithfulHeadingBoundaryDeletionTarget(
   state,
   serializer,
-  direction
+  direction,
+  parser = null
 ) {
   const { selection } = state;
   const { $from } = selection;
@@ -2812,9 +2830,75 @@ export function sourceFaithfulHeadingBoundaryDeletionTarget(
     || $from.parent.type.name !== "heading"
     || typeof serializer !== "function"
   ) return null;
-  const unit = activeMarkdownBlockSyntax(state);
-  if (!unit) return null;
-  const source = continuousMarkdownSource(state, unit, serializer);
+  const headingFrom = $from.before($from.depth);
+  const headingTo = $from.after($from.depth);
+  const documentSource = documentSourceSegments(state, serializer);
+  const segment = documentSource?.segments.find(({ position, node }) => (
+    headingFrom >= position
+    && headingTo <= position + node.nodeSize
+  ));
+  if (!segment || !documentSource) return null;
+  const segmentAttrs = segment.node.attrs || {};
+  const rawSource = segment.node.type.name === "bullet_list"
+    || segment.node.type.name === "ordered_list"
+    ? segmentAttrs.listSource
+    : segment.node.type.name === "blockquote"
+      ? segmentAttrs.blockquoteSource
+      : segment.node.type.name === "footnote_definition"
+        ? segmentAttrs.footnoteDefinitionSource
+        : segment.node.type.name === "heading"
+          ? segmentAttrs.headingSource
+          : null;
+  const rawSourceStart = segment.node.type.name === "bullet_list"
+    || segment.node.type.name === "ordered_list"
+    ? segmentAttrs.listSourceStart
+    : segment.node.type.name === "blockquote"
+      ? segmentAttrs.blockquoteSourceStart
+      : segment.node.type.name === "footnote_definition"
+        ? segmentAttrs.footnoteDefinitionSourceStart
+        : segment.node.type.name === "heading"
+          ? segmentAttrs.headingSourceStart
+          : null;
+  let source = documentSource.fullSource.slice(segment.from, segment.to);
+  let sourceCoordinateStart = segment.from;
+  let physicalDocumentSource = documentSource.fullSource;
+  let usingRawSource = false;
+  if (
+    typeof rawSource === "string"
+    && Number.isFinite(rawSourceStart)
+    && typeof parser === "function"
+  ) {
+    let parsedNode = null;
+    try {
+      parsedNode = parser(rawSource)?.firstChild || null;
+    } catch {
+      // Stale source metadata must never break an ordinary boundary key.
+    }
+    const rawStillMatches = parsedNode
+      && serializeBlockNode(state.schema, parsedNode, serializer)
+        === serializeBlockNode(state.schema, segment.node, serializer);
+    if (rawStillMatches) {
+      source = rawSource;
+      sourceCoordinateStart = rawSourceStart;
+      usingRawSource = true;
+      physicalDocumentSource = `${documentSource.fullSource.slice(0, segment.from)}${rawSource}${
+        documentSource.fullSource.slice(segment.to)
+      }`;
+    }
+  }
+  // A heading may live inside a quote or list. Editing only the nested
+  // ProseMirror node would discard the physical container prefixes, so expose
+  // the complete root source segment that actually contains the caret.
+  const unit = {
+    from: segment.position,
+    to: segment.position + segment.node.nodeSize,
+    kind: "block",
+    name: segment.node.type.name,
+    source,
+    sourceStart: segment.from,
+    documentSource: physicalDocumentSource,
+    forceContinuousSource: true
+  };
   const sourceSelection = plainTextMarkdownSourceSelection(
     state,
     serializer,
@@ -2823,14 +2907,13 @@ export function sourceFaithfulHeadingBoundaryDeletionTarget(
   if (
     !sourceSelection
     || sourceSelection.anchor !== sourceSelection.head
-    || sourceSelection.head <= 0
   ) return null;
-  const documentSource = documentSourceSegments(state, serializer);
-  const segment = documentSource?.segments.find(({ position, node }) => (
-    position === unit.from && node === $from.parent
-  ));
-  if (!segment) return null;
-  const sourceOffset = sourceSelection.head - segment.from;
+  const physicalHeadingOffset = direction === "backward"
+    ? $from.parent.attrs.headingContentStart
+    : $from.parent.attrs.headingContentEnd;
+  const sourceOffset = usingRawSource && Number.isFinite(physicalHeadingOffset)
+    ? physicalHeadingOffset - sourceCoordinateStart
+    : sourceSelection.head - segment.from;
   if (
     (direction === "backward" && sourceOffset <= 0)
     || (direction === "forward" && sourceOffset >= source.length)
@@ -5226,7 +5309,8 @@ export const sourceFaithfulHeadingBackspaceKeymap = $shortcut((ctx) => ({
       const target = sourceFaithfulHeadingBoundaryDeletionTarget(
         state,
         ctx.get(serializerCtx),
-        "backward"
+        "backward",
+        ctx.get(parserCtx)
       );
       if (!target || !view) return false;
       activateMarkdownSourceDeletionAt(
@@ -5234,6 +5318,7 @@ export const sourceFaithfulHeadingBackspaceKeymap = $shortcut((ctx) => ({
         state.selection.from,
         {
           explicitUnitPosition: target.unit.from,
+          literalSourceUnit: target.unit,
           sourceOffset: target.sourceOffset,
           initialDeleteDirection: "backward",
           focusLock: true
@@ -5253,7 +5338,8 @@ export const sourceFaithfulHeadingBackspaceKeymap = $shortcut((ctx) => ({
       const target = sourceFaithfulHeadingBoundaryDeletionTarget(
         state,
         ctx.get(serializerCtx),
-        "forward"
+        "forward",
+        ctx.get(parserCtx)
       );
       if (!target || !view) return false;
       activateMarkdownSourceDeletionAt(
@@ -5261,6 +5347,7 @@ export const sourceFaithfulHeadingBackspaceKeymap = $shortcut((ctx) => ({
         state.selection.from,
         {
           explicitUnitPosition: target.unit.from,
+          literalSourceUnit: target.unit,
           sourceOffset: target.sourceOffset,
           initialDeleteDirection: "forward",
           focusLock: true
@@ -5287,6 +5374,7 @@ export function usesContinuousSourceEditor(unit, explicitUnit = null) {
   if (!unit) return false;
   return unit.kind === "inline"
     || sourceAtomNames.has(unit.name)
+    || unit.forceContinuousSource === true
     || unit === explicitUnit;
 }
 

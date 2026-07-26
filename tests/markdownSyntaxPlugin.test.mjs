@@ -3680,7 +3680,7 @@ test("block source Shift-Tab outdents tabs or one four-space indentation unit", 
   });
 });
 
-test("continuous source controls are reserved for inline, atomic, and explicit source units", () => {
+test("continuous source controls are reserved for inline, atomic, explicit, and physical units", () => {
   const heading = { from: 0, to: 5, kind: "block", name: "heading" };
   const code = { from: 0, to: 5, kind: "block", name: "code_block" };
   const rule = { from: 0, to: 1, kind: "block", name: "hr" };
@@ -3689,6 +3689,7 @@ test("continuous source controls are reserved for inline, atomic, and explicit s
 
   assert.equal(usesContinuousSourceEditor(heading), false);
   assert.equal(usesContinuousSourceEditor(heading, heading), true);
+  assert.equal(usesContinuousSourceEditor({ ...heading, forceContinuousSource: true }), true);
   assert.equal(usesContinuousSourceEditor(code), false);
   assert.equal(usesContinuousSourceEditor(rule), true);
   assert.equal(usesContinuousSourceEditor(inline), true);
