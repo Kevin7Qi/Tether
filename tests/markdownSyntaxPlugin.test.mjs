@@ -68,10 +68,14 @@ import {
   sourceControlInitialDeletion,
   sourceControlInitialHistoryChange,
   sourceControlClipboardEdit,
+  sourceControlDisplayOffset,
+  sourceControlDisplayValue,
   sourceControlInputHistoryStep,
   sourceControlLineDeletionEdit,
+  sourceControlPhysicalOffset,
   sourceControlSaveFocus,
   sourceControlWordDeletionEdit,
+  reconcileSourceControlPhysicalValue,
   sourceEditCaretOffset,
   sourceLineEndingAt,
   sourceLineDeleteDirection,
@@ -365,6 +369,20 @@ test("saving a temporary source control captures its logical unit and selection"
   });
   assert.equal(sourceControlSaveFocus(null, 21), null);
   assert.equal(sourceControlSaveFocus({ classList: [] }, Number.NaN), null);
+
+  const physicalFocus = sourceControlSaveFocus({
+    classList: ["tether-continuous-source", "is-block", "is-heading"],
+    selectionStart: 8,
+    selectionEnd: 8,
+    selectionDirection: "none",
+    tetherGetPhysicalSourceState: () => ({
+      value: "> Title\r\n> =====",
+      start: 9,
+      end: 9,
+      direction: "none"
+    })
+  }, 8);
+  assert.deepEqual(physicalFocus.selection, { start: 9, end: 9, direction: "none" });
 });
 
 function stateWithMarks(markNames) {
@@ -3345,6 +3363,25 @@ test("source boundary selections keep CRLF and Unicode code points indivisible",
     end: 3,
     direction: "backward"
   });
+});
+
+test("source controls map normalized textarea offsets back to physical line endings", () => {
+  const source = "> Title\r\n> =====";
+  const display = "> Title\n> =====";
+  assert.equal(sourceControlDisplayValue(source), display);
+  assert.equal(sourceControlDisplayOffset(source, 9), 8);
+  assert.equal(sourceControlPhysicalOffset(source, 8), 9);
+  assert.equal(sourceControlPhysicalOffset(source, display.length), source.length);
+
+  assert.equal(
+    reconcileSourceControlPhysicalValue("a\r\nb", "a\nXb"),
+    "a\r\nXb"
+  );
+  assert.equal(reconcileSourceControlPhysicalValue("a\r\nb", "ab"), "ab");
+  assert.equal(
+    reconcileSourceControlPhysicalValue("a\r\nb", "a\n\nb"),
+    "a\r\n\r\nb"
+  );
 });
 
 test("ordinary source-boundary arrows advance by exactly one physical character", () => {

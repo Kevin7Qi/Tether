@@ -452,13 +452,18 @@ async function dragBetweenTextBoundaries(start, end) {
 async function sourceControlState() {
   return evaluate(`(() => {
     const control = document.querySelector(".tether-continuous-source");
-    return control ? {
-      value: control.value,
-      selectionStart: control.selectionStart,
-      selectionEnd: control.selectionEnd,
-      selectionDirection: control.selectionDirection,
+    if (!control) return null;
+    const physical = control.tetherGetPhysicalSourceState?.();
+    return {
+      value: physical?.value ?? control.value,
+      selectionStart: physical?.start ?? control.selectionStart,
+      selectionEnd: physical?.end ?? control.selectionEnd,
+      selectionDirection: physical?.direction ?? control.selectionDirection,
+      displayValue: control.value,
+      displaySelectionStart: control.selectionStart,
+      displaySelectionEnd: control.selectionEnd,
       active: document.activeElement === control
-    } : null;
+    };
   })()`);
 }
 
@@ -3758,6 +3763,9 @@ async function verifyCodeToCodePointerDragCutPaste() {
 async function verifyStructuralMarkerNavigation() {
   const fixtures = [
     { name: "closed ATX heading", source: "## Title ##", visible: "Title", caret: 2, selector: "h2" },
+    { name: "quoted closed ATX heading", source: "> ## Title ##", visible: "Title", caret: 4, selector: "h2" },
+    { name: "list ATX heading", source: "- ## Title", visible: "Title", caret: 4, selector: "h2" },
+    { name: "quoted setext heading", source: "> Title\n> =====", visible: "Title", caret: 1, selector: "h1" },
     { name: "bullet list", source: "- Alpha", visible: "Alpha", caret: 1, selector: ".content-dom" },
     { name: "ordered list", source: "7) Alpha", visible: "Alpha", caret: 2, selector: ".content-dom" },
     { name: "task list", source: "+ [X] Alpha", visible: "Alpha", caret: 5, selector: ".content-dom" },
@@ -3788,6 +3796,77 @@ async function verifyStructuralMarkerNavigation() {
     }
     await stopSession();
   }
+
+  const forwardFixtures = [
+    {
+      name: "quoted closed ATX heading",
+      source: "> ## Title ##",
+      visible: "Title",
+      caret: 11,
+      nextCaret: 12,
+      selector: "h2"
+    },
+    {
+      name: "quoted CRLF setext heading",
+      source: "> Title\r\n> =====",
+      visible: "Title",
+      caret: 9,
+      nextCaret: 10,
+      selector: "h1"
+    }
+  ];
+  for (const fixture of forwardFixtures) {
+    await startSession(`${fixture.source}\n`, fixture.visible);
+    await placeCaretInText(
+      fixture.visible,
+      fixture.visible.length,
+      ".ProseMirror",
+      fixture.selector
+    );
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === fixture.source
+        && state.selectionStart === fixture.caret && state.selectionEnd === fixture.caret,
+      `ArrowRight did not enter the first physical ${fixture.name} suffix byte`
+    );
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
+    await waitForSourceControl(
+      (state) => state?.active && state.selectionStart === fixture.caret
+        && state.selectionEnd === fixture.nextCaret && state.selectionDirection === "forward",
+      `Shift+ArrowRight did not select one physical ${fixture.name} suffix byte`
+    );
+    const copied = await dispatchCopyAndCaptureText();
+    if (copied !== fixture.source.slice(fixture.caret, fixture.nextCaret)) {
+      throw new Error(
+        `${fixture.name} Copy emitted ${JSON.stringify(copied)} instead of its selected source byte`
+      );
+    }
+    await stopSession();
+  }
+
+  const editedHeading = "> ## NTitle ##\n";
+  await startSession("> ## Title ##\n", "Title");
+  await placeCaretInText("Title", 0, ".ProseMirror", "h2");
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "> ## Title ##"
+      && state.selectionStart === 4 && state.selectionEnd === 4,
+    "Quoted heading did not expose its complete physical source before editing"
+  );
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === 5 && state.selectionEnd === 5,
+    "Quoted heading source did not navigate from its final prefix byte to title text"
+  );
+  await dispatchTextKey("N", "KeyN", 78);
+  await waitForSourceControl(
+    (state) => state?.active && state.value === "> ## NTitle ##"
+      && state.selectionStart === 6 && state.selectionEnd === 6,
+    "Typing in a quoted heading did not preserve its quote and ATX markers"
+  );
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedHeading);
+  await stopSession();
 }
 
 async function verifyBlockAtomTraversal() {
@@ -7196,6 +7275,11 @@ async function run() {
   if (process.env.TETHER_PARITY_CASE === "structural-marker-navigation") {
     await verifyStructuralMarkerNavigation();
     console.log("Verified rendered structural markers navigate one physical source byte at a time.");
+    return;
+  }
+  if (process.env.TETHER_PARITY_CASE === "inline-cross-boundary-selection") {
+    await verifyInlineCrossBoundarySelection();
+    console.log("Verified inline source selections cross rendered boundaries exactly.");
     return;
   }
   if (process.env.TETHER_PARITY_CASE === "block-atom-traversal") {

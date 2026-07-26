@@ -504,8 +504,8 @@ test("multi-click activation carries word and line selection into raw Markdown c
   assert.match(syntax, /initialPointerSelection: target\.pointerClickCount \?\? 1/);
   assert.match(syntax, /sourcePointerSelectionRange\(/);
   assert.match(syntax, /pointerClickCount = Math\.max\(continuedClickCount, event\.detail\)/);
-  assert.match(syntax, /sourcePointerSelectionRange\(editor\.value, caret, pointerClickCount\)/);
-  assert.match(syntax, /editor\.setSelectionRange\(/);
+  assert.match(syntax, /sourcePointerSelectionRange\(physicalValue, caret, pointerClickCount\)/);
+  assert.match(syntax, /editor\.tetherSetPhysicalSourceSelection\(/);
 });
 
 test("temporary Markdown source controls hand document jumps back to the full source map", () => {

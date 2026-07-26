@@ -43,7 +43,8 @@ import {
   plainTextMarkdownSourceToken,
   replaceSourceSelectionTransaction,
   sourceControlInitialDeletion,
-  sourceFaithfulHeadingBoundaryDeletionTarget
+  sourceFaithfulHeadingBoundaryDeletionTarget,
+  structuralBoundarySourceTarget
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
 const milkdownTimerEvents = new EventTarget();
@@ -281,6 +282,14 @@ test("nested heading boundaries edit the nearest byte in their enclosing physica
     assert.equal(target.source, testCase.source.trimEnd());
     assert.equal(target.unit.documentSource, testCase.source);
     assert.equal(target.unit.sourceStart, 0);
+    const navigationTarget = structuralBoundarySourceTarget(
+      state,
+      testCase.direction === "backward" ? "ArrowLeft" : "ArrowRight",
+      parse,
+      serialize
+    );
+    assert.equal(navigationTarget?.source, target.source);
+    assert.equal(navigationTarget?.sourceOffset, target.sourceOffset);
     assert.equal(
       sourceControlInitialDeletion(
         target.source,

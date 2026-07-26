@@ -690,7 +690,12 @@ export function activeMarkdownBlockSyntax(state) {
   return null;
 }
 
-export function structuralBoundarySourceTarget(state, key) {
+export function structuralBoundarySourceTarget(
+  state,
+  key,
+  parser = null,
+  serializer = null
+) {
   const { selection } = state;
   if (!selection.empty || !selection.$from.parent.isTextblock) return null;
   const direction = key === "ArrowLeft"
@@ -717,6 +722,24 @@ export function structuralBoundarySourceTarget(state, key) {
   // characters instead of silently sticking to or appending inside the cell.
   const tableUnit = markdownTableSyntaxAt(state, selection.from);
   if (tableUnit) return { unit: tableUnit, direction, position: selection.from };
+
+  if (selection.$from.parent.type.name === "heading" && typeof serializer === "function") {
+    const headingTarget = sourceFaithfulHeadingBoundaryDeletionTarget(
+      state,
+      serializer,
+      direction,
+      parser
+    );
+    if (headingTarget) {
+      return {
+        unit: headingTarget.unit,
+        direction,
+        position: selection.from,
+        source: headingTarget.source,
+        sourceOffset: headingTarget.sourceOffset
+      };
+    }
+  }
 
   const unit = activeMarkdownBlockSyntax(state);
   if (!unit || !structuralSourceBlockNames.has(unit.name)) return null;
@@ -4516,6 +4539,63 @@ export function sourceCaretBoundaries(source) {
   return boundaries;
 }
 
+export function sourceControlDisplayValue(source) {
+  return String(source ?? "").replace(/\r\n|\r/g, "\n");
+}
+
+export function sourceControlDisplayOffset(source, physicalOffset) {
+  const value = String(source ?? "");
+  const bounded = Math.max(0, Math.min(value.length, Number(physicalOffset) || 0));
+  return sourceControlDisplayValue(value.slice(0, bounded)).length;
+}
+
+export function sourceControlPhysicalOffset(source, displayOffset) {
+  const value = String(source ?? "");
+  const target = Math.max(
+    0,
+    Math.min(sourceControlDisplayValue(value).length, Number(displayOffset) || 0)
+  );
+  let physical = 0;
+  let display = 0;
+  while (physical < value.length && display < target) {
+    if (value[physical] === "\r" && value[physical + 1] === "\n") physical += 2;
+    else physical += 1;
+    display += 1;
+  }
+  return physical;
+}
+
+export function reconcileSourceControlPhysicalValue(source, nextDisplayValue) {
+  const physical = String(source ?? "");
+  const beforeDisplay = sourceControlDisplayValue(physical);
+  const afterDisplay = sourceControlDisplayValue(nextDisplayValue);
+  if (beforeDisplay === afterDisplay) return physical;
+
+  let prefix = 0;
+  while (
+    prefix < beforeDisplay.length
+    && prefix < afterDisplay.length
+    && beforeDisplay[prefix] === afterDisplay[prefix]
+  ) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < beforeDisplay.length - prefix
+    && suffix < afterDisplay.length - prefix
+    && beforeDisplay[beforeDisplay.length - 1 - suffix]
+      === afterDisplay[afterDisplay.length - 1 - suffix]
+  ) suffix += 1;
+
+  const physicalFrom = sourceControlPhysicalOffset(physical, prefix);
+  const physicalTo = sourceControlPhysicalOffset(
+    physical,
+    beforeDisplay.length - suffix
+  );
+  const insertedDisplay = afterDisplay.slice(prefix, afterDisplay.length - suffix);
+  const lineEnding = sourceLineEndingAt(physical, physicalFrom);
+  const insertedPhysical = insertedDisplay.replace(/\n/g, lineEnding);
+  return `${physical.slice(0, physicalFrom)}${insertedPhysical}${physical.slice(physicalTo)}`;
+}
+
 export function sourceOffsetAfterCharacter(source, offset, direction) {
   const bounded = Math.max(0, Math.min(source.length, offset));
   const boundaries = sourceCaretBoundaries(source);
@@ -5438,50 +5518,53 @@ function continuousSourceEditor(
   const editor = document.createElement(isBlock ? "textarea" : "input");
   editor.className = `tether-continuous-source is-${kind} is-${name}`;
   if (!isBlock) editor.type = "text";
-  editor.value = source;
+  let physicalValue = source;
+  editor.value = sourceControlDisplayValue(physicalValue);
   editor.setAttribute("aria-label", label);
   editor.setAttribute("autocomplete", "off");
   editor.setAttribute("autocapitalize", "off");
   editor.setAttribute("spellcheck", "false");
-  let startingCaret = Math.max(0, Math.min(editor.value.length, initialCaret));
+  let startingCaret = Math.max(0, Math.min(physicalValue.length, initialCaret));
   let startingSelection = null;
   const initialDeletionHistory = sourceControlInitialDeletion(
-    editor.value,
+    physicalValue,
     startingCaret,
     initialDeleteDirection
   );
   if (initialDeletionHistory) {
-    editor.value = initialDeletionHistory.afterValue;
+    physicalValue = initialDeletionHistory.afterValue;
+    editor.value = sourceControlDisplayValue(physicalValue);
     startingCaret = initialDeletionHistory.afterCaret;
   } else if (initialSourceSelection) {
     startingSelection = {
-      start: Math.max(0, Math.min(editor.value.length, initialSourceSelection.start)),
-      end: Math.max(0, Math.min(editor.value.length, initialSourceSelection.end)),
+      start: Math.max(0, Math.min(physicalValue.length, initialSourceSelection.start)),
+      end: Math.max(0, Math.min(physicalValue.length, initialSourceSelection.end)),
       direction: initialSourceSelection.direction || "none"
     };
   } else if (initialPointerSelection >= 2) {
     startingSelection = sourcePointerSelectionRange(
-      editor.value,
+      physicalValue,
       startingCaret,
       initialPointerSelection
     );
   } else if (initialSelectionDirection) {
     startingSelection = sourceInitialSelectionRange(
-      editor.value,
+      physicalValue,
       startingCaret,
       initialSelectionDirection
     );
   }
   const applyStartingSelection = () => {
-    const caret = Math.max(0, Math.min(editor.value.length, startingCaret));
+    const caret = Math.max(0, Math.min(physicalValue.length, startingCaret));
     if (startingSelection) {
       editor.setSelectionRange(
-        startingSelection.start,
-        startingSelection.end,
+        sourceControlDisplayOffset(physicalValue, startingSelection.start),
+        sourceControlDisplayOffset(physicalValue, startingSelection.end),
         startingSelection.direction
       );
     } else {
-      editor.setSelectionRange(caret, caret);
+      const displayCaret = sourceControlDisplayOffset(physicalValue, caret);
+      editor.setSelectionRange(displayCaret, displayCaret);
     }
   };
   // A second key can arrive before the widget's first animation frame (for
@@ -5497,12 +5580,38 @@ function continuousSourceEditor(
       editor.style.width = `${Math.max(3, Math.min(72, editor.value.length + 1))}ch`;
     }
   };
-  const sourceInputSnapshot = () => ({
-    value: editor.value,
-    start: editor.selectionStart ?? 0,
-    end: editor.selectionEnd ?? editor.selectionStart ?? 0,
-    direction: editor.selectionDirection || "none"
-  });
+  const sourceInputSnapshot = () => {
+    const displayStart = editor.selectionStart ?? 0;
+    const displayEnd = editor.selectionEnd ?? displayStart;
+    return {
+      value: physicalValue,
+      start: sourceControlPhysicalOffset(physicalValue, displayStart),
+      end: sourceControlPhysicalOffset(physicalValue, displayEnd),
+      direction: editor.selectionDirection || "none"
+    };
+  };
+  const setPhysicalSourceState = (
+    value,
+    start,
+    end = start,
+    direction = "none"
+  ) => {
+    physicalValue = String(value ?? "");
+    editor.value = sourceControlDisplayValue(physicalValue);
+    editor.setSelectionRange(
+      sourceControlDisplayOffset(physicalValue, start),
+      sourceControlDisplayOffset(physicalValue, end),
+      direction || "none"
+    );
+  };
+  editor.tetherGetPhysicalSourceState = sourceInputSnapshot;
+  editor.tetherSetPhysicalSourceSelection = (start, end = start, direction = "none") => {
+    editor.setSelectionRange(
+      sourceControlDisplayOffset(physicalValue, start),
+      sourceControlDisplayOffset(physicalValue, end),
+      direction || "none"
+    );
+  };
   let sourceInputHistory = { undo: [], redo: [] };
   let pendingSourceInputSnapshot = null;
   let compositionSourceInputSnapshot = null;
@@ -5559,7 +5668,7 @@ function continuousSourceEditor(
       nearest = index;
       nearestDistance = distance;
     }
-    return nearest;
+    return sourceControlPhysicalOffset(physicalValue, nearest);
   };
   let finished = false;
   let blurTimer = 0;
@@ -5578,7 +5687,9 @@ function continuousSourceEditor(
     pointerDragWindow = null;
     delete editor.tetherHandleHistoryCommand;
     delete editor.tetherApplyPendingText;
-    const value = editor.value;
+    delete editor.tetherGetPhysicalSourceState;
+    delete editor.tetherSetPhysicalSourceSelection;
+    const value = physicalValue;
     const run = () => {
       // A boundary handoff can mount its destination control before a
       // deferred finish from the previous widget runs. Only clear the
@@ -5609,7 +5720,7 @@ function continuousSourceEditor(
     const change = sourceControlInitialHistoryChange(
       initialDeletionHistory,
       command,
-      editor.value
+      physicalValue
     );
     if (!change) {
       if (
@@ -5617,28 +5728,29 @@ function continuousSourceEditor(
         && command === "undo"
       ) {
         initialDeletionHistory.pendingNativeUndoSnapshot = {
-          value: editor.value,
-          start: editor.selectionStart ?? 0,
-          end: editor.selectionEnd ?? editor.selectionStart ?? 0,
-          direction: editor.selectionDirection || "none"
+          ...sourceInputSnapshot()
         };
       }
       return false;
     }
-    editor.value = change.value;
+    const start = change.start ?? change.caret;
+    const end = change.end ?? change.caret;
+    setPhysicalSourceState(
+      change.value,
+      start,
+      end,
+      change.direction || "none"
+    );
     initialDeletionHistory.state = change.state;
     initialDeletionHistory.nativeHistoryActive = false;
     if (Number.isInteger(change.nativeRedoIndex)) {
       initialDeletionHistory.nativeRedoIndex = change.nativeRedoIndex;
     }
-    const start = change.start ?? change.caret;
-    const end = change.end ?? change.caret;
-    editor.setSelectionRange(start, end, change.direction || "none");
     pendingSourceInputSnapshot = null;
     resetSourceInputGroup();
     lastSourceInputSnapshot = sourceInputSnapshot();
     resize();
-    onDraftChange?.(editor.value);
+    onDraftChange?.(physicalValue);
     return true;
   };
   const applySourceInputHistoryCommand = (command) => {
@@ -5651,8 +5763,8 @@ function continuousSourceEditor(
     sourceInputHistory = change.history;
     pendingSourceInputSnapshot = null;
     resetSourceInputGroup();
-    editor.value = change.snapshot.value;
-    editor.setSelectionRange(
+    setPhysicalSourceState(
+      change.snapshot.value,
       change.snapshot.start,
       change.snapshot.end,
       change.snapshot.direction || "none"
@@ -5660,12 +5772,12 @@ function continuousSourceEditor(
     if (initialDeletionHistory) {
       initialDeletionHistory.nativeHistoryActive = (
         initialDeletionHistory.state === "applied"
-        && editor.value !== initialDeletionHistory.afterValue
+        && physicalValue !== initialDeletionHistory.afterValue
       );
     }
     lastSourceInputSnapshot = sourceInputSnapshot();
     resize();
-    onDraftChange?.(editor.value);
+    onDraftChange?.(physicalValue);
     return true;
   };
   const applySourceHistoryCommand = (command) => command === "undo"
@@ -5719,6 +5831,7 @@ function continuousSourceEditor(
     pendingSourceInputSnapshot = null;
   });
   editor.addEventListener("input", (event) => {
+    physicalValue = reconcileSourceControlPhysicalValue(physicalValue, editor.value);
     const currentSnapshot = sourceInputSnapshot();
     if (event.isComposing) {
       compositionSourceInputSnapshot ||= pendingSourceInputSnapshot || lastSourceInputSnapshot;
@@ -5754,11 +5867,11 @@ function continuousSourceEditor(
       resetSourceInputGroup();
     }
     resize();
-    onDraftChange?.(editor.value);
+    onDraftChange?.(physicalValue);
     if (!initialDeletionHistory) return;
     if (event.inputType === "historyUndo") {
       const snapshot = initialDeletionHistory.pendingNativeUndoSnapshot;
-      if (snapshot && snapshot.value !== editor.value) {
+      if (snapshot && snapshot.value !== physicalValue) {
         initialDeletionHistory.nativeUndoSnapshots ||= [];
         initialDeletionHistory.nativeUndoSnapshots.push(snapshot);
       }
@@ -5771,7 +5884,7 @@ function continuousSourceEditor(
     const returnedToInitialDeletion = (
       event.inputType === "historyUndo"
       && initialDeletionHistory.state === "applied"
-      && editor.value === initialDeletionHistory.afterValue
+      && physicalValue === initialDeletionHistory.afterValue
     );
     initialDeletionHistory.nativeHistoryActive = !returnedToInitialDeletion;
     if (returnedToInitialDeletion) {
@@ -5785,15 +5898,14 @@ function continuousSourceEditor(
   const applyClipboardEdit = (replacement, inputType) => {
     const before = sourceInputSnapshot();
     const edit = sourceControlClipboardEdit(
-      editor.value,
+      physicalValue,
       before.start,
       before.end,
       replacement
     );
-    if (edit.value === editor.value) return edit;
+    if (edit.value === physicalValue) return edit;
     pendingSourceInputSnapshot = before;
-    editor.value = edit.value;
-    editor.setSelectionRange(edit.caret, edit.caret, "none");
+    setPhysicalSourceState(edit.value, edit.caret, edit.caret, "none");
     editor.dispatchEvent(new InputEvent("input", {
       bubbles: true,
       inputType,
@@ -5805,9 +5917,9 @@ function continuousSourceEditor(
   editor.addEventListener("copy", (event) => {
     if (!event.clipboardData) return;
     const { selectedText } = sourceControlClipboardEdit(
-      editor.value,
-      editor.selectionStart,
-      editor.selectionEnd
+      physicalValue,
+      sourceInputSnapshot().start,
+      sourceInputSnapshot().end
     );
     if (!selectedText) return;
     event.preventDefault();
@@ -5815,8 +5927,9 @@ function continuousSourceEditor(
     event.clipboardData.setData("text/plain", selectedText);
   });
   editor.addEventListener("cut", (event) => {
-    if (!event.clipboardData || editor.selectionStart === editor.selectionEnd) return;
-    const selectedText = editor.value.slice(editor.selectionStart, editor.selectionEnd);
+    const selection = sourceInputSnapshot();
+    if (!event.clipboardData || selection.start === selection.end) return;
+    const selectedText = physicalValue.slice(selection.start, selection.end);
     event.preventDefault();
     event.stopPropagation();
     event.clipboardData.setData("text/plain", selectedText);
@@ -5829,9 +5942,9 @@ function continuousSourceEditor(
     event.stopPropagation();
     if (!isBlock && /[\r\n]/.test(text)) {
       const edit = sourceControlClipboardEdit(
-        editor.value,
-        editor.selectionStart,
-        editor.selectionEnd,
+        physicalValue,
+        sourceInputSnapshot().start,
+        sourceInputSnapshot().end,
         text
       );
       finishKeyboardHandoff(
@@ -5857,29 +5970,31 @@ function continuousSourceEditor(
     lastPointerDownAt = now;
     const pointerSelection = caret == null
       ? null
-      : sourcePointerSelectionRange(editor.value, caret, pointerClickCount);
+      : sourcePointerSelectionRange(physicalValue, caret, pointerClickCount);
+    const initialPointerSnapshot = sourceInputSnapshot();
     pointerDragAnchor = caret ?? sourceInputSelection(
-      editor.selectionStart ?? 0,
-      editor.selectionEnd ?? editor.selectionStart ?? 0,
-      editor.selectionDirection
+      initialPointerSnapshot.start,
+      initialPointerSnapshot.end,
+      initialPointerSnapshot.direction
     ).anchor;
     pointerDragWindow = editor.ownerDocument.defaultView;
     pointerDragWindow?.addEventListener("mouseup", handlePointerDragEnd, true);
     requestAnimationFrame(() => {
       if (finished || !editor.isConnected) return;
       if (pointerSelection) {
-        editor.setSelectionRange(
+        editor.tetherSetPhysicalSourceSelection(
           pointerSelection.start,
           pointerSelection.end,
           pointerSelection.direction || "none"
         );
       } else {
-        if (caret != null) editor.setSelectionRange(caret, caret);
+        if (caret != null) editor.tetherSetPhysicalSourceSelection(caret, caret);
       }
+      const pointerSnapshot = sourceInputSnapshot();
       pointerDragAnchor = sourceInputSelection(
-        editor.selectionStart ?? 0,
-        editor.selectionEnd ?? editor.selectionStart ?? 0,
-        editor.selectionDirection
+        pointerSnapshot.start,
+        pointerSnapshot.end,
+        pointerSnapshot.direction
       ).anchor;
     });
   });
@@ -5920,18 +6035,18 @@ function continuousSourceEditor(
     const wordDeleteDirection = lineDeleteDirection ? null : sourceWordDeleteDirection(event);
     const modifierDeleteDirection = lineDeleteDirection || wordDeleteDirection;
     if (modifierDeleteDirection) {
+      const snapshot = sourceInputSnapshot();
       const localSelection = sourceInputSelection(
-        editor.selectionStart ?? 0,
-        editor.selectionEnd ?? editor.selectionStart ?? 0,
-        editor.selectionDirection
+        snapshot.start,
+        snapshot.end,
+        snapshot.direction
       );
-      const value = editor.value;
       event.preventDefault();
       event.stopPropagation();
       finishKeyboardHandoff(
         false,
         () => onSourceModifierDelete(
-          value,
+          physicalValue,
           localSelection,
           modifierDeleteDirection,
           lineDeleteDirection ? "line" : "word"
@@ -5941,9 +6056,10 @@ function continuousSourceEditor(
     }
     const documentJumpEdge = sourceDocumentJumpEdge(event);
     if (documentJumpEdge) {
-      const start = editor.selectionStart ?? 0;
-      const end = editor.selectionEnd ?? start;
-      const backward = editor.selectionDirection === "backward";
+      const snapshot = sourceInputSnapshot();
+      const start = snapshot.start;
+      const end = snapshot.end;
+      const backward = snapshot.direction === "backward";
       const sourceSelection = {
         anchor: backward ? end : start,
         head: backward ? start : end
@@ -5963,22 +6079,23 @@ function continuousSourceEditor(
       );
       return;
     }
+    const snapshot = sourceInputSnapshot();
     const lineJumpEdge = sourceLineJumpEdge(event);
     const wordJumpDirection = lineJumpEdge ? null : sourceInputWordJumpDirection(
       event.key,
-      editor.selectionStart,
-      editor.selectionEnd,
-      editor.value.length,
+      snapshot.start,
+      snapshot.end,
+      physicalValue.length,
       event.shiftKey,
       event.altKey,
       event.ctrlKey || event.metaKey,
-      editor.selectionDirection
+      snapshot.direction
     );
     const boundaryDirection = inlineSourceBoundaryDirection(
       event.key,
-      editor.selectionStart,
-      editor.selectionEnd,
-      editor.value.length,
+      snapshot.start,
+      snapshot.end,
+      physicalValue.length,
       event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
     );
     // The source-aware boundary transaction now represents the newline between
@@ -5986,52 +6103,52 @@ function continuousSourceEditor(
     // same Backspace/Delete handoff at their outer edges.
     const boundaryDeleteDirection = inlineSourceBoundaryDeleteDirection(
       event.key,
-      editor.selectionStart,
-      editor.selectionEnd,
-      editor.value.length,
+      snapshot.start,
+      snapshot.end,
+      physicalValue.length,
       event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
     );
     const verticalDirection = isBlock
       ? blockSourceVerticalDirection(
           event.key,
-          editor.selectionStart,
-          editor.selectionEnd,
-          editor.value,
+          snapshot.start,
+          snapshot.end,
+          physicalValue,
           event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
         )
       : inlineSourceVerticalDirection(
           event.key,
-          editor.selectionStart,
-          editor.selectionEnd,
+          snapshot.start,
+          snapshot.end,
           event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
         );
     const boundarySelectionDirection = isBlock
       ? blockSourceBoundarySelectionDirection(
           event.key,
-          editor.selectionStart,
-          editor.selectionEnd,
-          editor.value,
+          snapshot.start,
+          snapshot.end,
+          physicalValue,
           event.shiftKey,
           event.altKey || event.ctrlKey || event.metaKey,
-          editor.selectionDirection
+          snapshot.direction
         )
       : inlineSourceBoundarySelectionDirection(
           event.key,
-          editor.selectionStart,
-          editor.selectionEnd,
-          editor.value.length,
+          snapshot.start,
+          snapshot.end,
+          physicalValue.length,
           event.shiftKey,
           event.altKey || event.ctrlKey || event.metaKey,
-          editor.selectionDirection
+          snapshot.direction
         );
     const localSelection = lineJumpEdge
       || wordJumpDirection
       || verticalDirection
       || boundarySelectionDirection
       ? sourceInputSelection(
-          editor.selectionStart ?? 0,
-          editor.selectionEnd ?? editor.selectionStart ?? 0,
-          editor.selectionDirection
+          snapshot.start,
+          snapshot.end,
+          snapshot.direction
         )
       : null;
     if (
@@ -6081,43 +6198,47 @@ function continuousSourceEditor(
     ) {
       event.preventDefault();
       if (!isBlock) {
+        const snapshot = sourceInputSnapshot();
         const localSelection = sourceInputSelection(
-          editor.selectionStart ?? 0,
-          editor.selectionEnd ?? editor.selectionStart ?? 0,
-          editor.selectionDirection
+          snapshot.start,
+          snapshot.end,
+          snapshot.direction
         );
-        const value = editor.value;
         finishKeyboardHandoff(
           false,
-          () => onInlineTab(value, localSelection, event.shiftKey)
+          () => onInlineTab(physicalValue, localSelection, event.shiftKey)
         );
         return;
       }
+      const snapshot = sourceInputSnapshot();
       const edit = sourceTabEdit(
-        editor.value,
-        editor.selectionStart,
-        editor.selectionEnd,
+        physicalValue,
+        snapshot.start,
+        snapshot.end,
         event.shiftKey
       );
-      const direction = editor.selectionDirection || "none";
       const before = sourceInputSnapshot();
-      editor.value = edit.value;
-      editor.setSelectionRange(edit.selectionStart, edit.selectionEnd, direction);
+      setPhysicalSourceState(
+        edit.value,
+        edit.selectionStart,
+        edit.selectionEnd,
+        snapshot.direction
+      );
       rememberSourceInputChange(before);
       resetSourceInputGroup();
       resize();
-      onDraftChange?.(editor.value);
+      onDraftChange?.(physicalValue);
     } else if (!isBlock && event.key === "Enter") {
       event.preventDefault();
-      const sourceOffset = editor.selectionStart ?? 0;
-      if (editor.selectionEnd !== sourceOffset) {
-        editor.value = `${editor.value.slice(0, sourceOffset)}${editor.value.slice(editor.selectionEnd)}`;
+      const snapshot = sourceInputSnapshot();
+      const sourceOffset = snapshot.start;
+      if (snapshot.end !== sourceOffset) {
+        physicalValue = `${physicalValue.slice(0, sourceOffset)}${physicalValue.slice(snapshot.end)}`;
         resize();
       }
-      const value = editor.value;
       finishKeyboardHandoff(
         false,
-        () => onInlineEnter(value, sourceOffset)
+        () => onInlineEnter(physicalValue, sourceOffset)
       );
     } else if (isBlock && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -6154,7 +6275,7 @@ function continuousSourceEditor(
       const republishInitialDraft = () => {
         if (finished || !editor.isConnected || remainingDraftFrames <= 0) return;
         remainingDraftFrames -= 1;
-        onDraftChange?.(editor.value);
+        onDraftChange?.(physicalValue);
         if (remainingDraftFrames > 0) requestAnimationFrame(republishInitialDraft);
       };
       republishInitialDraft();
@@ -6981,6 +7102,7 @@ export function flushActiveMarkdownSource(viewDom) {
 
 export function sourceControlSaveFocus(control, position) {
   if (!control || !Number.isFinite(position)) return null;
+  const physicalSelection = control.tetherGetPhysicalSourceState?.();
   const name = Array.from(control.classList || [])
     .find((className) => className.startsWith("is-") && !["is-block", "is-inline"].includes(className))
     ?.slice(3) || null;
@@ -6988,9 +7110,9 @@ export function sourceControlSaveFocus(control, position) {
     position,
     name,
     selection: {
-      start: control.selectionStart ?? 0,
-      end: control.selectionEnd ?? control.selectionStart ?? 0,
-      direction: control.selectionDirection || "none"
+      start: physicalSelection?.start ?? control.selectionStart ?? 0,
+      end: physicalSelection?.end ?? control.selectionEnd ?? control.selectionStart ?? 0,
+      direction: physicalSelection?.direction || control.selectionDirection || "none"
     }
   };
 }
@@ -7926,18 +8048,24 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           && !event.metaKey
           && ["ArrowLeft", "ArrowRight"].includes(event.key)
         ) {
+          const physicalState = pendingControl.tetherGetPhysicalSourceState?.() || {
+            value: pendingControl.value,
+            start: pendingControl.selectionStart ?? 0,
+            end: pendingControl.selectionEnd ?? pendingControl.selectionStart ?? 0,
+            direction: pendingControl.selectionDirection || "none"
+          };
           const next = sourceInputHorizontalSelection(
-            pendingControl.value,
-            pendingControl.selectionStart ?? 0,
-            pendingControl.selectionEnd ?? pendingControl.selectionStart ?? 0,
-            pendingControl.selectionDirection || "none",
+            physicalState.value,
+            physicalState.start,
+            physicalState.end,
+            physicalState.direction,
             event.key,
             Boolean(event.shiftKey)
           );
           const selectionChanged = next && (
-            next.start !== pendingControl.selectionStart
-            || next.end !== pendingControl.selectionEnd
-            || next.direction !== (pendingControl.selectionDirection || "none")
+            next.start !== physicalState.start
+            || next.end !== physicalState.end
+            || next.direction !== physicalState.direction
           );
           if (selectionChanged) {
             event.preventDefault();
@@ -7945,7 +8073,15 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             if (target !== pendingControl) {
               pendingControl.focus({ preventScroll: true });
             }
-            pendingControl.setSelectionRange(next.start, next.end, next.direction);
+            if (pendingControl.tetherSetPhysicalSourceSelection) {
+              pendingControl.tetherSetPhysicalSourceSelection(
+                next.start,
+                next.end,
+                next.direction
+              );
+            } else {
+              pendingControl.setSelectionRange(next.start, next.end, next.direction);
+            }
             return;
           }
         }
@@ -8576,26 +8712,32 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
               });
               return true;
             }
-            const target = structuralBoundarySourceTarget(_view.state, event.key);
+            const target = structuralBoundarySourceTarget(
+              _view.state,
+              event.key,
+              ctx.get(parserCtx),
+              ctx.get(serializerCtx)
+            );
             if (target) {
               const serializer = ctx.get(serializerCtx);
-              const source = continuousMarkdownSource(_view.state, target.unit, serializer);
-              const caret = sourceCaretOffset(
-                _view.state,
-                target.unit,
-                source,
-                target.position,
-                null,
-                serializer
-              );
+              const source = target.source
+                ?? continuousMarkdownSource(_view.state, target.unit, serializer);
+              const caret = Number.isFinite(target.sourceOffset)
+                ? target.sourceOffset
+                : sourceCaretOffset(
+                    _view.state,
+                    target.unit,
+                    source,
+                    target.position,
+                    null,
+                    serializer
+                  );
               const sourceOffset = event.shiftKey
                 ? caret
-                : Math.max(
-                    0,
-                    Math.min(source.length, caret + (target.direction === "backward" ? -1 : 1))
-                  );
+                : sourceOffsetAfterCharacter(source, caret, target.direction);
               event.preventDefault();
               activateMarkdownSourceAt(_view, target.position, {
+                literalSourceUnit: target.unit.forceContinuousSource ? target.unit : null,
                 explicitUnitPosition: target.unit.kind === "block" ? target.unit.from : null,
                 sourceOffset,
                 initialSelectionDirection: event.shiftKey ? target.direction : null
