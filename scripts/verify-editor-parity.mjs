@@ -1852,6 +1852,7 @@ async function verifyPlatformNativeHeadingNavigation() {
       control.id = ${JSON.stringify(controlId)};
       control.style.position = "fixed";
       control.style.left = "-10000px";
+      control.wrap = "off";
       control.value = ${JSON.stringify(scenario.source)};
       document.body.append(control);
       control.focus();
@@ -2012,6 +2013,7 @@ async function verifyPlatformNativeHeadingEditing() {
       control.id = ${JSON.stringify(controlId)};
       control.style.position = "fixed";
       control.style.left = "-10000px";
+      control.wrap = "off";
       control.value = ${JSON.stringify(scenario.source)};
       document.body.append(control);
       control.focus();
@@ -2129,6 +2131,28 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       sourceHead: "## Alpha **Beta".length
     },
     {
+      name: "strong title word Backspace",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha ".length,
+      visibleHead: "Alpha Beta".length,
+      sourceAnchor: "## Alpha **".length,
+      sourceHead: "## Alpha **Beta".length,
+      keyCode: "Backspace",
+      nativeModifiers: []
+    },
+    {
+      name: "backward strong title word Delete",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha Beta".length,
+      visibleHead: "Alpha ".length,
+      sourceAnchor: "## Alpha **Beta".length,
+      sourceHead: "## Alpha **".length,
+      keyCode: "Delete",
+      nativeModifiers: []
+    },
+    {
       name: "backward strong title",
       source: "## Alpha **Beta** Gamma ##\nAfter.\n",
       visibleText: "Alpha Beta Gamma",
@@ -2174,6 +2198,34 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       sourceHead: "## Alpha [Beta](https://example.com) Gamma".length
     },
     {
+      name: "quoted strong title word",
+      source: "> ## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha ".length,
+      visibleHead: "Alpha Beta".length,
+      sourceAnchor: "> ## Alpha **".length,
+      sourceHead: "> ## Alpha **Beta".length
+    },
+    {
+      name: "backward ordered-list strong title",
+      source: "7) ## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha Beta Gamma".length,
+      visibleHead: 0,
+      sourceAnchor: "7) ## Alpha **Beta** Gamma".length,
+      sourceHead: "7) ## ".length
+    },
+    {
+      name: "quoted Setext strong title word",
+      source: "> Alpha **Beta** Gamma\n> ====================\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha ".length,
+      visibleHead: "Alpha Beta".length,
+      sourceAnchor: "> Alpha **".length,
+      sourceHead: "> Alpha **Beta".length,
+      selector: "h1"
+    },
+    {
       name: "entity Option-Backspace",
       source: "## Alpha &copy; Beta ##\nAfter.\n",
       visibleText: "Alpha © Beta",
@@ -2194,6 +2246,194 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       sourceHead: "## Alpha ".length,
       keyCode: "Delete",
       nativeModifiers: ["alt"]
+    },
+    {
+      name: "strong Option-Backspace after mark",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha Beta".length,
+      visibleHead: "Alpha Beta".length,
+      sourceAnchor: "## Alpha **Beta**".length,
+      sourceHead: "## Alpha **Beta**".length,
+      keyCode: "Backspace",
+      nativeModifiers: ["alt"]
+    },
+    {
+      name: "strong Option-Delete before mark",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha ".length,
+      visibleHead: "Alpha ".length,
+      sourceAnchor: "## Alpha ".length,
+      sourceHead: "## Alpha ".length,
+      keyCode: "Delete",
+      nativeModifiers: ["alt"]
+    },
+    {
+      name: "inline-code Option-Backspace after atom",
+      source: "## Alpha `Beta` Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha Beta".length,
+      visibleHead: "Alpha Beta".length,
+      sourceAnchor: "## Alpha `Beta`".length,
+      sourceHead: "## Alpha `Beta`".length,
+      keyCode: "Backspace",
+      nativeModifiers: ["alt"]
+    },
+    {
+      name: "link Option-Backspace after atom",
+      source: "## Alpha [Beta](https://example.com) Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha Beta".length,
+      visibleHead: "Alpha Beta".length,
+      sourceAnchor: "## Alpha [Beta](https://example.com)".length,
+      sourceHead: "## Alpha [Beta](https://example.com)".length,
+      keyCode: "Backspace",
+      nativeModifiers: ["alt"]
+    },
+    {
+      name: "strong ArrowRight into opening marker",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha ".length,
+      visibleHead: "Alpha ".length,
+      sourceAnchor: "## Alpha ".length,
+      sourceHead: "## Alpha ".length,
+      keyCode: "Right",
+      nativeModifiers: [],
+      renderedKey: "ArrowRight",
+      renderedCode: "ArrowRight",
+      virtualKeyCode: 39,
+      modifiers: 0,
+      insertAfterKey: true
+    },
+    {
+      name: "strong Shift-ArrowRight selects opening marker",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha ".length,
+      visibleHead: "Alpha ".length,
+      sourceAnchor: "## Alpha ".length,
+      sourceHead: "## Alpha ".length,
+      keyCode: "Right",
+      nativeModifiers: ["shift"],
+      renderedKey: "ArrowRight",
+      renderedCode: "ArrowRight",
+      virtualKeyCode: 39,
+      modifiers: 8,
+      insertAfterKey: true
+    },
+    {
+      name: "strong Option-ArrowRight from opening marker",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha ".length,
+      visibleHead: "Alpha ".length,
+      sourceAnchor: "## Alpha ".length,
+      sourceHead: "## Alpha ".length,
+      keyCode: "Right",
+      nativeModifiers: ["alt"],
+      renderedKey: "ArrowRight",
+      renderedCode: "ArrowRight",
+      virtualKeyCode: 39,
+      modifiers: 1,
+      insertAfterKey: true
+    },
+    {
+      name: "strong ArrowLeft into closing marker",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha Beta".length,
+      visibleHead: "Alpha Beta".length,
+      sourceAnchor: "## Alpha **Beta**".length,
+      sourceHead: "## Alpha **Beta**".length,
+      keyCode: "Left",
+      nativeModifiers: [],
+      renderedKey: "ArrowLeft",
+      renderedCode: "ArrowLeft",
+      virtualKeyCode: 37,
+      modifiers: 0,
+      insertAfterKey: true
+    },
+    {
+      name: "strong Shift-ArrowLeft selects closing marker",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha Beta".length,
+      visibleHead: "Alpha Beta".length,
+      sourceAnchor: "## Alpha **Beta**".length,
+      sourceHead: "## Alpha **Beta**".length,
+      keyCode: "Left",
+      nativeModifiers: ["shift"],
+      renderedKey: "ArrowLeft",
+      renderedCode: "ArrowLeft",
+      virtualKeyCode: 37,
+      modifiers: 8,
+      insertAfterKey: true
+    },
+    {
+      name: "inline-code ArrowRight into opening marker",
+      source: "## Alpha `Beta` Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha ".length,
+      visibleHead: "Alpha ".length,
+      sourceAnchor: "## Alpha ".length,
+      sourceHead: "## Alpha ".length,
+      keyCode: "Right",
+      nativeModifiers: [],
+      renderedKey: "ArrowRight",
+      renderedCode: "ArrowRight",
+      virtualKeyCode: 39,
+      modifiers: 0,
+      insertAfterKey: true
+    },
+    {
+      name: "link ArrowLeft into hidden destination",
+      source: "## Alpha [Beta](https://example.com) Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha Beta".length,
+      visibleHead: "Alpha Beta".length,
+      sourceAnchor: "## Alpha [Beta](https://example.com)".length,
+      sourceHead: "## Alpha [Beta](https://example.com)".length,
+      keyCode: "Left",
+      nativeModifiers: [],
+      renderedKey: "ArrowLeft",
+      renderedCode: "ArrowLeft",
+      virtualKeyCode: 37,
+      modifiers: 0,
+      insertAfterKey: true
+    },
+    {
+      name: "strong ArrowDown preserves physical source column",
+      source: "## Alpha **Beta** Gamma ##\nAfter line.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha Be".length,
+      visibleHead: "Alpha Be".length,
+      sourceAnchor: "## Alpha **Be".length,
+      sourceHead: "## Alpha **Be".length,
+      keyCode: "Down",
+      nativeModifiers: [],
+      renderedKey: "ArrowDown",
+      renderedCode: "ArrowDown",
+      virtualKeyCode: 40,
+      modifiers: 0,
+      insertAfterKey: true
+    },
+    {
+      name: "strong ArrowUp preserves physical source column",
+      source: "Before line.\n## Alpha **Beta** Gamma ##\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha Be".length,
+      visibleHead: "Alpha Be".length,
+      sourceAnchor: "Before line.\n## Alpha **Be".length,
+      sourceHead: "Before line.\n## Alpha **Be".length,
+      keyCode: "Up",
+      nativeModifiers: [],
+      renderedKey: "ArrowUp",
+      renderedCode: "ArrowUp",
+      virtualKeyCode: 38,
+      modifiers: 0,
+      insertAfterKey: true
     }
   ];
   const scenarios = process.env.TETHER_PARITY_SCENARIO
@@ -2220,6 +2460,7 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       control.id = ${JSON.stringify(controlId)};
       control.style.position = "fixed";
       control.style.left = "-10000px";
+      control.wrap = "off";
       control.value = ${JSON.stringify(scenario.source)};
       document.body.append(control);
       control.focus();
@@ -2228,6 +2469,9 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
     })()`);
     if (scenario.keyCode) {
       await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
+      if (scenario.insertAfterKey) {
+        await cdp.send("Input.insertText", { text: "x" });
+      }
     } else {
       await cdp.send("Input.insertText", { text: "x" });
     }
@@ -2241,10 +2485,22 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       scenario.visibleAnchor,
       scenario.visibleHead,
       ".ProseMirror",
-      "h2"
+      scenario.selector || "h2"
     );
     if (scenario.keyCode) {
-      await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
+      if (scenario.renderedKey) {
+        await dispatchKey({
+          key: scenario.renderedKey,
+          code: scenario.renderedCode,
+          virtualKeyCode: scenario.virtualKeyCode,
+          modifiers: scenario.modifiers
+        });
+      } else {
+        await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
+      }
+      if (scenario.insertAfterKey) {
+        await dispatchTextKey("x", "KeyX", 88);
+      }
     } else {
       await dispatchTextKey("x", "KeyX", 88);
     }
