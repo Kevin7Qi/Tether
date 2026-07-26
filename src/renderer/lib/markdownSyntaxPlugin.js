@@ -1128,7 +1128,24 @@ export function activeMarkdownAtomSyntax(state) {
 }
 
 function serializeInlineRange(state, from, to, serializer) {
-  const paragraph = state.schema.nodes.paragraph.create(null, state.doc.slice(from, to).content);
+  const children = [];
+  state.doc.slice(from, to).content.forEach((node) => {
+    const marks = node.marks.map((mark) => (
+      ["strong", "emphasis"].includes(mark.type.name)
+      && mark.attrs.attentionGroupSource != null
+      ? mark.type.create({
+          ...mark.attrs,
+          attentionGroupSource: null,
+          attentionGroupSignature: null
+        })
+      : mark
+    ));
+    children.push(node.mark(marks));
+  });
+  const paragraph = state.schema.nodes.paragraph.create(
+    null,
+    Fragment.fromArray(children)
+  );
   const doc = state.schema.nodes.doc.create(null, [paragraph]);
   return serializer(doc).trimEnd();
 }
@@ -1137,6 +1154,108 @@ function serializeBlockNode(schema, node, serializer) {
   if (!node) return "";
   const doc = schema.nodes.doc.create(null, [node]);
   return serializer(doc).trimEnd();
+}
+
+function appendAttentionRun(runs, text, marks) {
+  if (!text) return;
+  const normalizedMarks = [...marks].sort();
+  const previous = runs.at(-1);
+  if (
+    previous
+    && previous.marks.length === normalizedMarks.length
+    && previous.marks.every((mark, index) => mark === normalizedMarks[index])
+  ) {
+    previous.text += text;
+    return;
+  }
+  runs.push({ text, marks: normalizedMarks });
+}
+
+function semanticAttentionRuns(signature) {
+  let value;
+  try {
+    value = JSON.parse(signature);
+  } catch {
+    return null;
+  }
+  const runs = [];
+  let valid = true;
+  const visit = (node, marks = []) => {
+    if (!valid || !node || typeof node !== "object") {
+      valid = false;
+      return;
+    }
+    if (node.type === "text" && typeof node.value === "string") {
+      appendAttentionRun(runs, node.value, marks);
+      return;
+    }
+    if (node.type !== "attention" || !Array.isArray(node.children)) {
+      valid = false;
+      return;
+    }
+    const nextMarks = [
+      ...marks,
+      ...(Array.isArray(node.marks) ? node.marks : [])
+        .filter((mark) => ["strong", "emphasis"].includes(mark))
+    ];
+    node.children.forEach((child) => visit(child, nextMarks));
+  };
+  visit(value);
+  return valid ? runs : null;
+}
+
+function currentAttentionRuns(state, unit) {
+  const runs = [];
+  let valid = true;
+  state.doc.nodesBetween(unit.from, unit.to, (node) => {
+    if (!node.isText) {
+      if (node.isInline && node.isLeaf) valid = false;
+      return valid;
+    }
+    appendAttentionRun(
+      runs,
+      node.text,
+      node.marks
+        .map((mark) => mark.type.name)
+        .filter((name) => ["strong", "emphasis"].includes(name))
+    );
+    return valid;
+  });
+  return valid ? runs : null;
+}
+
+function exactAttentionSourceForInlineUnit(state, unit) {
+  if (
+    unit?.kind !== "inline"
+    || !unit.names?.length
+    || unit.names.some((name) => !["strong", "emphasis"].includes(name))
+  ) return null;
+  const $from = state.doc.resolve(unit.from);
+  if (!$from.parent.isTextblock || unit.to > $from.end()) return null;
+
+  const sources = new Set();
+  const signatures = new Set();
+  state.doc.nodesBetween(unit.from, unit.to, (node) => {
+    if (!node.isText) return;
+    node.marks.forEach((mark) => {
+      if (
+        ["strong", "emphasis"].includes(mark.type.name)
+        && typeof mark.attrs.attentionGroupSource === "string"
+        && typeof mark.attrs.attentionGroupSignature === "string"
+      ) {
+        sources.add(mark.attrs.attentionGroupSource);
+        signatures.add(mark.attrs.attentionGroupSignature);
+      }
+    });
+  });
+  if (sources.size !== 1 || signatures.size !== 1) return null;
+  const expectedRuns = semanticAttentionRuns([...signatures][0]);
+  const actualRuns = currentAttentionRuns(state, unit);
+  return expectedRuns
+    && actualRuns
+    && JSON.stringify(expectedRuns) === JSON.stringify(actualRuns)
+    ? [...sources][0]
+    : null;
 }
 
 export function inlineSourceWithReferenceDefinitions(state, source) {
@@ -1159,7 +1278,8 @@ export function continuousMarkdownSource(state, unit, serializer) {
     return marker === "\\" || /^ {2,}$/.test(marker || "") ? marker : "\\";
   }
   return unit.kind === "inline"
-    ? serializeInlineRange(state, unit.from, unit.to, serializer)
+    ? exactAttentionSourceForInlineUnit(state, unit)
+      ?? serializeInlineRange(state, unit.from, unit.to, serializer)
     : serializeBlockNode(state.schema, state.doc.nodeAt(unit.from), serializer);
 }
 
@@ -9036,6 +9156,12 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
                 : ""
             ].filter(Boolean).join(" ")
           : "";
+        const inlinePresentationClass = unit.kind === "inline"
+          ? (unit.names || [sourceName]).map((name) => `has-mark-${name}`).join(" ")
+          : "";
+        const sourcePresentationClass = [headingPresentationClass, inlinePresentationClass]
+          .filter(Boolean)
+          .join(" ");
         const initialCaret = sourceCaretOffset(
           state,
           unit,
@@ -9759,7 +9885,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           unit.kind,
           sourceName,
           `${unit.name || unit.names?.join(" ") || "Markdown"} source`,
-          headingPresentationClass,
+          sourcePresentationClass,
           initialCaret,
           pluginState.initialDeleteDirection,
           pluginState.initialSelectionDirection,

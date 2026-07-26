@@ -228,6 +228,40 @@ test("underscore strong source opens at the matching source caret", async () => 
   assert.equal(sourceCaretOffset(state, unit, source, position + 2, null, serialize), 4);
 });
 
+test("partial nested attention opens its exact group source without resurrecting removed marks", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const doc = parse("Before **Bold *Both*** after.\n");
+  const position = textPosition(doc, "Both");
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, position + 2)
+  });
+  const unit = activeMarkdownSyntax(state);
+  assert.deepEqual(unit.names.sort(), ["emphasis", "strong"]);
+  assert.equal(
+    continuousMarkdownSource(state, unit, serialize),
+    "**Bold *Both***"
+  );
+
+  const emphasis = doc.type.schema.marks.emphasis;
+  const editedDoc = state.tr
+    .removeMark(position, position + "Both".length, emphasis)
+    .doc;
+  const editedState = EditorState.create({
+    doc: editedDoc,
+    selection: TextSelection.create(editedDoc, position + 2)
+  });
+  assert.equal(serialize(editedDoc), "Before **Bold Both** after.\n");
+  assert.equal(
+    continuousMarkdownSource(
+      editedState,
+      activeMarkdownSyntax(editedState),
+      serialize
+    ),
+    "**Bold Both**"
+  );
+});
+
 test("rendered attention selections use exact physical source intervals", async () => {
   const { parse, serialize } = await milkdownTransformer();
   const doc = parse("A **bold word** tail\n");

@@ -2453,6 +2453,35 @@ textarea:focus-visible,
   white-space: pre;
 }
 
+.tether-wysiwyg .ProseMirror input.tether-continuous-source:is(
+  .has-mark-strong,
+  .has-mark-emphasis,
+  .has-mark-strike_through,
+  .has-mark-link
+) {
+  font-family: var(--ui);
+  font-size: 1em;
+}
+
+.tether-wysiwyg .ProseMirror input.tether-continuous-source.has-mark-strong {
+  font-weight: 700;
+}
+
+.tether-wysiwyg .ProseMirror input.tether-continuous-source.has-mark-emphasis {
+  font-style: italic;
+}
+
+.tether-wysiwyg .ProseMirror input.tether-continuous-source.has-mark-strike_through {
+  text-decoration-line: line-through;
+}
+
+.tether-wysiwyg .ProseMirror input.tether-continuous-source.has-mark-link {
+  color: var(--accent);
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
 .tether-wysiwyg .ProseMirror input.tether-continuous-source.is-inlineCode {
   height: 1.65em;
   border: 1px solid var(--line-strong);
@@ -2461,7 +2490,7 @@ textarea:focus-visible,
   color: var(--accent);
   padding: 0.1em 0.34em;
   font-size: 0.84em;
-  line-height: 1.4;
+  line-height: 1.4286;
 }
 
 .tether-wysiwyg .ProseMirror input.tether-continuous-source.is-inlineCode:focus {

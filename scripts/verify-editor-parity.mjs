@@ -4130,7 +4130,7 @@ async function verifyHeadingSourcePresentation() {
 
   for (const fixture of fixtures) {
     await startSession(`${fixture.source}\n`, fixture.visible);
-    const rendered = await styleSnapshot(fixture.selector);
+    const rendered = await styleSnapshot(`.tether-wysiwyg .ProseMirror ${fixture.selector}`);
     await placeCaretInText(
       fixture.visible,
       0,
@@ -4196,6 +4196,146 @@ async function verifyHeadingSourcePresentation() {
     if (process.env.TETHER_PARITY_SCREENSHOT && fixture.depth === 2) {
       await captureElementsScreenshot(
         [`.tether-continuous-source.is-heading-depth-${fixture.depth}`],
+        process.env.TETHER_PARITY_SCREENSHOT
+      );
+    }
+    await stopSession();
+  }
+}
+
+async function verifyInlineSourcePresentation() {
+  const fixtures = [
+    {
+      name: "strong",
+      source: "Before **Bold** after.\n",
+      visible: "Bold",
+      token: "**Bold**",
+      selector: "strong",
+      properties: ["fontFamily", "fontSize", "fontStyle", "fontWeight", "lineHeight", "color"]
+    },
+    {
+      name: "emphasis",
+      source: "Before *Slanted* after.\n",
+      visible: "Slanted",
+      token: "*Slanted*",
+      selector: "em",
+      properties: ["fontFamily", "fontSize", "fontStyle", "fontWeight", "lineHeight", "color"]
+    },
+    {
+      name: "nested strong emphasis",
+      source: "Before **Bold *Both*** after.\n",
+      visible: "Bold Both",
+      token: "**Bold *Both***",
+      selector: "em strong",
+      properties: ["fontFamily", "fontSize", "fontStyle", "fontWeight", "lineHeight", "color"]
+    },
+    {
+      name: "strikethrough",
+      source: "Before ~~Removed~~ after.\n",
+      visible: "Removed",
+      token: "~~Removed~~",
+      selector: "del",
+      properties: [
+        "fontFamily",
+        "fontSize",
+        "fontStyle",
+        "fontWeight",
+        "lineHeight",
+        "color",
+        "textDecorationLine"
+      ]
+    },
+    {
+      name: "link",
+      source: "Before [Guide](https://example.test) after.\n",
+      visible: "Guide",
+      token: "[Guide](https://example.test)",
+      selector: "a",
+      properties: [
+        "fontFamily",
+        "fontSize",
+        "fontStyle",
+        "fontWeight",
+        "lineHeight",
+        "color",
+        "textDecorationLine"
+      ]
+    },
+    {
+      name: "inline code",
+      source: "Before `value` after.\n",
+      visible: "value",
+      token: "`value`",
+      selector: "code",
+      properties: [
+        "fontFamily",
+        "fontSize",
+        "fontStyle",
+        "fontWeight",
+        "lineHeight",
+        "color",
+        "backgroundColor",
+        "borderTopWidth",
+        "borderRadius"
+      ]
+    }
+  ];
+  const styleSnapshot = (selector) => evaluate(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) return null;
+    const style = getComputedStyle(element);
+    const parentStyle = element.parentElement ? getComputedStyle(element.parentElement) : null;
+    const rect = element.getBoundingClientRect();
+    return {
+      fontFamily: style.fontFamily,
+      fontSize: style.fontSize,
+      fontStyle: style.fontStyle,
+      fontWeight: style.fontWeight,
+      lineHeight: style.lineHeight,
+      color: style.color,
+      textDecorationLine: style.textDecorationLine,
+      backgroundColor: style.backgroundColor,
+      borderTopWidth: style.borderTopWidth,
+      borderRadius: style.borderRadius,
+      height: rect.height,
+      className: element.className || null,
+      parent: element.parentElement ? {
+        tagName: element.parentElement.tagName,
+        className: element.parentElement.className || null,
+        fontFamily: parentStyle.fontFamily,
+        fontSize: parentStyle.fontSize,
+        fontStyle: parentStyle.fontStyle,
+        fontWeight: parentStyle.fontWeight,
+        lineHeight: parentStyle.lineHeight,
+        color: parentStyle.color,
+        textDecorationLine: parentStyle.textDecorationLine
+      } : null
+    };
+  })()`);
+
+  for (const fixture of fixtures) {
+    await startSession(fixture.source, `Before ${fixture.visible} after.`);
+    const rendered = await styleSnapshot(`.ProseMirror ${fixture.selector}`);
+    await placeCaretInText(" after.", 0);
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === fixture.token,
+      `${fixture.name} did not expose its physical inline source for presentation QA`
+    );
+    const sourceControl = await styleSnapshot("input.tether-continuous-source");
+    const mismatches = fixture.properties.filter((property) =>
+      rendered?.[property] !== sourceControl?.[property]
+    );
+    if (!rendered || !sourceControl || mismatches.length) {
+      throw new Error(
+        `${fixture.name} source presentation diverged from rendered inline text: ${
+          JSON.stringify({ mismatches, rendered, sourceControl })
+        }`
+      );
+    }
+    if (process.env.TETHER_PARITY_SCREENSHOT && fixture.name === "strong") {
+      await captureElementsScreenshot(
+        ["input.tether-continuous-source"],
         process.env.TETHER_PARITY_SCREENSHOT
       );
     }
@@ -7679,6 +7819,11 @@ async function run() {
     console.log("Verified active heading source retains its rendered visual hierarchy.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "inline-source-presentation") {
+    await verifyInlineSourcePresentation();
+    console.log("Verified active inline source retains its rendered typography.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "inline-cross-boundary-selection") {
     await verifyInlineCrossBoundarySelection();
     console.log("Verified inline source selections cross rendered boundaries exactly.");
@@ -7777,6 +7922,7 @@ async function run() {
   await verifyHeadingSourceEditing();
   await verifySourceControlImeEditing();
   await verifyHeadingSourcePresentation();
+  await verifyInlineSourcePresentation();
   await verifyRenderedPointerSelection();
   await stopSession();
   await verifyInlineBoundaryNavigation();
