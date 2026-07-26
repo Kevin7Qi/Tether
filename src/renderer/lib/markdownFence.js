@@ -7,6 +7,14 @@ function sourceText(file) {
   return typeof file?.value === "string" ? file.value : String(file?.value || "");
 }
 
+function sourceLineStarts(source) {
+  const starts = [0];
+  for (let index = source.indexOf("\n"); index >= 0; index = source.indexOf("\n", index + 1)) {
+    starts.push(index + 1);
+  }
+  return starts;
+}
+
 function fenceRun(line) {
   return line.match(/^[\t ]{0,3}(`{3,}|~{3,})/)?.[1] || null;
 }
@@ -178,6 +186,7 @@ export function annotateFencedCodeMarkers(tree, file) {
   const source = sourceText(file);
   annotateFrontmatterBlock(tree, file);
   const sourceLines = source.split(/\r?\n/);
+  const lineStarts = sourceLineStarts(source);
   const visit = (node, parent = null) => {
     if (node?.type === "code") {
       const startLine = node.position?.start?.line;
@@ -209,6 +218,33 @@ export function annotateFencedCodeMarkers(tree, file) {
           node.fenceLanguagePrefix = layout.fenceLanguagePrefix;
           node.fenceMetaPrefix = layout.fenceMetaPrefix;
           node.fenceOpeningTrailing = layout.fenceOpeningTrailing;
+          if (Number.isFinite(start) && Number.isFinite(end)) {
+            const valueLines = String(node.value || "").split("\n");
+            const defaultContentStart = openingLineEnd < 0
+              ? end
+              : openingLineEnd + 1;
+            const contentOffsets = valueLines.map((valueLine, index) => {
+              if (!node.value) return defaultContentStart;
+              const physicalLineIndex = startLine + index;
+              const physicalLine = sourceLines[physicalLineIndex];
+              const physicalLineStart = lineStarts[physicalLineIndex];
+              if (typeof physicalLine !== "string" || !Number.isFinite(physicalLineStart)) {
+                return defaultContentStart;
+              }
+              if (!valueLine) return physicalLineStart + physicalLine.length;
+              if (physicalLine.endsWith(valueLine)) {
+                return physicalLineStart + physicalLine.length - valueLine.length;
+              }
+              const valueIndex = physicalLine.lastIndexOf(valueLine);
+              return valueIndex >= 0
+                ? physicalLineStart + valueIndex
+                : defaultContentStart;
+            });
+            node.fencePhysicalSource = source.slice(start, end);
+            node.fencePhysicalSourceStart = start;
+            node.fencePhysicalSourceEnd = end;
+            node.fencePhysicalContentOffsets = JSON.stringify(contentOffsets);
+          }
           if (parent?.type === "root" && closing) {
             const closingPrefix = closingLine.slice(0, closingLine.lastIndexOf(closing));
             if (/^[\t ]{0,3}$/.test(closingPrefix)) node.fenceClosingIndent = closingPrefix;
@@ -252,6 +288,10 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
       fenceTrailingLineEnding: { default: "", validate: "string" },
       fenceSource: { default: null, validate: "string|null" },
       fenceSourceSignature: { default: null, validate: "string|null" },
+      fencePhysicalSource: { default: null, validate: "string|null" },
+      fencePhysicalSourceStart: { default: null, validate: "number|null" },
+      fencePhysicalSourceEnd: { default: null, validate: "number|null" },
+      fencePhysicalContentOffsets: { default: null, validate: "string|null" },
       fenceOpeningIndent: { default: "", validate: "string" },
       fenceClosingIndent: { default: "", validate: "string" },
       fenceLanguagePrefix: { default: "", validate: "string" },
@@ -285,6 +325,14 @@ export const sourceFaithfulCodeBlockSchema = codeBlockSchema.extendSchema((previ
             : node.fenceTrailingLineEnding === "\n" ? "\n" : "",
           fenceSource: node.fenceSource ?? null,
           fenceSourceSignature: node.fenceSourceSignature ?? null,
+          fencePhysicalSource: node.fencePhysicalSource ?? null,
+          fencePhysicalSourceStart: Number.isFinite(node.fencePhysicalSourceStart)
+            ? node.fencePhysicalSourceStart
+            : null,
+          fencePhysicalSourceEnd: Number.isFinite(node.fencePhysicalSourceEnd)
+            ? node.fencePhysicalSourceEnd
+            : null,
+          fencePhysicalContentOffsets: node.fencePhysicalContentOffsets ?? null,
           fenceOpeningIndent: node.fenceOpeningIndent || "",
           fenceClosingIndent: node.fenceClosingIndent || "",
           fenceLanguagePrefix: node.fenceLanguagePrefix || "",

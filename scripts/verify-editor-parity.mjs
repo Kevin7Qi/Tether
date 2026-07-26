@@ -462,6 +462,7 @@ async function sourceControlState() {
       displayValue: control.value,
       displaySelectionStart: control.selectionStart,
       displaySelectionEnd: control.selectionEnd,
+      className: control.className,
       active: document.activeElement === control
     };
   })()`);
@@ -6852,9 +6853,54 @@ async function verifyCodeSourcePresentation() {
 }
 
 async function verifyNestedCodePhysicalSourceEditing() {
-  const source = "> ~~~~js\n> const quoted = true;\n> ~~~~~";
-  const fixture = `${source}\n`;
-  const contentStart = source.indexOf("const quoted");
+  const scenarios = [
+    {
+      name: "blockquote",
+      source: "> ~~~~js\n> const quoted = true;\n> ~~~~~",
+      visibleText: "const quoted = true;",
+      linePrefix: "> ",
+      sourceClass: "is-code_block"
+    },
+    {
+      name: "multi-item list",
+      source: [
+        "- before",
+        "- ~~~~js",
+        "  const listed = true;",
+        "  ~~~~~",
+        "- after"
+      ].join("\n"),
+      visibleText: "const listed = true;",
+      linePrefix: "  ",
+      sourceClass: "is-bullet_list"
+    },
+    {
+      name: "list and blockquote",
+      source: [
+        "- > ~~~~js",
+        "  > const mixed = true;",
+        "  > ~~~~~"
+      ].join("\n"),
+      visibleText: "const mixed = true;",
+      linePrefix: "  > ",
+      sourceClass: "is-code_block"
+    },
+    {
+      name: "blockquote with prose",
+      source: [
+        "> Intro",
+        ">",
+        "> ~~~~js",
+        "> const mixedProse = true;",
+        "> ~~~~~",
+        ">",
+        "> Outro"
+      ].join("\n"),
+      visibleText: "const mixedProse = true;",
+      linePrefix: "> ",
+      sourceClass: "is-blockquote"
+    }
+  ];
   const activateCodeStart = async (key, modifiers = 0) => {
     await clickElement(".milkdown-code-block .cm-line:first-child");
     await waitFor(
@@ -6870,92 +6916,106 @@ async function verifyNestedCodePhysicalSourceEditing() {
     });
   };
 
-  await startSession(fixture, "const quoted = true;");
-  await activateCodeStart("ArrowLeft");
-  await waitForSourceControl(
-    (state) => state?.active
-      && state.value === source
-      && state.selectionStart === contentStart - 1
-      && state.selectionEnd === contentStart - 1,
-    "nested code navigation skipped its physical quote-line space"
-  );
-  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
-  await dispatchKey({
-    key: "ArrowRight",
-    code: "ArrowRight",
-    virtualKeyCode: 39,
-    modifiers: 8
-  });
-  const copiedMarker = await dispatchSyntheticClipboardAndCaptureText("copy");
-  if (copiedMarker !== ">") {
-    throw new Error(
-      `nested code source selected ${JSON.stringify(copiedMarker)} instead of its physical quote marker`
-    );
-  }
-  await stopSession();
+  for (const scenario of scenarios) {
+    const fixture = `${scenario.source}\n`;
+    const contentStart = scenario.source.indexOf(scenario.visibleText);
+    const lineStart = contentStart - scenario.linePrefix.length;
 
-  await startSession(fixture, "const quoted = true;");
-  await activateCodeStart("ArrowLeft", 8);
-  await waitForSourceControl(
-    (state) => state?.active
-      && state.value === source
-      && state.selectionStart === contentStart - 1
-      && state.selectionEnd === contentStart
-      && state.selectionDirection === "backward",
-    "Shift-Left from nested code did not select its adjacent physical prefix byte"
-  );
-  const copiedSpace = await dispatchSyntheticClipboardAndCaptureText("copy");
-  if (copiedSpace !== " ") {
-    throw new Error(
-      `nested code Shift-Left copied ${JSON.stringify(copiedSpace)} instead of one physical space`
+    await startSession(fixture, scenario.visibleText);
+    await activateCodeStart("ArrowLeft");
+    await waitForSourceControl(
+      (state) => state?.active
+        && state.value === scenario.source
+        && state.selectionStart === contentStart - 1
+        && state.selectionEnd === contentStart - 1
+        && state.className.includes(scenario.sourceClass),
+      `${scenario.name} code navigation skipped its adjacent physical prefix byte`
     );
-  }
-  await dispatchKey({
-    key: "ArrowLeft",
-    code: "ArrowLeft",
-    virtualKeyCode: 37,
-    modifiers: 8
-  });
-  const copiedPrefix = await dispatchSyntheticClipboardAndCaptureText("copy");
-  if (copiedPrefix !== "> ") {
-    throw new Error(
-      `nested code extended selection copied ${JSON.stringify(copiedPrefix)} instead of "> "`
+    for (let index = 1; index < scenario.linePrefix.length; index += 1) {
+      await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    }
+    for (let index = 0; index < scenario.linePrefix.length; index += 1) {
+      await dispatchKey({
+        key: "ArrowRight",
+        code: "ArrowRight",
+        virtualKeyCode: 39,
+        modifiers: 8
+      });
+    }
+    const copiedPrefix = await dispatchSyntheticClipboardAndCaptureText("copy");
+    if (copiedPrefix !== scenario.linePrefix) {
+      throw new Error(
+        `${scenario.name} code selected ${JSON.stringify(copiedPrefix)} instead of physical prefix ${
+          JSON.stringify(scenario.linePrefix)
+        }`
+      );
+    }
+    await stopSession();
+
+    await startSession(fixture, scenario.visibleText);
+    await activateCodeStart("ArrowLeft", 8);
+    await waitForSourceControl(
+      (state) => state?.active
+        && state.value === scenario.source
+        && state.selectionStart === contentStart - 1
+        && state.selectionEnd === contentStart
+        && state.selectionDirection === "backward",
+      `Shift-Left from ${scenario.name} code did not select one adjacent prefix byte`
     );
+    for (let index = 1; index < scenario.linePrefix.length; index += 1) {
+      await dispatchKey({
+        key: "ArrowLeft",
+        code: "ArrowLeft",
+        virtualKeyCode: 37,
+        modifiers: 8
+      });
+    }
+    const copiedExtendedPrefix = await dispatchSyntheticClipboardAndCaptureText("copy");
+    if (copiedExtendedPrefix !== scenario.linePrefix) {
+      throw new Error(
+        `${scenario.name} extended selection copied ${
+          JSON.stringify(copiedExtendedPrefix)
+        } instead of ${JSON.stringify(scenario.linePrefix)}`
+      );
+    }
+    await stopSession();
+
+    if (scenario.name === "blockquote") {
+      await startSession(fixture, scenario.visibleText);
+      await activateCodeStart("ArrowLeft", 1);
+      await waitForSourceControl(
+        (state) => state?.active
+          && state.value === scenario.source
+          && state.selectionStart === lineStart
+          && state.selectionEnd === lineStart,
+        "Option-Left from nested code skipped or collapsed its physical quote prefix"
+      );
+      await stopSession();
+    }
+
+    const deletedSource = scenario.source.slice(0, contentStart - 1)
+      + scenario.source.slice(contentStart);
+    await startSession(fixture, scenario.visibleText);
+    await activateCodeStart("Backspace");
+    await waitForSourceControl(
+      (state) => state?.active
+        && state.value === deletedSource
+        && state.selectionStart === contentStart - 1
+        && state.selectionEnd === contentStart - 1,
+      `Backspace from ${scenario.name} code did not delete its adjacent physical prefix byte`
+    );
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(`${deletedSource}\n`);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(fixture);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(`${deletedSource}\n`);
+    await stopSession();
   }
-  await stopSession();
-
-  await startSession(fixture, "const quoted = true;");
-  await activateCodeStart("ArrowLeft", 1);
-  await waitForSourceControl(
-    (state) => state?.active
-      && state.value === source
-      && state.selectionStart === contentStart - 2
-      && state.selectionEnd === contentStart - 2,
-    "Option-Left from nested code skipped or collapsed its physical quote prefix"
-  );
-  await stopSession();
-
-  const deletedSource = source.slice(0, contentStart - 1) + source.slice(contentStart);
-  await startSession(fixture, "const quoted = true;");
-  await activateCodeStart("Backspace");
-  await waitForSourceControl(
-    (state) => state?.active
-      && state.value === deletedSource
-      && state.selectionStart === contentStart - 1
-      && state.selectionEnd === contentStart - 1,
-    "Backspace from nested code deleted an inner fence newline instead of its physical prefix"
-  );
-  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-  await waitForCompletedSave(`${deletedSource}\n`);
-  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
-  await waitForSaveState(false);
-  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-  await waitForCompletedSave(fixture);
-  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
-  await waitForSaveState(false);
-  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-  await waitForCompletedSave(`${deletedSource}\n`);
-  await stopSession();
 }
 
 async function verifyMultilineCodeBlockLayout() {

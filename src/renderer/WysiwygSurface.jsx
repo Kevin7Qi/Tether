@@ -258,11 +258,25 @@ function markSyntheticTrailingParagraph(crepe, allowStructuralFallback = false) 
     || (gaps?.length !== doc.childCount && !structuralFallback)
   ) return doc;
 
+  const committedDraft = view.dom.tetherCommittedSourceDraft;
+  const preservesCommittedDraft = (
+    typeof committedDraft?.markdown === "string"
+    && committedDraft.doc?.eq?.(doc)
+  );
   view.dispatch(
     view.state.tr
       .setNodeAttribute(position, "tetherSyntheticTrailing", true)
       .setMeta("addToHistory", false)
   );
+  if (preservesCommittedDraft) {
+    // This marker is renderer bookkeeping and changes no Markdown byte. Keep
+    // an exact structure-changing source edit authoritative across the marker
+    // transaction so Save cannot fall back to normalized serialization.
+    view.dom.tetherCommittedSourceDraft = {
+      doc: view.state.doc,
+      markdown: committedDraft.markdown
+    };
+  }
   return view.state.doc;
 }
 

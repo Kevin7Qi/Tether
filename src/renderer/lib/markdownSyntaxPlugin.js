@@ -1763,7 +1763,9 @@ function replaceBlockSource(
   unit,
   source,
   afterCommit = null,
-  sync = false
+  sync = false,
+  sourceControlHistory = null,
+  onIsolatedExactHistory = null
 ) {
   const documentEdit = blockSourceDocumentEdit(view.state, unit, source, serializer);
   const parsed = parser(source);
@@ -1772,6 +1774,22 @@ function replaceBlockSource(
   let transaction = view.state.tr.replace(unit.from, unit.to, new Slice(replacement, 0, 0));
   transaction = selectionAfter(transaction, unit.from + replacement.size);
   transaction.setMeta(markdownSyntaxKey, "close");
+  // A temporary block-source control edits physical Markdown, including bytes
+  // that may cease to parse as the same rendered structure. Keep the complete
+  // source session in isolated history even when its first parsed snapshot
+  // happens to serialize identically; later housekeeping must not be able to
+  // normalize away its Undo record.
+  const requiresExactHistory = Boolean(documentEdit);
+  if (requiresExactHistory) {
+    transaction.setMeta("addToHistory", false);
+    onIsolatedExactHistory?.({
+      documentEdit,
+      source,
+      sourceControlHistory,
+      beforeBoundary: unit.from,
+      afterBoundary: transaction.selection.head
+    });
+  }
   dispatchSourceReplacement(view, transaction, afterCommit, sync);
   if (documentEdit) {
     // A source edit can intentionally stop being the block it rendered as
@@ -4067,9 +4085,107 @@ export function documentSourceOffsetAtPosition(state, position, serializer, affi
       return tableOffset == null ? null : segment.from + tableOffset;
     }
     const offset = sourceCaretOffset(state, unit, source, bounded, null, serializer);
-    return segment.from + Math.max(0, Math.min(source.length, offset));
+    const approximateOffset = segment.from + Math.max(0, Math.min(source.length, offset));
+    const codeBlock = enclosingCodeBlock(state.doc, bounded);
+    const physicalOffset = codeBlock
+      ? physicalCodeContentDocumentOffset(
+          codeBlock.node,
+          bounded - codeBlock.position - 1,
+          documentSource,
+          segment,
+          approximateOffset
+        )
+      : null;
+    return physicalOffset ?? approximateOffset;
   }
   return null;
+}
+
+function containsOnlyNestedCode(node) {
+  if (node?.type?.name === "code_block") return true;
+  if (!node || typeof node.forEach !== "function") return false;
+  const meaningfulChildren = [];
+  node.forEach((child) => {
+    // Milkdown inserts an empty paragraph before a code block in list items
+    // as a ProseMirror content carrier. It has no physical Markdown bytes and
+    // must not make an otherwise code-only container look mixed.
+    if (child.type.name === "paragraph" && child.content.size === 0) return;
+    meaningfulChildren.push(child);
+  });
+  return meaningfulChildren.length === 1
+    && containsOnlyNestedCode(meaningfulChildren[0]);
+}
+
+function physicalCodeContentDocumentOffset(
+  codeNode,
+  contentHead,
+  documentSource,
+  segment,
+  approximateOffset
+) {
+  const physicalSource = codeNode?.attrs?.fencePhysicalSource;
+  const storedStart = codeNode?.attrs?.fencePhysicalSourceStart;
+  let storedContentOffsets;
+  try {
+    storedContentOffsets = JSON.parse(codeNode?.attrs?.fencePhysicalContentOffsets || "null");
+  } catch {
+    return null;
+  }
+  if (
+    typeof physicalSource !== "string"
+    || !physicalSource.length
+    || !Number.isFinite(storedStart)
+    || !Array.isArray(storedContentOffsets)
+    || storedContentOffsets.some((offset) => !Number.isFinite(offset))
+  ) return null;
+
+  const text = codeNode.textContent;
+  const boundedHead = Math.max(0, Math.min(text.length, contentHead));
+  const beforeHead = text.slice(0, boundedHead);
+  const lineIndex = beforeHead.split("\n").length - 1;
+  const lineStart = beforeHead.lastIndexOf("\n") + 1;
+  const column = boundedHead - lineStart;
+  const visibleLine = text.split("\n")[lineIndex] ?? "";
+  const storedContentStart = storedContentOffsets[lineIndex];
+  if (!Number.isFinite(storedContentStart)) return null;
+
+  const candidates = [];
+  const storedEnd = storedStart + physicalSource.length;
+  if (
+    storedStart >= segment.from
+    && storedEnd <= segment.to
+    && documentSource.fullSource.slice(storedStart, storedEnd) === physicalSource
+  ) {
+    candidates.push(storedStart);
+  }
+  const segmentSource = documentSource.fullSource.slice(segment.from, segment.to);
+  for (
+    let index = segmentSource.indexOf(physicalSource);
+    index >= 0;
+    index = segmentSource.indexOf(physicalSource, index + 1)
+  ) {
+    const candidate = segment.from + index;
+    if (!candidates.includes(candidate)) candidates.push(candidate);
+  }
+  if (!candidates.length) return null;
+
+  const candidateOffset = (candidate) => (
+    candidate + storedContentStart - storedStart + Math.min(column, visibleLine.length)
+  );
+  const actualStart = candidates.reduce((best, candidate) => (
+    !Number.isFinite(approximateOffset)
+    || Math.abs(candidateOffset(candidate) - approximateOffset)
+      < Math.abs(candidateOffset(best) - approximateOffset)
+      ? candidate
+      : best
+  ));
+  const contentStart = actualStart + storedContentStart - storedStart;
+  if (
+    visibleLine
+    && documentSource.fullSource.slice(contentStart, contentStart + visibleLine.length)
+      !== visibleLine
+  ) return null;
+  return contentStart + Math.min(column, visibleLine.length);
 }
 
 export function codeBoundaryPhysicalSourceTarget(
@@ -4116,9 +4232,12 @@ export function codeBoundaryPhysicalSourceTarget(
       from: segment.position,
       to: segment.position + segment.node.nodeSize,
       kind: "block",
-      // The physical unit is the enclosing quote/list, but it is activated
-      // from a rendered code block and must retain code-source presentation.
-      name: "code_block",
+      // A code-only wrapper can retain the rendered code panel while exposing
+      // all physical quote/list prefixes. A mixed wrapper must remain visually
+      // neutral because its temporary source also contains ordinary prose.
+      name: containsOnlyNestedCode(segment.node)
+        ? "code_block"
+        : segment.node.type.name,
       source,
       sourceStart: segment.from,
       documentSource: documentSource.fullSource,
@@ -5846,6 +5965,15 @@ function continuousSourceEditor(
       initialSelectionDirection
     );
   }
+  const initialHistorySelection = initialDeletionHistory
+    ? {
+        start: initialDeletionHistory.beforeCaret,
+        end: initialDeletionHistory.beforeCaret,
+        direction: "none"
+      }
+    : startingSelection
+      ? { ...startingSelection }
+      : { start: startingCaret, end: startingCaret, direction: "none" };
   const applyStartingSelection = () => {
     const caret = Math.max(0, Math.min(physicalValue.length, startingCaret));
     if (startingSelection) {
@@ -6054,6 +6182,7 @@ function continuousSourceEditor(
     delete editor.tetherGetPhysicalSourceState;
     delete editor.tetherSetPhysicalSourceSelection;
     const value = physicalValue;
+    const finalHistorySelection = sourceInputSnapshot();
     const run = () => {
       // A boundary handoff can mount its destination control before a
       // deferred finish from the previous widget runs. Only clear the
@@ -6061,7 +6190,12 @@ function continuousSourceEditor(
       setActiveControl(null, editor);
       // Committing an untouched value would still rewrite the block through the
       // parser (dirtying the document and polluting undo); treat it as a cancel.
-      if (commit && value !== source) onCommit(value, afterFinish, sync);
+      if (commit && value !== source) {
+        onCommit(value, afterFinish, sync, {
+          before: initialHistorySelection,
+          after: finalHistorySelection
+        });
+      }
       else finishUnchangedSourceHandoff(
         editor,
         onCancel,
@@ -7658,6 +7792,60 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     if (exactEditHistory.length > 20) exactEditHistory.shift();
   };
 
+  const rememberIsolatedSourceControlEdit = ({
+    documentEdit,
+    source,
+    sourceControlHistory,
+    beforeBoundary,
+    afterBoundary
+  }) => {
+    if (
+      !documentEdit
+      || typeof documentEdit.fullSource !== "string"
+      || typeof documentEdit.currentSource !== "string"
+      || !Number.isFinite(documentEdit.unitStart)
+      || typeof source !== "string"
+    ) return;
+    const beforeSource = `${documentEdit.fullSource.slice(0, documentEdit.unitStart)}${
+      documentEdit.currentSource
+    }${documentEdit.fullSource.slice(documentEdit.unitStart + source.length)}`;
+    if (beforeSource === documentEdit.fullSource) return;
+    const localSelection = (snapshot, value) => {
+      const start = Math.max(0, Math.min(value.length, snapshot?.start ?? 0));
+      const end = Math.max(start, Math.min(value.length, snapshot?.end ?? start));
+      const backward = snapshot?.direction === "backward";
+      return {
+        anchor: documentEdit.unitStart + (backward ? end : start),
+        head: documentEdit.unitStart + (backward ? start : end)
+      };
+    };
+    const beforeSelection = localSelection(
+      sourceControlHistory?.before,
+      documentEdit.currentSource
+    );
+    const afterSelection = localSelection(sourceControlHistory?.after, source);
+    const firstUndone = boundaryEditHistory.findIndex((entry) => entry.state === "undone");
+    if (firstUndone >= 0) boundaryEditHistory.splice(firstUndone);
+    boundaryEditHistory.push({
+      beforeSource,
+      afterSource: documentEdit.fullSource,
+      sourceSelection: {
+        ...beforeSelection,
+        fullSource: beforeSource,
+        boundary: Number.isFinite(beforeBoundary) ? beforeBoundary : 0
+      },
+      afterSourceSelection: {
+        ...afterSelection,
+        fullSource: documentEdit.fullSource,
+        boundary: Number.isFinite(afterBoundary)
+          ? afterBoundary
+          : Number.isFinite(beforeBoundary) ? beforeBoundary : 0
+      },
+      state: "applied"
+    });
+    if (boundaryEditHistory.length > 20) boundaryEditHistory.shift();
+  };
+
   const dispatchExactEdit = (
     view,
     transaction,
@@ -7863,9 +8051,20 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     const view = editorView;
     if (!view) return false;
     const serializer = ctx.get(serializerCtx);
-    const currentSource = serializeMarkdownDocument(view.state.doc, serializer);
+    const committed = view.dom.tetherCommittedSourceDraft;
+    const currentSource = typeof committed?.markdown === "string"
+      && committed.doc?.eq?.(view.state.doc)
+      ? committed.markdown
+      : serializeMarkdownDocument(view.state.doc, serializer);
     const step = exactSourceHistoryStep(boundaryEditHistory, command, currentSource);
     if (!step?.sourceSelection || typeof step.source !== "string") return false;
+    // Saving can restore a source control whose unit is narrower after an
+    // exact edit changes Markdown structure (for example removing one list
+    // indentation byte turns the following code into a root block). Retire
+    // that control before replaying the document-level history step; otherwise
+    // its deferred blur commits the stale, truncated unit over the restored
+    // full source.
+    activeSourceControl?.finish?.(false, null, true);
     const parsed = normalizeEmptyMarkdownDocument(
       ctx.get(parserCtx)(step.source),
       step.source
@@ -7899,6 +8098,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       exactSourceDispatchDepth -= 1;
     }
     step.entry.state = command === "undo" ? "undone" : "applied";
+    view.dom.tetherCommittedSourceDraft = {
+      doc: view.state.doc,
+      markdown: step.source
+    };
     publishMarkdownSourceDraft(view, step.source);
     return true;
   };
@@ -7908,7 +8111,24 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     const historyCommand = command === "undo"
       ? undoProseMirror
       : command === "redo" ? redoProseMirror : null;
-    if (!view || !historyCommand?.(view.state, view.dispatch)) return false;
+    if (!view || !historyCommand) return false;
+    // A restored source control is only a view onto the current document
+    // snapshot. Close it before ProseMirror history changes that snapshot so
+    // its deferred blur cannot recommit a now-stale structural fragment.
+    activeSourceControl?.finish?.(false, null, true);
+    const serializer = ctx.get(serializerCtx);
+    const beforeSource = serializeMarkdownDocument(view.state.doc, serializer);
+    let handled = false;
+    // Selection and source-metadata housekeeping can occupy isolated history
+    // events even though they do not change one physical Markdown byte. A
+    // native source editor skips those invisible states: one shortcut reaches
+    // the previous/next text snapshot.
+    for (let attempts = 0; attempts < 8; attempts += 1) {
+      if (!historyCommand(view.state, view.dispatch)) break;
+      handled = true;
+      if (serializeMarkdownDocument(view.state.doc, serializer) !== beforeSource) break;
+    }
+    if (!handled) return false;
     protectedExactSource = serializeMarkdownDocument(view.state.doc, ctx.get(serializerCtx));
     return true;
   };
@@ -8524,7 +8744,24 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       view.dom.addEventListener("cut", captureExactClipboard, true);
       view.dom.addEventListener("mousedown", captureSourceHandoff, true);
       return {
-        update(nextView) {
+        update(nextView, previousState) {
+          const committed = nextView.dom.tetherCommittedSourceDraft;
+          if (
+            typeof committed?.markdown === "string"
+            && committed.doc?.eq?.(previousState?.doc)
+          ) {
+            const serializer = ctx.get(serializerCtx);
+            const previousSource = serializeMarkdownDocument(previousState.doc, serializer);
+            const nextSource = serializeMarkdownDocument(nextView.state.doc, serializer);
+            if (previousSource === nextSource) {
+              // Selection carriers and synthetic trailing-paragraph markers can
+              // replace the ProseMirror document object without changing one
+              // Markdown byte. Keep the exact draft attached across those
+              // source-neutral updates; a real source change still invalidates
+              // it through the serialized comparison above.
+              committed.doc = nextView.state.doc;
+            }
+          }
           editorView = nextView;
         },
         destroy() {
@@ -9401,13 +9638,23 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           pluginState.sourceOffset,
           serializer
         );
-        const commit = (value, afterCommit = null, sync = false) => {
+        const commit = (value, afterCommit = null, sync = false, sourceControlHistory = null) => {
           if (!editorView) return;
           const parser = ctx.get(parserCtx);
           if (unit.name === "hardbreak") {
             replaceHardbreakSource(editorView, parser, serializer, unit, value, afterCommit, sync);
           } else if (unit.kind === "inline") replaceInlineSource(editorView, parser, serializer, unit, value, afterCommit, sync);
-          else replaceBlockSource(editorView, parser, serializer, unit, value, afterCommit, sync);
+          else replaceBlockSource(
+            editorView,
+            parser,
+            serializer,
+            unit,
+            value,
+            afterCommit,
+            sync,
+            sourceControlHistory,
+            rememberIsolatedSourceControlEdit
+          );
         };
         const navigateFromBoundary = (direction, mapping = null) => {
           if (!editorView?.dom.isConnected) return;

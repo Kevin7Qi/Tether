@@ -65,6 +65,7 @@ import {
   documentGapFocusDirection,
   documentGapSourceSelection,
   documentPositionAtSourceOffset,
+  documentSourceOffsetAtPosition,
   documentSourceSegments,
   documentSourceTarget,
   documentSourceUnitBoundaryGapTarget,
@@ -387,6 +388,10 @@ test("Milkdown keeps fence attributes through a ProseMirror content edit", async
       lang: "js",
       meta: "title=demo"
     }),
+    fencePhysicalSource: source.trimEnd(),
+    fencePhysicalSourceStart: 0,
+    fencePhysicalSourceEnd: source.trimEnd().length,
+    fencePhysicalContentOffsets: JSON.stringify([source.indexOf("const answer")]),
     fenceOpeningIndent: "",
     fenceClosingIndent: "",
     fenceLanguagePrefix: "",
@@ -760,6 +765,91 @@ test("nested code boundaries expose the enclosing physical quote source", async 
     right?.sourceOffset,
     source.indexOf("\n", source.indexOf("const")) + 1
   );
+});
+
+test("nested code boundaries retain physical prefixes in multi-item containers", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const cases = [
+    {
+      label: "multi-item list",
+      source: "- before\n- ~~~~js\n  const listed = true;\n  ~~~~~\n- after\n",
+      content: "const listed = true;",
+      prefix: "  ",
+      unitName: "bullet_list"
+    },
+    {
+      label: "list and blockquote",
+      source: "- > ~~~~js\n  > const mixed = true;\n  > ~~~~~\n",
+      content: "const mixed = true;",
+      prefix: "  > ",
+      unitName: "code_block"
+    },
+    {
+      label: "blockquote with prose",
+      source: "> Intro\n>\n> ~~~~js\n> const quoted = true;\n> ~~~~~\n>\n> Outro\n",
+      content: "const quoted = true;",
+      prefix: "> ",
+      unitName: "blockquote"
+    }
+  ];
+
+  for (const { label, source, content, prefix, unitName } of cases) {
+    const doc = parse(source);
+    const state = EditorState.create({ doc });
+    let codePosition = null;
+    doc.descendants((node, position) => {
+      if (node.type.name !== "code_block") return true;
+      codePosition = position;
+      return false;
+    });
+    assert.ok(Number.isFinite(codePosition), `${label}: code position`);
+    const left = codeBoundaryPhysicalSourceTarget(
+      state,
+      codePosition,
+      0,
+      "ArrowLeft",
+      serialize
+    );
+    const contentStart = source.indexOf(content);
+    assert.equal(left?.unit.source, source.trimEnd(), `${label}: physical source`);
+    assert.equal(left?.unit.name, unitName, `${label}: source presentation`);
+    assert.equal(
+      left?.sourceOffset,
+      contentStart - 1,
+      `${label}: adjacent prefix byte`
+    );
+
+    const contentColumn = Math.min(3, content.length);
+    assert.equal(
+      documentSourceOffsetAtPosition(
+        state,
+        codePosition + 1 + contentColumn,
+        serialize
+      ),
+      contentStart + contentColumn,
+      `${label}: document source offset`
+    );
+
+    const up = codeBoundaryPhysicalSourceTarget(
+      state,
+      codePosition,
+      contentColumn,
+      "ArrowUp",
+      serialize
+    );
+    assert.equal(
+      up?.sourceOffset,
+      source.indexOf("~~~~js") + contentColumn,
+      `${label}: opening fence column`
+    );
+
+    const prefixStart = contentStart - prefix.length;
+    assert.equal(
+      source.slice(prefixStart, contentStart),
+      prefix,
+      `${label}: fixture prefix`
+    );
+  }
 });
 
 test("a root list keeps a directly nested fence on its physical marker line", async () => {

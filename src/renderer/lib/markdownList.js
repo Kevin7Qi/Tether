@@ -64,11 +64,12 @@ function listSemanticValue(node) {
   if (
     node.type === "listItem"
     && isSemanticallyEmptyParagraph(children?.[0])
-    && ["code", "heading"].includes(children?.[1]?.type)
+    && ["blockquote", "code", "heading"].includes(children?.[1]?.type)
   ) {
     // ProseMirror's list-item schema inserts a required empty paragraph before
-    // a compact heading or `- ```...` code child. It is editor structure, not
-    // a physical block, so it must not invalidate the untouched list snapshot.
+    // a compact heading, quote, or `- ```...` code child. It is editor
+    // structure, not a physical block, so it must not invalidate the untouched
+    // list snapshot.
     children = children.slice(1);
   }
   if (children) result.children = semanticChildren(children);
