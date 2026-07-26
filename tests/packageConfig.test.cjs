@@ -276,6 +276,7 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(surface, /initialSelectionDirection: selectionMotion/);
   assert.match(surface, /codeBoundaryNavigationSourceOffset/);
   assert.match(surface, /continuousMarkdownSource/);
+  assert.match(surface, /codeBoundaryPhysicalSourceTarget/);
   assert.match(surface, /control\.setAttribute\("aria-disabled", "true"\)/);
   assert.match(surface, /draftEventTarget\.addEventListener\(markdownSourceDraftEvent, handleMarkdownSourceDraft\)/);
   assert.match(surface, /onChangeRef\.current\?\.\(markdown\)/);
@@ -285,6 +286,7 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(styles, /\.tether-source-hidden\s*\{[^}]*display:\s*none !important/s);
   assert.match(syntax, /editor\.scrollHeight \+ borderHeight/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-source-presentation"/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "nested-code-physical-source"/);
   assert.match(verifier, /rendered\.backgroundColor === source\.backgroundColor/);
   assert.match(surface, /use\(sourceFaithfulFenceRemark\)/);
   assert.match(surface, /use\(sourceFaithfulCodeBlockSchema\)/);

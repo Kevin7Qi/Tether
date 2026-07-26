@@ -10,6 +10,8 @@ const semanticKeys = [
   "alt",
   "identifier",
   "label",
+  "lang",
+  "meta",
   "referenceType",
   "title",
   "url",
@@ -34,12 +36,20 @@ function semanticChildren(children = []) {
   return result;
 }
 
+function isSemanticallyEmptyParagraph(node) {
+  if (node?.type !== "paragraph") return false;
+  return semanticChildren(node.children).every((child) => (
+    child?.type === "text" && !child.value
+  ));
+}
+
 function listSemanticValue(node) {
   if (!node || typeof node !== "object") return node;
   if (node.type === "break" && node.data?.isInline) return { type: "text", value: "\n" };
   const result = { type: node.type };
   for (const key of semanticKeys) {
     if (node.type === "listItem" && key === "label") continue;
+    if ((key === "lang" || key === "meta") && node[key] == null) continue;
     if (key in node) result[key] = node[key];
   }
   if (node.type === "list") {
@@ -50,12 +60,37 @@ function listSemanticValue(node) {
     result.checked = node.checked == null ? null : Boolean(node.checked);
     result.spread = node.spread === true || node.spread === "true";
   }
-  if (node.children) result.children = semanticChildren(node.children);
+  let children = node.children;
+  if (
+    node.type === "listItem"
+    && isSemanticallyEmptyParagraph(children?.[0])
+    && ["code", "heading"].includes(children?.[1]?.type)
+  ) {
+    // ProseMirror's list-item schema inserts a required empty paragraph before
+    // a compact heading or `- ```...` code child. It is editor structure, not
+    // a physical block, so it must not invalidate the untouched list snapshot.
+    children = children.slice(1);
+  }
+  if (children) result.children = semanticChildren(children);
   return result;
 }
 
 export function listSemanticSignature(node) {
   return JSON.stringify(listSemanticValue(node));
+}
+
+export function listSourceSignatureMatches(node, signature) {
+  const current = listSemanticSignature(node);
+  if (current === signature) return true;
+  try {
+    // Older editor builds captured all nested code attributes in structural
+    // signatures. Normalize that stored JSON through the current semantic
+    // projection so physical fence metadata does not invalidate an otherwise
+    // unchanged list, while language and meta edits still do.
+    return current === listSemanticSignature(JSON.parse(signature));
+  } catch {
+    return false;
+  }
 }
 
 export function annotateBulletListMarkers(tree, file) {
@@ -574,7 +609,7 @@ export function sourceFaithfulListItemHandler(node, parent, state, info) {
   if (
     node.listItemSource != null
     && node.listItemSourceSignature != null
-    && listSemanticSignature(node) === node.listItemSourceSignature
+    && listSourceSignatureMatches(node, node.listItemSourceSignature)
   ) return node.listItemSource;
 
   const head = node.children?.[0];
@@ -626,7 +661,7 @@ export function sourceFaithfulListHandler(node, parent, state, info) {
   if (
     node.listSource != null
     && node.listSourceSignature != null
-    && listSemanticSignature(node) === node.listSourceSignature
+    && listSourceSignatureMatches(node, node.listSourceSignature)
   ) return node.listSource;
 
   const exit = state.enter("list");

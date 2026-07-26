@@ -19,8 +19,19 @@ import { Clock, Container, Ctx } from "@milkdown/kit/ctx";
 import { AllSelection, EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import { history, redo, undo } from "@milkdown/kit/prose/history";
 import { GapCursor } from "@milkdown/kit/prose/gapcursor";
-import { textSchema } from "@milkdown/kit/preset/commonmark";
+import {
+  blockquoteAttr,
+  bulletListAttr,
+  listItemAttr,
+  listItemSchema,
+  orderedListAttr,
+  textSchema
+} from "@milkdown/kit/preset/commonmark";
 import { emptyCodeClosingFenceSourceOffset } from "../src/renderer/lib/codeEditor.js";
+import {
+  sourceFaithfulBlockquoteRemark,
+  sourceFaithfulBlockquoteSchema
+} from "../src/renderer/lib/markdownBlockquote.js";
 import {
   sourceFaithfulDocumentRemark,
   sourceFaithfulDocumentSchema
@@ -42,7 +53,14 @@ import {
   sourceFaithfulParagraphSchema
 } from "../src/renderer/lib/markdownParagraph.js";
 import {
+  sourceFaithfulBulletListSchema,
+  sourceFaithfulBulletRemark,
+  sourceFaithfulOrderedListSchema,
+  sourceFaithfulTaskListItemSchema
+} from "../src/renderer/lib/markdownList.js";
+import {
   collapsedDocumentSourceSelection,
+  codeBoundaryPhysicalSourceTarget,
   continuousMarkdownSource,
   documentGapFocusDirection,
   documentGapSourceSelection,
@@ -97,6 +115,17 @@ async function milkdownTransformer() {
     sourceFaithfulParagraphRemark,
     sourceFaithfulDocumentSchema,
     sourceFaithfulParagraphSchema,
+    blockquoteAttr,
+    sourceFaithfulBlockquoteRemark,
+    sourceFaithfulBlockquoteSchema,
+    bulletListAttr,
+    orderedListAttr,
+    listItemAttr,
+    listItemSchema,
+    sourceFaithfulBulletRemark,
+    sourceFaithfulBulletListSchema,
+    sourceFaithfulOrderedListSchema,
+    sourceFaithfulTaskListItemSchema,
     textSchema,
     sourceFaithfulCodeBlockSchema,
     sourceFaithfulCodeBlockInputRule
@@ -684,6 +713,61 @@ test("typing after traversing a closing fence preserves the fenced block", async
     serialize(transaction.doc),
     `${source.slice(0, selection.anchor)}X${source.slice(selection.anchor)}`
   );
+});
+
+test("nested code boundaries expose the enclosing physical quote source", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "> ~~~~js\n> const quoted = true;\n> ~~~~~\n";
+  const doc = parse(source);
+  const state = EditorState.create({ doc });
+  let codePosition = null;
+  doc.descendants((node, position) => {
+    if (node.type.name !== "code_block") return true;
+    codePosition = position;
+    return false;
+  });
+  assert.ok(Number.isFinite(codePosition));
+  const code = doc.nodeAt(codePosition);
+  const left = codeBoundaryPhysicalSourceTarget(
+    state,
+    codePosition,
+    0,
+    "ArrowLeft",
+    serialize
+  );
+  assert.equal(left?.unit.source, source.trimEnd());
+  assert.equal(left?.unit.name, "code_block");
+  assert.equal(left?.unit.from, 0);
+  assert.equal(left?.sourceOffset, source.indexOf("const") - 1);
+
+  const up = codeBoundaryPhysicalSourceTarget(
+    state,
+    codePosition,
+    3,
+    "ArrowUp",
+    serialize
+  );
+  assert.equal(up?.sourceOffset, 5);
+
+  const right = codeBoundaryPhysicalSourceTarget(
+    state,
+    codePosition,
+    code.content.size,
+    "ArrowRight",
+    serialize
+  );
+  assert.equal(
+    right?.sourceOffset,
+    source.indexOf("\n", source.indexOf("const")) + 1
+  );
+});
+
+test("a root list keeps a directly nested fence on its physical marker line", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "- ~~~~js\n  const listed = true;\n  ~~~~~\n";
+  const doc = parse(source);
+  assert.equal(doc.firstChild.attrs.listSource, source.trimEnd());
+  assert.equal(serialize(doc), source);
 });
 
 test("source gaps keep their carrier caret in prose beside CodeMirror", async () => {

@@ -6649,16 +6649,13 @@ async function verifyCodeBlockLayout() {
   await stopSession();
 }
 
-async function verifyCodeSourcePresentation() {
-  const content = [
-    "const first = 1;",
-    "const second = 2;",
-    "return first + second;"
-  ].join("\n");
-  const blockSource = `\`\`\`js\n${content}\n\`\`\``;
-  const fixture = `Before.\n\n${blockSource}\n\nAfter.\n`;
-
-  await startSession(fixture, "const first = 1;");
+async function verifyCodeSourcePresentationFixture({
+  name,
+  documentSource,
+  visibleText,
+  blockSource
+}) {
+  await startSession(documentSource, visibleText);
   const rendered = await evaluate(`(() => {
     const block = document.querySelector(".milkdown-code-block");
     const scroller = block?.querySelector(".cm-scroller");
@@ -6684,18 +6681,27 @@ async function verifyCodeSourcePresentation() {
     () => evaluate(`document.activeElement?.matches?.(".cm-content")`),
     "fenced-source presentation could not focus the first rendered code line"
   );
+  // Reach the physical start of the visible line first. For indented code,
+  // Home itself crosses into the hidden indentation; fenced variants need the
+  // following ArrowLeft to cross their opening-line newline. This mirrors a
+  // normal source editor while keeping the presentation check independent of
+  // where the pointer happened to place the CodeMirror caret.
   await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
-  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  let activatedSource = await sourceControlState();
+  if (!activatedSource?.active) {
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    activatedSource = await sourceControlState();
+  }
   await waitForSourceControl(
     (state) => state?.active && state.value === blockSource,
-    "fenced-code boundary did not expose its exact physical source"
+    `${name} code boundary did not expose its exact physical source`
   );
   await waitFor(
     () => evaluate(`(() => {
       const control = document.querySelector("textarea.tether-continuous-source.is-code_block");
       return control && control.scrollHeight <= control.clientHeight + 1;
     })()`),
-    "active fenced source did not resize to its complete physical content"
+    `${name} active code source did not resize to its complete physical content`
   );
   const source = await evaluate(`(() => {
     const prose = document.querySelector(".ProseMirror");
@@ -6746,16 +6752,209 @@ async function verifyCodeSourcePresentation() {
     && source.documentOverflow <= 1
     && source.renderedBlocks.every(({ display, height }) => display === "none" || height === 0);
   if (!visuallyContinuous) {
-    throw new Error(`active fenced source diverged from its rendered code block: ${
+    throw new Error(`${name} active code source diverged from its rendered block: ${
       JSON.stringify({ rendered, source })
     }`);
   }
   if (process.env.TETHER_PARITY_SCREENSHOT) {
+    const screenshotPath = process.env.TETHER_PARITY_SCREENSHOT.replace(
+      /(\.png)?$/,
+      `-${name}.png`
+    );
     await captureElementsScreenshot(
       ["textarea.tether-continuous-source.is-code_block"],
-      process.env.TETHER_PARITY_SCREENSHOT
+      screenshotPath
     );
   }
+  if (["quoted-fence", "listed-fence"].includes(name)) {
+    const identifier = name === "quoted-fence" ? "quoted" : "listed";
+    const insertionOffset = blockSource.indexOf(identifier) + identifier.length;
+    const installed = await evaluate(`(() => {
+      const control = document.querySelector("textarea.tether-continuous-source.is-code_block");
+      if (!control) return false;
+      control.focus();
+      control.setSelectionRange(${insertionOffset}, ${insertionOffset});
+      return control.selectionStart === ${insertionOffset};
+    })()`);
+    if (!installed) throw new Error(`${name} source caret could not be positioned for editing`);
+    await cdp.send("Input.insertText", { text: "X" });
+    const editedBlock = `${
+      blockSource.slice(0, insertionOffset)
+    }X${blockSource.slice(insertionOffset)}`;
+    const editedDocument = documentSource.replace(blockSource, editedBlock);
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(editedDocument);
+  }
+  await stopSession();
+}
+
+async function verifyCodeSourcePresentation() {
+  const content = [
+    "const first = 1;",
+    "const second = 2;",
+    "return first + second;"
+  ].join("\n");
+  const ordinary = `\`\`\`js\n${content}\n\`\`\``;
+  const tilde = "~~~~ python key=value\r\nprint('ok')\r\n~~~~~";
+  const indented = "    first()\n\tsecond()";
+  const frontMatter = "---\ntitle: Tether\npublished: false\n---";
+  const unclosed = "```text\nalpha\nbeta";
+  const quoted = "> ~~~~js\n> const quoted = true;\n> ~~~~~";
+  const listed = "- ~~~~js\n  const listed = true;\n  ~~~~~";
+  const fixtures = [
+    {
+      name: "ordinary-fence",
+      documentSource: `Before.\n\n${ordinary}\n\nAfter.\n`,
+      visibleText: "const first = 1;",
+      blockSource: ordinary
+    },
+    {
+      name: "tilde-crlf-fence",
+      documentSource: `Before.\r\n\r\n${tilde}\r\n\r\nAfter.\r\n`,
+      visibleText: "print('ok')",
+      blockSource: tilde
+    },
+    {
+      name: "indented-code",
+      documentSource: `Before.\n\n${indented}\n\nAfter.\n`,
+      visibleText: "first()",
+      blockSource: indented
+    },
+    {
+      name: "front-matter",
+      documentSource: `${frontMatter}\n\nAfter.\n`,
+      visibleText: "title: Tether",
+      blockSource: frontMatter
+    },
+    {
+      name: "unclosed-fence",
+      documentSource: `Before.\n\n${unclosed}`,
+      visibleText: "alpha",
+      blockSource: unclosed
+    },
+    {
+      name: "quoted-fence",
+      documentSource: `${quoted}\n`,
+      visibleText: "const quoted = true;",
+      blockSource: quoted
+    },
+    {
+      name: "listed-fence",
+      documentSource: `${listed}\n`,
+      visibleText: "const listed = true;",
+      blockSource: listed
+    }
+  ];
+  for (const fixture of fixtures) {
+    await verifyCodeSourcePresentationFixture(fixture);
+  }
+}
+
+async function verifyNestedCodePhysicalSourceEditing() {
+  const source = "> ~~~~js\n> const quoted = true;\n> ~~~~~";
+  const fixture = `${source}\n`;
+  const contentStart = source.indexOf("const quoted");
+  const activateCodeStart = async (key, modifiers = 0) => {
+    await clickElement(".milkdown-code-block .cm-line:first-child");
+    await waitFor(
+      () => evaluate(`document.activeElement?.matches?.(".cm-content")`),
+      "nested code could not focus its first rendered line"
+    );
+    await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+    await dispatchKey({
+      key,
+      code: key,
+      virtualKeyCode: key === "Backspace" ? 8 : 37,
+      modifiers
+    });
+  };
+
+  await startSession(fixture, "const quoted = true;");
+  await activateCodeStart("ArrowLeft");
+  await waitForSourceControl(
+    (state) => state?.active
+      && state.value === source
+      && state.selectionStart === contentStart - 1
+      && state.selectionEnd === contentStart - 1,
+    "nested code navigation skipped its physical quote-line space"
+  );
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await dispatchKey({
+    key: "ArrowRight",
+    code: "ArrowRight",
+    virtualKeyCode: 39,
+    modifiers: 8
+  });
+  const copiedMarker = await dispatchSyntheticClipboardAndCaptureText("copy");
+  if (copiedMarker !== ">") {
+    throw new Error(
+      `nested code source selected ${JSON.stringify(copiedMarker)} instead of its physical quote marker`
+    );
+  }
+  await stopSession();
+
+  await startSession(fixture, "const quoted = true;");
+  await activateCodeStart("ArrowLeft", 8);
+  await waitForSourceControl(
+    (state) => state?.active
+      && state.value === source
+      && state.selectionStart === contentStart - 1
+      && state.selectionEnd === contentStart
+      && state.selectionDirection === "backward",
+    "Shift-Left from nested code did not select its adjacent physical prefix byte"
+  );
+  const copiedSpace = await dispatchSyntheticClipboardAndCaptureText("copy");
+  if (copiedSpace !== " ") {
+    throw new Error(
+      `nested code Shift-Left copied ${JSON.stringify(copiedSpace)} instead of one physical space`
+    );
+  }
+  await dispatchKey({
+    key: "ArrowLeft",
+    code: "ArrowLeft",
+    virtualKeyCode: 37,
+    modifiers: 8
+  });
+  const copiedPrefix = await dispatchSyntheticClipboardAndCaptureText("copy");
+  if (copiedPrefix !== "> ") {
+    throw new Error(
+      `nested code extended selection copied ${JSON.stringify(copiedPrefix)} instead of "> "`
+    );
+  }
+  await stopSession();
+
+  await startSession(fixture, "const quoted = true;");
+  await activateCodeStart("ArrowLeft", 1);
+  await waitForSourceControl(
+    (state) => state?.active
+      && state.value === source
+      && state.selectionStart === contentStart - 2
+      && state.selectionEnd === contentStart - 2,
+    "Option-Left from nested code skipped or collapsed its physical quote prefix"
+  );
+  await stopSession();
+
+  const deletedSource = source.slice(0, contentStart - 1) + source.slice(contentStart);
+  await startSession(fixture, "const quoted = true;");
+  await activateCodeStart("Backspace");
+  await waitForSourceControl(
+    (state) => state?.active
+      && state.value === deletedSource
+      && state.selectionStart === contentStart - 1
+      && state.selectionEnd === contentStart - 1,
+    "Backspace from nested code deleted an inner fence newline instead of its physical prefix"
+  );
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(`${deletedSource}\n`);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(fixture);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(`${deletedSource}\n`);
   await stopSession();
 }
 
@@ -8123,6 +8322,11 @@ async function run() {
     console.log("Verified active fenced source retains its rendered code-block presentation.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "nested-code-physical-source") {
+    await verifyNestedCodePhysicalSourceEditing();
+    console.log("Verified nested code traverses and edits every physical container prefix.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "multiline-code-block-layout") {
     await verifyMultilineCodeBlockLayout();
     console.log("Verified multiline fenced-code alignment and contained horizontal scrolling.");
@@ -8408,6 +8612,7 @@ async function run() {
   await verifyCodeCrlfClipboard();
   await verifyCodeBlockLayout();
   await verifyCodeSourcePresentation();
+  await verifyNestedCodePhysicalSourceEditing();
   await verifyMultilineCodeBlockLayout();
   await verifyCodeLanguagePickerPresentation();
   await verifyCodeLanguagePickerSourceFidelity();

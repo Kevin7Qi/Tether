@@ -125,6 +125,7 @@ import {
   activateMarkdownSourceAt,
   activateMarkdownTableSourceAt,
   continuousMarkdownSource,
+  codeBoundaryPhysicalSourceTarget,
   documentSourceSegments,
   documentSourceOffsetAtPosition,
   documentSourceUnitStartOffset,
@@ -136,6 +137,7 @@ import {
   markdownSourceTargetFromPointer,
   markdownSyntaxPlugin,
   isSourceInputComposing,
+  physicalCodeSourceUnitAtPosition,
   preserveDocumentSourceNoopBoundary,
   sourceCaretOffset,
   sourceDocumentJumpEdge,
@@ -724,32 +726,55 @@ export default function WysiwygSurface({
         kind: "block",
         name: "code_block"
       };
-      const source = continuousMarkdownSource(view.state, unit, serializer);
-      const currentOffset = sourceCaretOffset(
+      const headPosition = codeContentSourcePosition(codeBlock.position, selection.head);
+      const physicalHead = physicalCodeSourceUnitAtPosition(
+        view.state,
+        unit,
+        headPosition,
+        serializer
+      );
+      const activeUnit = physicalHead?.unit || unit;
+      const source = continuousMarkdownSource(view.state, activeUnit, serializer);
+      const currentOffset = physicalHead?.sourceOffset ?? sourceCaretOffset(
         view.state,
         unit,
         source,
-        codeContentSourcePosition(codeBlock.position, selection.head),
+        headPosition,
         null,
         serializer
       );
       const targetOffset = sourceWordOffset(source, currentOffset, direction);
       if (targetOffset === currentOffset) return;
+      const anchorPosition = codeContentSourcePosition(codeBlock.position, selection.anchor);
+      const physicalAnchor = event.shiftKey && physicalHead
+        ? physicalCodeSourceUnitAtPosition(
+            view.state,
+            unit,
+            anchorPosition,
+            serializer
+          )
+        : null;
       const anchorOffset = event.shiftKey
-        ? sourceCaretOffset(
+        ? physicalAnchor?.sourceOffset ?? sourceCaretOffset(
             view.state,
             unit,
             source,
-            codeContentSourcePosition(codeBlock.position, selection.anchor),
+            anchorPosition,
             null,
             serializer
           )
         : currentOffset;
+      const blockRect = block.getBoundingClientRect();
       event.preventDefault();
       event.stopImmediatePropagation();
       activateMarkdownSourceAt(view, codeBlock.position, {
-        explicitUnitPosition: codeBlock.position,
+        literalSourceUnit: physicalHead?.unit ?? null,
+        explicitUnitPosition: activeUnit.from,
         sourceOffset: targetOffset,
+        blockTargetGeometry: {
+          left: blockRect.left,
+          right: blockRect.right
+        },
         initialSourceSelection: event.shiftKey
           ? sourceWordSelectionRange(anchorOffset, targetOffset)
           : null
@@ -1337,20 +1362,39 @@ export default function WysiwygSurface({
           };
           const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
           if (!serializer) return;
-          const source = continuousMarkdownSource(view.state, unit, serializer);
-          const anchorOffset = sourceCaretOffset(
+          const anchorPosition = codeContentSourcePosition(
+            blockPosition,
+            codeSelection.anchor
+          );
+          const headPosition = codeContentSourcePosition(blockPosition, codeHead);
+          const physicalAnchor = physicalCodeSourceUnitAtPosition(
+            view.state,
+            unit,
+            anchorPosition,
+            serializer
+          );
+          const physicalHead = physicalCodeSourceUnitAtPosition(
+            view.state,
+            unit,
+            headPosition,
+            serializer
+          );
+          if (Boolean(physicalAnchor) !== Boolean(physicalHead)) return;
+          const activeUnit = physicalHead?.unit || unit;
+          const source = continuousMarkdownSource(view.state, activeUnit, serializer);
+          const anchorOffset = physicalAnchor?.sourceOffset ?? sourceCaretOffset(
             view.state,
             unit,
             source,
-            codeContentSourcePosition(blockPosition, codeSelection.anchor),
+            anchorPosition,
             null,
             serializer
           );
-          const headOffset = sourceCaretOffset(
+          const headOffset = physicalHead?.sourceOffset ?? sourceCaretOffset(
             view.state,
             unit,
             source,
-            codeContentSourcePosition(blockPosition, codeHead),
+            headPosition,
             null,
             serializer
           );
@@ -1363,21 +1407,41 @@ export default function WysiwygSurface({
           const sourceOffset = initialSourceSelection.direction === "backward"
             ? initialSourceSelection.start
             : initialSourceSelection.end;
+          const blockRect = block.getBoundingClientRect();
           activateMarkdownSourceAt(view, codeBlock.position, {
-            explicitUnitPosition: blockPosition,
+            literalSourceUnit: physicalHead?.unit ?? null,
+            explicitUnitPosition: activeUnit.from,
             sourceOffset,
-            initialSourceSelection
+            initialSourceSelection,
+            blockTargetGeometry: {
+              left: blockRect.left,
+              right: blockRect.right
+            }
           });
           return;
         }
-        activateMarkdownSourceAt(
-          view,
-          codeContentSourcePosition(blockPosition, codeHead),
-          {
-            explicitUnitPosition: blockPosition,
-            initialSelectionDirection: selectionMotion
+        const unit = {
+          from: blockPosition,
+          to: blockPosition + node.nodeSize,
+          kind: "block",
+          name: "code_block"
+        };
+        const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
+        const position = codeContentSourcePosition(blockPosition, codeHead);
+        const physical = serializer
+          ? physicalCodeSourceUnitAtPosition(view.state, unit, position, serializer)
+          : null;
+        const blockRect = block.getBoundingClientRect();
+        activateMarkdownSourceAt(view, position, {
+          literalSourceUnit: physical?.unit ?? null,
+          explicitUnitPosition: physical?.unit.from ?? blockPosition,
+          sourceOffset: physical?.sourceOffset ?? null,
+          initialSelectionDirection: selectionMotion,
+          blockTargetGeometry: {
+            left: blockRect.left,
+            right: blockRect.right
           }
-        );
+        });
         return;
       }
       if (deletionDirection) {
@@ -1390,13 +1454,20 @@ export default function WysiwygSurface({
         const parser = crepeRef.current?.editor.action((ctx) => ctx.get(parserCtx));
         const serializer = crepeRef.current?.editor.action((ctx) => ctx.get(serializerCtx));
         if (!parser || !serializer) return;
-        const source = continuousMarkdownSource(view.state, unit, serializer);
         const boundaryPosition = codeBoundarySourcePosition(
           blockPosition,
           node.content.size,
           deletionDirection
         );
-        const sourceOffset = sourceCaretOffset(
+        const physical = physicalCodeSourceUnitAtPosition(
+          view.state,
+          unit,
+          boundaryPosition,
+          serializer
+        );
+        const activeUnit = physical?.unit || unit;
+        const source = continuousMarkdownSource(view.state, activeUnit, serializer);
+        const sourceOffset = physical?.sourceOffset ?? sourceCaretOffset(
           view.state,
           unit,
           source,
@@ -1404,17 +1475,23 @@ export default function WysiwygSurface({
           null,
           serializer
         );
+        const blockRect = block.getBoundingClientRect();
         event.preventDefault();
         event.stopImmediatePropagation();
         activateMarkdownSourceDeletionAt(
           view,
           boundaryPosition,
           {
-            explicitUnitPosition: blockPosition,
+            literalSourceUnit: physical?.unit ?? null,
+            explicitUnitPosition: activeUnit.from,
             sourceOffset,
-            initialDeleteDirection: deletionDirection
+            initialDeleteDirection: deletionDirection,
+            blockTargetGeometry: {
+              left: blockRect.left,
+              right: blockRect.right
+            }
           },
-          unit,
+          activeUnit,
           source,
           parser,
           serializer
@@ -1438,14 +1515,32 @@ export default function WysiwygSurface({
         event.key,
         codeHead
       );
+      const physicalTarget = codeBoundaryPhysicalSourceTarget(
+        view.state,
+        blockPosition,
+        codeHead,
+        event.key,
+        serializer
+      );
+      const blockRect = block.getBoundingClientRect();
+      const blockTargetGeometry = {
+        left: blockRect.left,
+        right: blockRect.right
+      };
       event.preventDefault();
       event.stopImmediatePropagation();
       activateMarkdownSourceAt(
         view,
         codeBoundarySourcePosition(blockPosition, node.content.size, direction),
-        {
+        physicalTarget ? {
+          explicitUnitPosition: physicalTarget.unit.from,
+          literalSourceUnit: physicalTarget.unit,
+          sourceOffset: physicalTarget.sourceOffset,
+          blockTargetGeometry
+        } : {
           explicitUnitPosition: blockPosition,
-          sourceOffset
+          sourceOffset,
+          blockTargetGeometry
         }
       );
     };

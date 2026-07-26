@@ -46,6 +46,7 @@ import {
   annotateBulletListMarkers,
   isInteractiveTaskMarker,
   listItemTextStart,
+  listSourceSignatureMatches,
   preserveCompactHeadingListItemSource,
   renderedListItemLabel,
   sourceFaithfulBulletListSchema,
@@ -112,6 +113,54 @@ test("single-line ATX list headings retain their physical item layout after edit
     ),
     null
   );
+});
+
+test("list signatures ignore physical fence attributes but track code info changes", () => {
+  const node = {
+    type: "list",
+    ordered: false,
+    start: null,
+    spread: false,
+    children: [{
+      type: "listItem",
+      checked: null,
+      spread: false,
+      children: [{ type: "code", lang: "js", meta: null, value: "alpha" }]
+    }]
+  };
+  const stored = JSON.stringify({
+    ...node,
+    children: [{
+      ...node.children[0],
+      children: [{
+        closingFenceLength: 5,
+        fenceClosed: true,
+        fenceLength: 4,
+        fenceMarker: "~",
+        lang: "js",
+        type: "code",
+        value: "alpha"
+      }]
+    }]
+  });
+  assert.equal(listSourceSignatureMatches(node, stored), true);
+  assert.equal(listSourceSignatureMatches({
+    ...node,
+    children: [{
+      ...node.children[0],
+      children: [
+        { type: "paragraph", children: [] },
+        { type: "code", lang: "js", meta: null, value: "alpha" }
+      ]
+    }]
+  }, stored), true);
+  assert.equal(listSourceSignatureMatches({
+    ...node,
+    children: [{
+      ...node.children[0],
+      children: [{ type: "code", lang: "python", meta: null, value: "alpha" }]
+    }]
+  }, stored), false);
 });
 
 test("only task markers consume pointer interaction", () => {

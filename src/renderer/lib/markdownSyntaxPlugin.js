@@ -148,6 +148,7 @@ const inactivePluginState = () => ({
   initialPointerSelection: 0,
   focusLock: false,
   headingTargetGeometry: null,
+  blockTargetGeometry: null,
   sourceSelection: null
 });
 
@@ -161,7 +162,8 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
     initialSelectionDirection = null,
     initialSourceSelection = null,
     initialPointerSelection = 0,
-    focusLock = false
+    focusLock = false,
+    blockTargetGeometry = null
   } = options;
   const headingTargetGeometry = renderedHeadingClientGeometry(view, position);
   const resolved = view.state.doc.resolve(Math.min(position, view.state.doc.content.size));
@@ -181,7 +183,8 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
         initialSourceSelection,
         initialPointerSelection,
         focusLock,
-        headingTargetGeometry
+        headingTargetGeometry,
+        blockTargetGeometry
       })
   );
   view.focus();
@@ -1284,6 +1287,40 @@ export function continuousMarkdownSource(state, unit, serializer) {
     ? exactAttentionSourceForInlineUnit(state, unit)
       ?? serializeInlineRange(state, unit.from, unit.to, serializer)
     : serializeBlockNode(state.schema, state.doc.nodeAt(unit.from), serializer);
+}
+
+export function physicalCodeSourceUnitAtPosition(
+  state,
+  codeUnit,
+  position,
+  serializer
+) {
+  if (
+    !state?.doc
+    || codeUnit?.name !== "code_block"
+    || !Number.isFinite(position)
+    || typeof serializer !== "function"
+  ) return null;
+  const contentHead = Math.max(
+    0,
+    Math.min(codeUnit.to - codeUnit.from - 2, position - codeUnit.from - 1)
+  );
+  const backwardTarget = codeBoundaryPhysicalSourceTarget(
+    state,
+    codeUnit.from,
+    contentHead,
+    "ArrowLeft",
+    serializer
+  );
+  if (!backwardTarget) return null;
+  return {
+    unit: backwardTarget.unit,
+    sourceOffset: sourceOffsetAfterCharacter(
+      backwardTarget.unit.source,
+      backwardTarget.sourceOffset,
+      "forward"
+    )
+  };
 }
 
 export function sourceAwareClipboardText(state, serializer) {
@@ -4035,6 +4072,62 @@ export function documentSourceOffsetAtPosition(state, position, serializer, affi
   return null;
 }
 
+export function codeBoundaryPhysicalSourceTarget(
+  state,
+  blockPosition,
+  contentHead,
+  key,
+  serializer
+) {
+  if (
+    !state?.doc
+    || !Number.isFinite(blockPosition)
+    || !Number.isFinite(contentHead)
+    || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(key)
+    || typeof serializer !== "function"
+  ) return null;
+  const codeNode = state.doc.nodeAt(blockPosition);
+  if (codeNode?.type.name !== "code_block") return null;
+  const documentSource = documentSourceSegments(state, serializer);
+  const segment = documentSource?.segments.find(({ position, node }) => (
+    blockPosition > position
+    && blockPosition + codeNode.nodeSize < position + node.nodeSize
+  ));
+  if (!segment || !documentSource) return null;
+
+  const boundedHead = Math.max(0, Math.min(codeNode.content.size, contentHead));
+  const documentOffset = documentSourceOffsetAtPosition(
+    state,
+    blockPosition + 1 + boundedHead,
+    serializer,
+    key === "ArrowLeft" || key === "ArrowUp" ? "backward" : "forward"
+  );
+  if (!Number.isFinite(documentOffset)) return null;
+  const direction = key === "ArrowLeft"
+    ? "backward"
+    : key === "ArrowRight" ? "forward" : key === "ArrowUp" ? "up" : "down";
+  const targetOffset = direction === "backward" || direction === "forward"
+    ? sourceOffsetAfterCharacter(documentSource.fullSource, documentOffset, direction)
+    : sourceVerticalOffset(documentSource.fullSource, documentOffset, direction);
+  if (targetOffset < segment.from || targetOffset > segment.to) return null;
+  const source = documentSource.fullSource.slice(segment.from, segment.to);
+  return {
+    unit: {
+      from: segment.position,
+      to: segment.position + segment.node.nodeSize,
+      kind: "block",
+      // The physical unit is the enclosing quote/list, but it is activated
+      // from a rendered code block and must retain code-source presentation.
+      name: "code_block",
+      source,
+      sourceStart: segment.from,
+      documentSource: documentSource.fullSource,
+      forceContinuousSource: true
+    },
+    sourceOffset: targetOffset - segment.from
+  };
+}
+
 export function documentSourceUnitStartOffset(state, unit, serializer) {
   if (!unit || typeof serializer !== "function") return null;
   const source = continuousMarkdownSource(state, unit, serializer);
@@ -5683,6 +5776,7 @@ function continuousSourceEditor(
   label,
   presentationClass,
   headingTargetGeometry,
+  blockTargetGeometry,
   initialCaret,
   initialDeleteDirection,
   initialSelectionDirection,
@@ -5820,6 +5914,21 @@ function continuousSourceEditor(
     editor.dataset.headingSourceShift = String(shift);
     editor.dataset.headingSourceVerticalShift = String(adjustedMarginTop - baseMarginTop);
   };
+  const alignBlockSource = () => {
+    if (
+      !editor.isConnected
+      || name !== "code_block"
+      || !Number.isFinite(blockTargetGeometry?.left)
+      || !Number.isFinite(blockTargetGeometry?.right)
+    ) return;
+    editor.style.removeProperty("transform");
+    editor.style.removeProperty("width");
+    const rect = editor.getBoundingClientRect();
+    const shift = blockTargetGeometry.left - rect.left;
+    editor.style.transform = `translateX(${shift}px)`;
+    editor.style.width = `${Math.max(1, blockTargetGeometry.right - blockTargetGeometry.left)}px`;
+    editor.dataset.blockSourceShift = String(shift);
+  };
   const resize = () => {
     if (isBlock) {
       editor.style.height = "0";
@@ -5830,6 +5939,7 @@ function continuousSourceEditor(
         Math.max(minimumBlockHeight, editor.scrollHeight + borderHeight)
       }px`;
       alignHeadingSource();
+      alignBlockSource();
     } else {
       editor.style.width = `${Math.max(3, Math.min(72, editor.value.length + 1))}ch`;
     }
@@ -8039,6 +8149,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             initialPointerSelection: meta.initialPointerSelection ?? 0,
             focusLock: Boolean(meta.focusLock),
             headingTargetGeometry: meta.headingTargetGeometry ?? null,
+            blockTargetGeometry: meta.blockTargetGeometry ?? null,
             sourceSelection: null
           };
         }
@@ -8066,6 +8177,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             initialPointerSelection: 0,
             focusLock: false,
             headingTargetGeometry: null,
+            blockTargetGeometry: null,
             sourceSelection: null
           };
         }
@@ -8086,6 +8198,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             initialPointerSelection: 0,
             focusLock: false,
             headingTargetGeometry: null,
+            blockTargetGeometry: null,
             sourceSelection: null
           };
         }
@@ -10005,6 +10118,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           `${unit.name || unit.names?.join(" ") || "Markdown"} source`,
           sourcePresentationClass,
           headingTargetGeometry,
+          pluginState.blockTargetGeometry,
           initialCaret,
           pluginState.initialDeleteDirection,
           pluginState.initialSelectionDirection,
