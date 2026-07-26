@@ -253,6 +253,23 @@ test("editing a table regenerates valid GFM and escapes inline-code pipes once",
   assert.equal(reparsed.children[0].children[1].children[0].children[0].value, "a|b");
 });
 
+test("editing one table cell preserves every unrelated source byte", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = [
+    "| Key | Value |",
+    "| :- | -: |",
+    "| Alpha | Beta |",
+    ""
+  ].join("\n");
+  const doc = parse(source);
+  const position = textPosition(doc, "Beta") + "Beta".length;
+  const edited = EditorState.create({ doc }).tr.insertText("!", position).doc;
+  assert.equal(
+    serialize(edited),
+    source.replace("| Alpha | Beta |", "| Alpha | Beta! |")
+  );
+});
+
 test("partial clipboard selection from a table into prose keeps valid Markdown structure", async () => {
   const { parse, serialize } = await milkdownTransformer();
   const source = `${compactTable}\nAfter\n`;

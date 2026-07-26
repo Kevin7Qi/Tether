@@ -1106,6 +1106,96 @@ async function verifyMixedDocumentInsertionOffsets() {
   }
 }
 
+async function verifyRepresentativeDocumentEditingSession() {
+  const fixture = [
+    "# Roadmap *draft*",
+    "",
+    "- Alpha `code`",
+    "- [ ] Ship task",
+    "",
+    "> Quote [label](https://example.test/path)",
+    "",
+    "```js",
+    "const value = 1;",
+    "```",
+    "",
+    "| Key | Value |",
+    "| :- | -: |",
+    "| Alpha | Beta |",
+    "",
+    "![Diagram](image.png)",
+    "",
+    "$x + y$",
+    "",
+    "Reference[^n].",
+    "",
+    "[^n]: Footnote",
+    ""
+  ].join("\n");
+  let expected = fixture;
+  const save = async () => {
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(expected);
+  };
+
+  await startSession(fixture, "Roadmap");
+
+  await placeCaretInText("Roadmap", "Roadmap".length, ".ProseMirror", "h1");
+  await cdp.send("Input.insertText", { text: " 2026" });
+  await waitForSaveState(false);
+  expected = expected.replace("# Roadmap *draft*", "# Roadmap 2026 *draft*");
+  await save();
+
+  await clickElement(".milkdown-list-item-block .label.unchecked");
+  await waitFor(
+    () => evaluate(`document.querySelectorAll(".milkdown-list-item-block .label.checked").length === 1`),
+    "the representative session did not render its task as checked"
+  );
+  await waitForSaveState(false);
+  expected = expected.replace("- [ ] Ship task", "- [x] Ship task");
+  await save();
+
+  await placeCaretInText("Quote ", "Quote ".length, ".ProseMirror", "blockquote");
+  await cdp.send("Input.insertText", { text: "updated " });
+  await waitForSaveState(false);
+  expected = expected.replace("> Quote [label]", "> Quote updated [label]");
+  await save();
+
+  await waitFor(
+    () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .cm-content"))`),
+    "the representative session code editor did not become ready"
+  );
+  await clickElement(".milkdown-code-block .cm-content");
+  await waitFor(
+    () => evaluate(`document.activeElement?.matches?.(".cm-content")`),
+    "the representative session could not focus its rendered code"
+  );
+  await dispatchKey({ key: "End", code: "End", virtualKeyCode: 35 });
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await cdp.send("Input.insertText", { text: " + 1" });
+  await waitForSaveState(false);
+  expected = expected.replace("const value = 1;", "const value = 1 + 1;");
+  await save();
+
+  await placeCaretInText("Beta", "Beta".length);
+  await cdp.send("Input.insertText", { text: "!" });
+  await waitForSaveState(false);
+  const beforeTableEdit = expected;
+  expected = expected.replace("| Alpha | Beta |", "| Alpha | Beta! |");
+  await save();
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  expected = beforeTableEdit;
+  await save();
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  expected = expected.replace("| Alpha | Beta |", "| Alpha | Beta! |");
+  await save();
+  await stopSession();
+}
+
 async function verifyInlineEditing() {
   await startSession(inlineFixture, "Before bold after.");
   await placeCaretInText("bold", 2);
@@ -4286,6 +4376,7 @@ async function verifyInlineSourcePresentation() {
     const style = getComputedStyle(element);
     const parentStyle = element.parentElement ? getComputedStyle(element.parentElement) : null;
     const rect = element.getBoundingClientRect();
+    const lineContainerRect = element.closest("p")?.getBoundingClientRect() || null;
     return {
       fontFamily: style.fontFamily,
       fontSize: style.fontSize,
@@ -4297,7 +4388,15 @@ async function verifyInlineSourcePresentation() {
       backgroundColor: style.backgroundColor,
       borderTopWidth: style.borderTopWidth,
       borderRadius: style.borderRadius,
+      top: rect.top,
+      bottom: rect.bottom,
+      left: rect.left,
+      right: rect.right,
       height: rect.height,
+      lineContainer: lineContainerRect ? {
+        top: lineContainerRect.top,
+        height: lineContainerRect.height
+      } : null,
       className: element.className || null,
       parent: element.parentElement ? {
         tagName: element.parentElement.tagName,
@@ -4308,7 +4407,9 @@ async function verifyInlineSourcePresentation() {
         fontWeight: parentStyle.fontWeight,
         lineHeight: parentStyle.lineHeight,
         color: parentStyle.color,
-        textDecorationLine: parentStyle.textDecorationLine
+        textDecorationLine: parentStyle.textDecorationLine,
+        top: element.parentElement.getBoundingClientRect().top,
+        height: element.parentElement.getBoundingClientRect().height
       } : null
     };
   })()`);
@@ -4326,16 +4427,21 @@ async function verifyInlineSourcePresentation() {
     const mismatches = fixture.properties.filter((property) =>
       rendered?.[property] !== sourceControl?.[property]
     );
-    if (!rendered || !sourceControl || mismatches.length) {
+    const geometryStable = rendered?.lineContainer
+      && sourceControl?.lineContainer
+      && Math.abs(rendered.top - sourceControl.top) <= 0.25
+      && Math.abs(rendered.lineContainer.top - sourceControl.lineContainer.top) <= 0.1
+      && Math.abs(rendered.lineContainer.height - sourceControl.lineContainer.height) <= 0.25;
+    if (!rendered || !sourceControl || mismatches.length || !geometryStable) {
       throw new Error(
         `${fixture.name} source presentation diverged from rendered inline text: ${
-          JSON.stringify({ mismatches, rendered, sourceControl })
+          JSON.stringify({ mismatches, geometryStable, rendered, sourceControl })
         }`
       );
     }
     if (process.env.TETHER_PARITY_SCREENSHOT && fixture.name === "strong") {
       await captureElementsScreenshot(
-        ["input.tether-continuous-source"],
+        [".ProseMirror p"],
         process.env.TETHER_PARITY_SCREENSHOT
       );
     }
@@ -7548,6 +7654,11 @@ async function run() {
     console.log("Verified mixed rendered constructs insert at their exact physical Markdown offsets.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "representative-document-editing") {
+    await verifyRepresentativeDocumentEditingSession();
+    console.log("Verified one representative document survives a continuous rendered edit, save, undo, and redo session.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "rendered-pointer-insertion") {
     await verifyRenderedPointerInsertion();
     console.log("Verified pointer insertion inside rendered inline Markdown preserves exact source.");
@@ -7917,6 +8028,7 @@ async function run() {
   await verifyExternalMarkdownOpening();
   await verifyWholeDocumentSourceTraversal();
   await verifyMixedDocumentInsertionOffsets();
+  await verifyRepresentativeDocumentEditingSession();
   await verifyInlineEditing();
   await verifyRenderedPointerInsertion();
   await verifyHeadingSourceEditing();

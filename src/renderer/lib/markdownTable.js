@@ -41,6 +41,77 @@ export function tableSemanticSignature(node) {
   return JSON.stringify(semanticValue(node, true));
 }
 
+function sourceFaithfulEditedTable(node, parent, state, info) {
+  if (
+    node.markdownTableSource == null
+    || node.markdownTableSignature == null
+    || node.markdownTableCells == null
+  ) return null;
+
+  let original;
+  let cells;
+  try {
+    original = JSON.parse(node.markdownTableSignature);
+    cells = JSON.parse(node.markdownTableCells);
+  } catch {
+    return null;
+  }
+
+  const current = semanticValue(node, true);
+  if (
+    !Array.isArray(original?.children)
+    || !Array.isArray(current?.children)
+    || !Array.isArray(cells)
+    || JSON.stringify(original.align) !== JSON.stringify(current.align)
+    || original.children.length !== current.children.length
+    || cells.length !== current.children.length
+  ) return null;
+
+  const tableCellHandler = gfmTableToMarkdown(state.options).handlers.tableCell;
+  const replacements = [];
+  for (let rowIndex = 0; rowIndex < current.children.length; rowIndex += 1) {
+    const originalRow = original.children[rowIndex];
+    const currentRow = current.children[rowIndex];
+    const sourceRow = cells[rowIndex];
+    if (
+      !Array.isArray(originalRow?.children)
+      || !Array.isArray(currentRow?.children)
+      || !Array.isArray(sourceRow)
+      || originalRow.children.length !== currentRow.children.length
+      || sourceRow.length !== currentRow.children.length
+    ) return null;
+
+    for (let cellIndex = 0; cellIndex < currentRow.children.length; cellIndex += 1) {
+      if (
+        JSON.stringify(originalRow.children[cellIndex])
+        === JSON.stringify(currentRow.children[cellIndex])
+      ) continue;
+      const sourceCell = sourceRow[cellIndex];
+      if (
+        !Number.isFinite(sourceCell?.start)
+        || !Number.isFinite(sourceCell?.end)
+        || sourceCell.start > sourceCell.end
+      ) return null;
+      replacements.push({
+        start: sourceCell.start,
+        end: sourceCell.end,
+        value: tableCellHandler(
+          node.children[rowIndex].children[cellIndex],
+          node.children[rowIndex],
+          state,
+          info
+        )
+      });
+    }
+  }
+
+  let source = node.markdownTableSource;
+  for (const replacement of replacements.sort((left, right) => right.start - left.start)) {
+    source = `${source.slice(0, replacement.start)}${replacement.value}${source.slice(replacement.end)}`;
+  }
+  return source;
+}
+
 function cellSourceSegments(cell, source, tableStart) {
   const segments = [];
   let visibleOffset = 0;
@@ -266,5 +337,7 @@ export function sourceFaithfulTableHandler(node, parent, state, info) {
     && node.markdownTableSignature != null
     && tableSemanticSignature(node) === node.markdownTableSignature
   ) return node.markdownTableSource;
+  const editedSource = sourceFaithfulEditedTable(node, parent, state, info);
+  if (editedSource != null) return editedSource;
   return gfmTableToMarkdown(state.options).handlers.table(node, parent, state, info);
 }

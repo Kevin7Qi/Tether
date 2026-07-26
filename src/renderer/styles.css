@@ -2447,7 +2447,9 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror input.tether-continuous-source {
   max-width: 100%;
   min-width: 3ch;
-  height: 1.55em;
+  /* Match the prose glyph box closely enough that revealing delimiters does
+     not make the paragraph or following blocks move. */
+  height: 1.375rem;
   overflow-x: auto;
   text-overflow: clip;
   white-space: pre;
@@ -2483,7 +2485,7 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .ProseMirror input.tether-continuous-source.is-inlineCode {
-  height: 1.65em;
+  height: 1.5rem;
   border: 1px solid var(--line-strong);
   border-radius: 4px;
   background: var(--code);
@@ -2491,6 +2493,7 @@ textarea:focus-visible,
   padding: 0.1em 0.34em;
   font-size: 0.84em;
   line-height: 1.4286;
+  vertical-align: -0.5px;
 }
 
 .tether-wysiwyg .ProseMirror input.tether-continuous-source.is-inlineCode:focus {
