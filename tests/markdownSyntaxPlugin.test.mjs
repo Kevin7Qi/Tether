@@ -42,6 +42,7 @@ import {
   isUnmarkedCodeBlockDeletion,
   isUnmarkedFullDocumentReplacement,
   isInlineMathPointerEdge,
+  isRedundantRenderedCompositionCommit,
   isSourceInputComposing,
   landedOnRenderedSourceBoundary,
   hardbreakBoundaryBackspaceTransaction,
@@ -3865,6 +3866,30 @@ test("source controls leave IME composition keystrokes entirely native", () => {
   assert.equal(isSourceInputComposing({ isComposing: true, keyCode: 13 }), true);
   assert.equal(isSourceInputComposing({ isComposing: false, keyCode: 229 }), true);
   assert.equal(isSourceInputComposing({ isComposing: false, keyCode: 13 }), false);
+});
+
+test("rendered IME commits suppress only text already present before the caret", () => {
+  const textNode = { nodeType: 3, data: "Before 界" };
+  const selection = { isCollapsed: true, anchorNode: textNode, anchorOffset: 8 };
+  const commit = { inputType: "insertText", isComposing: false, data: "界" };
+
+  assert.equal(isRedundantRenderedCompositionCommit(commit, "界", selection), true);
+  assert.equal(isRedundantRenderedCompositionCommit(commit, "文", selection), false);
+  assert.equal(isRedundantRenderedCompositionCommit(
+    { ...commit, isComposing: true },
+    "界",
+    selection
+  ), false);
+  assert.equal(isRedundantRenderedCompositionCommit(
+    commit,
+    "界",
+    { ...selection, isCollapsed: false }
+  ), false);
+  assert.equal(isRedundantRenderedCompositionCommit(
+    commit,
+    "界",
+    { ...selection, anchorOffset: 7 }
+  ), false);
 });
 
 test("explicit block source activation targets a fenced node without broadening native code editing", () => {

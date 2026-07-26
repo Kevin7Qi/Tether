@@ -137,6 +137,7 @@ import {
   publishMarkdownSourceDraft,
   markdownSourceTargetFromPointer,
   markdownSyntaxPlugin,
+  isRedundantRenderedCompositionCommit,
   isSourceInputComposing,
   physicalCodeSourceUnitAtPosition,
   physicalCodeContentSourceOffset,
@@ -522,6 +523,8 @@ export default function WysiwygSurface({
     let secondSettleFrame = 0;
     let draftEventTarget = null;
     let codeSourceOnlyHistory = null;
+    let pendingRenderedComposition = null;
+    let renderedCompositionTimer = 0;
     const ensureSyntheticTrailing = (event = null) => {
       const eventTarget = event?.target instanceof Element ? event.target : null;
       // A temporary source control owns one exact Markdown editing session.
@@ -558,6 +561,57 @@ export default function WysiwygSurface({
       }
       hasUserChangeRef.current = true;
       if (!applyingExternalRef.current) onChangeRef.current?.(markdown);
+    };
+    const clearRenderedComposition = () => {
+      pendingRenderedComposition = null;
+      if (renderedCompositionTimer) window.clearTimeout(renderedCompositionTimer);
+      renderedCompositionTimer = 0;
+    };
+    const isRenderedCompositionTarget = (event) => {
+      const target = event?.target instanceof Element ? event.target : null;
+      return Boolean(target?.closest(".ProseMirror"))
+        && !target.closest(
+          "button, input, select, textarea, .cm-content, .tether-continuous-source"
+        );
+    };
+    const beginRenderedComposition = (event) => {
+      if (!isRenderedCompositionTarget(event)) return;
+      // Structural blocks need their editor-only trailing paragraph before
+      // Chromium starts composing. Doing this after the final insertText
+      // changes the physical terminal-newline count.
+      ensureSyntheticTrailing();
+      clearRenderedComposition();
+      pendingRenderedComposition = { text: String(event.data ?? "") };
+    };
+    const updateRenderedComposition = (event) => {
+      if (!pendingRenderedComposition || !isRenderedCompositionTarget(event)) return;
+      pendingRenderedComposition = { text: String(event.data ?? "") };
+    };
+    const finishRenderedComposition = (event) => {
+      if (!pendingRenderedComposition || !isRenderedCompositionTarget(event)) return;
+      const text = String(event.data ?? pendingRenderedComposition.text);
+      if (!text) {
+        clearRenderedComposition();
+        return;
+      }
+      pendingRenderedComposition = { text };
+      const composition = pendingRenderedComposition;
+      renderedCompositionTimer = window.setTimeout(() => {
+        if (pendingRenderedComposition === composition) clearRenderedComposition();
+      }, 250);
+    };
+    const suppressRedundantRenderedCompositionCommit = (event) => {
+      const composition = pendingRenderedComposition;
+      if (!composition || event.isComposing) return;
+      const alreadyRendered = isRedundantRenderedCompositionCommit(
+        event,
+        composition.text,
+        host.ownerDocument?.getSelection?.()
+      );
+      clearRenderedComposition();
+      if (!alreadyRendered) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
     };
     const ensureSyntheticTrailingAfterPointer = () => {
       ensureSyntheticTrailing();
@@ -2020,7 +2074,11 @@ export default function WysiwygSurface({
     host.addEventListener("keydown", ensureSyntheticTrailing, true);
     host.addEventListener("keydown", restoreFocusAfterHistory, true);
     host.addEventListener("focusin", rememberCodeFocus, true);
+    host.addEventListener("compositionstart", beginRenderedComposition, true);
+    host.addEventListener("compositionupdate", updateRenderedComposition, true);
+    host.addEventListener("compositionend", finishRenderedComposition, true);
     host.addEventListener("beforeinput", handleCodeSourceOnlyBeforeInput, true);
+    host.addEventListener("beforeinput", suppressRedundantRenderedCompositionCommit, true);
     host.addEventListener("copy", handleCodeSourceClipboard, true);
     host.addEventListener("cut", handleCodeSourceClipboard, true);
     host.addEventListener("paste", handleCodeSourceOnlyTransfer, true);
@@ -2251,7 +2309,11 @@ export default function WysiwygSurface({
       host.removeEventListener("keydown", ensureSyntheticTrailing, true);
       host.removeEventListener("keydown", restoreFocusAfterHistory, true);
       host.removeEventListener("focusin", rememberCodeFocus, true);
+      host.removeEventListener("compositionstart", beginRenderedComposition, true);
+      host.removeEventListener("compositionupdate", updateRenderedComposition, true);
+      host.removeEventListener("compositionend", finishRenderedComposition, true);
       host.removeEventListener("beforeinput", handleCodeSourceOnlyBeforeInput, true);
+      host.removeEventListener("beforeinput", suppressRedundantRenderedCompositionCommit, true);
       host.removeEventListener("copy", handleCodeSourceClipboard, true);
       host.removeEventListener("cut", handleCodeSourceClipboard, true);
       draftEventTarget?.removeEventListener(markdownSourceDraftEvent, handleMarkdownSourceDraft);
@@ -2287,6 +2349,7 @@ export default function WysiwygSurface({
       if (copyFeedbackTimer) window.clearTimeout(copyFeedbackTimer);
       if (settleFrame) window.cancelAnimationFrame(settleFrame);
       if (secondSettleFrame) window.cancelAnimationFrame(secondSettleFrame);
+      clearRenderedComposition();
       if (codeDragFinishFrame) window.cancelAnimationFrame(codeDragFinishFrame);
       if (historyFocusFrame) window.cancelAnimationFrame(historyFocusFrame);
       if (crepeRef.current === crepe) crepeRef.current = null;

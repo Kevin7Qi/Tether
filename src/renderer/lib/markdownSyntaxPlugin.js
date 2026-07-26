@@ -5977,6 +5977,26 @@ export function isSourceInputComposing(event) {
   return Boolean(event?.isComposing) || event?.keyCode === 229;
 }
 
+export function isRedundantRenderedCompositionCommit(
+  event,
+  compositionText,
+  domSelection
+) {
+  if (
+    event?.inputType !== "insertText"
+    || event?.isComposing
+    || typeof event?.data !== "string"
+    || !event.data
+    || event.data !== compositionText
+    || !domSelection?.isCollapsed
+  ) return false;
+  const anchorNode = domSelection.anchorNode;
+  const anchorOffset = domSelection.anchorOffset ?? -1;
+  return anchorNode?.nodeType === 3
+    && anchorOffset >= event.data.length
+    && anchorNode.data.slice(anchorOffset - event.data.length, anchorOffset) === event.data;
+}
+
 export function finishUnchangedSourceHandoff(
   editor,
   onCancel,

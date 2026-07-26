@@ -424,22 +424,52 @@ async function clickElement(selector) {
 
 async function clickTextBoundary(text, offset, rootSelector = ".ProseMirror") {
   const point = await textBoundaryPoint(text, offset, rootSelector);
-  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
-  await cdp.send("Input.dispatchMouseEvent", {
-    type: "mousePressed",
-    button: "left",
-    buttons: 1,
-    clickCount: 1,
-    ...point
-  });
-  await cdp.send("Input.dispatchMouseEvent", {
-    type: "mouseReleased",
-    button: "left",
-    buttons: 0,
-    clickCount: 1,
-    ...point
-  });
-  await delay(180);
+  const selector = JSON.stringify(rootSelector);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+      ...point
+    });
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+      ...point
+    });
+    await delay(180);
+    const focused = await evaluate(`(() => {
+      const root = document.querySelector(${selector});
+      const selection = getSelection();
+      const active = document.activeElement;
+      return Boolean(
+        root
+        && (
+          (
+            active === root
+            && selection?.isCollapsed
+            && selection.anchorNode
+            && root.contains(selection.anchorNode)
+          )
+          || (
+            active?.matches?.(".tether-continuous-source")
+            && root.contains(active)
+          )
+        )
+      );
+    })()`);
+    if (focused) return;
+  }
+  const state = await editorState().catch(() => null);
+  throw new Error(
+    `Pointer click did not focus ${rootSelector} at the rendered ${
+      JSON.stringify(text)
+    } boundary\nEditor state: ${JSON.stringify(state)}`
+  );
 }
 
 async function textBoundaryPoint(text, offset, rootSelector) {
@@ -2131,6 +2161,16 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       sourceHead: "## Alpha **Beta".length
     },
     {
+      name: "strong title word IME",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha ".length,
+      visibleHead: "Alpha Beta".length,
+      sourceAnchor: "## Alpha **".length,
+      sourceHead: "## Alpha **Beta".length,
+      imeText: "界"
+    },
+    {
       name: "strong title word Backspace",
       source: "## Alpha **Beta** Gamma ##\nAfter.\n",
       visibleText: "Alpha Beta Gamma",
@@ -2208,6 +2248,17 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       selector: "p"
     },
     {
+      name: "paragraph strong word IME",
+      source: "Before **Beta** after.\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "Before **".length,
+      sourceHead: "Before **Beta".length,
+      selector: "p",
+      imeText: "界"
+    },
+    {
       name: "quoted paragraph strong word",
       source: "> Before **Beta** after.\n",
       visibleText: "Before Beta after.",
@@ -2248,6 +2299,17 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       selector: "li p"
     },
     {
+      name: "task item strong word IME",
+      source: "- [x] Before **Beta** after.\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "- [x] Before **".length,
+      sourceHead: "- [x] Before **Beta".length,
+      selector: "li p",
+      imeText: "界"
+    },
+    {
       name: "quoted list item strong word",
       source: "> - Before **Beta** after.\n",
       visibleText: "Before Beta after.",
@@ -2266,6 +2328,17 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before **".length,
       sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before **Beta".length,
       selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p"
+    },
+    {
+      name: "table cell strong word IME",
+      source: "| Key | Value |\n| --- | --- |\n| A | Before **Beta** after. |\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before **".length,
+      sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before **Beta".length,
+      selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p",
+      imeText: "界"
     },
     {
       name: "table cell backward strong word",
@@ -2384,6 +2457,17 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       sourceAnchor: "Reference[^n].\n\n[^n]: Before **".length,
       sourceHead: "Reference[^n].\n\n[^n]: Before **Beta".length,
       selector: 'dl[data-type="footnote_definition"] dd p'
+    },
+    {
+      name: "footnote definition strong word IME",
+      source: "Reference[^n].\n\n[^n]: Before **Beta** after.\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "Reference[^n].\n\n[^n]: Before **".length,
+      sourceHead: "Reference[^n].\n\n[^n]: Before **Beta".length,
+      selector: 'dl[data-type="footnote_definition"] dd p',
+      imeText: "界"
     },
     {
       name: "quoted strong title word",
@@ -2655,7 +2739,9 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       control.setSelectionRange(${sourceStart}, ${sourceEnd}, ${JSON.stringify(direction)});
       return true;
     })()`);
-    if (scenario.keyCode) {
+    if (scenario.imeText) {
+      await dispatchImeText(scenario.imeText);
+    } else if (scenario.keyCode) {
       await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
       if (scenario.insertAfterKey) {
         await cdp.send("Input.insertText", { text: "x" });
@@ -2675,7 +2761,33 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       ".ProseMirror",
       scenario.selector || "h2"
     );
-    if (scenario.keyCode) {
+    if (scenario.imeText) {
+      await evaluate(`(() => {
+        window.__tetherImeEvents = [];
+        const root = document.querySelector(".ProseMirror");
+        for (const type of ["compositionstart", "compositionupdate", "beforeinput", "input", "compositionend"]) {
+          root?.addEventListener(type, (event) => {
+            const selection = getSelection();
+            window.__tetherImeEvents.push({
+              type,
+              data: event.data ?? null,
+              inputType: event.inputType ?? null,
+              isComposing: event.isComposing ?? null,
+              targetRanges: [...(event.getTargetRanges?.() || [])].map((range) => ({
+                startText: range.startContainer?.data ?? null,
+                startOffset: range.startOffset,
+                endText: range.endContainer?.data ?? null,
+                endOffset: range.endOffset
+              })),
+              anchorText: selection?.anchorNode?.data ?? null,
+              anchorOffset: selection?.anchorOffset ?? null,
+              text: root.textContent
+            });
+          }, true);
+        }
+      })()`);
+      await dispatchImeText(scenario.imeText);
+    } else if (scenario.keyCode) {
       if (scenario.renderedKey) {
         await dispatchKey({
           key: scenario.renderedKey,
@@ -2702,7 +2814,10 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
         expectedSource,
         actualSource: await readFile(samplePath, "utf8").catch(() => null),
         editor: await editorState().catch(() => null),
-        sourceControl: await sourceControlState().catch(() => null)
+        sourceControl: await sourceControlState().catch(() => null),
+        imeEvents: scenario.imeText
+          ? await evaluate("window.__tetherImeEvents || []").catch(() => null)
+          : null
       });
     }
     await stopSession(true);
