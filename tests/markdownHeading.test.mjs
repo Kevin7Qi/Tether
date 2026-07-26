@@ -39,6 +39,7 @@ import {
   documentPositionAtSourceOffset,
   documentSourceSegments,
   documentSourceUnitBoundaryNavigationOffset,
+  exactSourceReplacementMeta,
   headingSourceMarkerRange,
   plainTextMarkdownSourceSelection,
   plainTextMarkdownSourceToken,
@@ -402,6 +403,63 @@ test("heading literals navigate and edit through their exact physical source", a
   const outside = textPosition(doc, "outside");
   const outsideEdited = EditorState.create({ doc }).tr.insertText("changed", outside, outside + 7);
   assert.equal(serialize(outsideEdited.doc), "## A &copy; and \\*literal\\* ##\n\nchanged\n");
+});
+
+test("plain heading selections retain exact source when an edit leaves leading whitespace", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "## Alpha Beta ##\n\nAfter.\n";
+  const doc = parse(source);
+  const textStart = textPosition(doc, "Alpha Beta");
+
+  const collapsedState = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, textStart + "Alpha".length)
+  });
+  const collapsedSourceSelection = plainTextMarkdownSourceSelection(
+    collapsedState,
+    serialize
+  );
+  assert.deepEqual(
+    {
+      anchor: collapsedSourceSelection?.anchor,
+      head: collapsedSourceSelection?.head
+    },
+    {
+      anchor: source.indexOf("Alpha") + "Alpha".length,
+      head: source.indexOf("Alpha") + "Alpha".length
+    }
+  );
+
+  for (const backward of [false, true]) {
+    const state = EditorState.create({
+      doc,
+      selection: TextSelection.create(
+        doc,
+        backward ? textStart + "Alpha".length : textStart,
+        backward ? textStart : textStart + "Alpha".length
+      )
+    });
+    const sourceSelection = plainTextMarkdownSourceSelection(state, serialize);
+    assert.deepEqual(
+      {
+        anchor: sourceSelection?.anchor,
+        head: sourceSelection?.head
+      },
+      backward
+        ? { anchor: source.indexOf("Alpha") + "Alpha".length, head: source.indexOf("Alpha") }
+        : { anchor: source.indexOf("Alpha"), head: source.indexOf("Alpha") + "Alpha".length }
+    );
+    const transaction = replaceSourceSelectionTransaction(
+      state,
+      sourceSelection,
+      "",
+      parse
+    );
+    assert.equal(
+      transaction.getMeta(exactSourceReplacementMeta)?.source,
+      source.replace("Alpha", "")
+    );
+  }
 });
 
 test("setext heading content retains physical entities above its underline", async () => {

@@ -4704,7 +4704,11 @@ function literalTextblockSourceMapping(
   // text needs no decoding. Nested structural paragraphs are different: even
   // identical text starts after physical list/quote prefixes, so retain their
   // segment offset instead of falling back to a whole-block serializer probe.
-  if (source === text && segment?.node === textblock) return null;
+  if (
+    textblock.type.name === "paragraph"
+    && source === text
+    && segment?.node === textblock
+  ) return null;
   if (decodedMarkdownSourceOffset(
     source,
     text,

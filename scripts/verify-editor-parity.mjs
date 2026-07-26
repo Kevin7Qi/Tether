@@ -350,6 +350,65 @@ async function placeCaretInText(
   );
 }
 
+async function placeSelectionInText(
+  text,
+  anchorOffset,
+  headOffset,
+  rootSelector = ".ProseMirror",
+  textRootSelector = null
+) {
+  const installed = await waitFor(
+    () => evaluate(`(() => {
+      const root = document.querySelector(${JSON.stringify(rootSelector)});
+      if (!root) return false;
+      const textRoot = ${JSON.stringify(textRootSelector)}
+        ? root.querySelector(${JSON.stringify(textRootSelector)})
+        : root;
+      if (!textRoot) return false;
+      const walker = document.createTreeWalker(textRoot, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      let node;
+      while ((node = walker.nextNode())) nodes.push(node);
+      const combined = nodes.map((candidate) => candidate.data).join("");
+      const match = combined.indexOf(${JSON.stringify(text)});
+      if (match < 0) return false;
+      const pointAt = (target) => {
+        let consumed = 0;
+        for (let index = 0; index < nodes.length; index += 1) {
+          const candidate = nodes[index];
+          const end = consumed + candidate.data.length;
+          if (target < end || (target === end && index === nodes.length - 1)) {
+            return { node: candidate, offset: target - consumed };
+          }
+          consumed = end;
+        }
+        return null;
+      };
+      const anchor = pointAt(match + ${anchorOffset});
+      const head = pointAt(match + ${headOffset});
+      if (!anchor || !head) return false;
+      root.focus({ preventScroll: true });
+      const selection = getSelection();
+      selection.removeAllRanges();
+      const range = document.createRange();
+      range.setStart(anchor.node, anchor.offset);
+      range.collapse(true);
+      selection.addRange(range);
+      selection.extend(head.node, head.offset);
+      document.dispatchEvent(new Event("selectionchange"));
+      return document.activeElement === root
+        && selection.anchorNode === anchor.node
+        && selection.anchorOffset === anchor.offset
+        && selection.focusNode === head.node
+        && selection.focusOffset === head.offset;
+    })()`),
+    `Could not place the real editor selection inside rendered ${JSON.stringify(text)}`
+  );
+  if (!installed) return false;
+  await delay(120);
+  return true;
+}
+
 async function clickElement(selector) {
   const point = await evaluate(`(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
@@ -1725,6 +1784,46 @@ async function verifyPlatformNativeHeadingNavigation() {
       virtualKeyCode: 39,
       nativeModifiers: ["shift", "meta"],
       modifiers: 12
+    },
+    {
+      name: "ArrowUp from content middle",
+      visibleOffset: "Alpha".length,
+      keyCode: "Up",
+      key: "ArrowUp",
+      code: "ArrowUp",
+      virtualKeyCode: 38,
+      nativeModifiers: [],
+      modifiers: 0
+    },
+    {
+      name: "Shift-ArrowUp from content middle",
+      visibleOffset: "Alpha".length,
+      keyCode: "Up",
+      key: "ArrowUp",
+      code: "ArrowUp",
+      virtualKeyCode: 38,
+      nativeModifiers: ["shift"],
+      modifiers: 8
+    },
+    {
+      name: "ArrowDown from content middle",
+      visibleOffset: "Alpha".length,
+      keyCode: "Down",
+      key: "ArrowDown",
+      code: "ArrowDown",
+      virtualKeyCode: 40,
+      nativeModifiers: [],
+      modifiers: 0
+    },
+    {
+      name: "Shift-ArrowDown from content middle",
+      visibleOffset: "Alpha".length,
+      keyCode: "Down",
+      key: "ArrowDown",
+      code: "ArrowDown",
+      virtualKeyCode: 40,
+      nativeModifiers: ["shift"],
+      modifiers: 8
     }
   ];
   const scenarios = fixtures.flatMap((fixture) => actions.map((action) => ({
@@ -1735,6 +1834,12 @@ async function verifyPlatformNativeHeadingNavigation() {
   const selectedScenarios = process.env.TETHER_PARITY_SCENARIO
     ? scenarios.filter(({ name }) => name.includes(process.env.TETHER_PARITY_SCENARIO))
     : scenarios;
+  if (process.env.TETHER_PARITY_SCENARIO && !selectedScenarios.length) {
+    throw new Error(
+      `No heading-navigation scenario matched ${JSON.stringify(process.env.TETHER_PARITY_SCENARIO)}. `
+      + `Available scenarios: ${scenarios.map(({ name }) => name).join(", ")}`
+    );
+  }
   const mismatches = [];
 
   for (let index = 0; index < selectedScenarios.length; index += 1) {
@@ -1810,6 +1915,202 @@ async function verifyPlatformNativeHeadingNavigation() {
   if (mismatches.length) {
     throw new Error(
       `Rendered heading navigation diverged from a native source textarea:\n${
+        JSON.stringify(mismatches, null, 2)
+      }`
+    );
+  }
+}
+
+async function verifyPlatformNativeHeadingEditing() {
+  const fixtures = [
+    {
+      name: "closed ATX",
+      source: "## Alpha Beta ##\nAfter.\n",
+      selector: "h2"
+    },
+    {
+      name: "ordered-list ATX",
+      source: "7) ## Alpha Beta ##\nAfter.\n",
+      selector: "h2"
+    },
+    {
+      name: "quoted Setext",
+      source: "> Alpha Beta\n> ==========\nAfter.\n",
+      selector: "h1"
+    }
+  ];
+  const visibleText = "Alpha Beta";
+  const actions = [
+    {
+      name: "Option-Backspace after first word",
+      anchorOffset: "Alpha".length,
+      headOffset: "Alpha".length,
+      keyCode: "Backspace",
+      nativeModifiers: ["alt"]
+    },
+    {
+      name: "Option-Delete before last word",
+      anchorOffset: "Alpha ".length,
+      headOffset: "Alpha ".length,
+      keyCode: "Delete",
+      nativeModifiers: ["alt"]
+    },
+    {
+      name: "Command-Backspace from title middle",
+      anchorOffset: "Alpha".length,
+      headOffset: "Alpha".length,
+      keyCode: "Backspace",
+      nativeModifiers: ["meta"]
+    },
+    {
+      name: "Command-Delete from title middle",
+      anchorOffset: "Alpha ".length,
+      headOffset: "Alpha ".length,
+      keyCode: "Delete",
+      nativeModifiers: ["meta"]
+    },
+    {
+      name: "replace first title word",
+      anchorOffset: 0,
+      headOffset: "Alpha".length,
+      replacement: "x"
+    },
+    {
+      name: "replace backward title selection",
+      anchorOffset: visibleText.length,
+      headOffset: 0,
+      replacement: "x"
+    }
+  ];
+  const scenarios = fixtures.flatMap((fixture) => actions.map((action) => ({
+    ...fixture,
+    ...action,
+    name: `${fixture.name} ${action.name}`
+  })));
+  const selectedScenarios = process.env.TETHER_PARITY_SCENARIO
+    ? scenarios.filter(({ name }) => name.includes(process.env.TETHER_PARITY_SCENARIO))
+    : scenarios;
+  if (process.env.TETHER_PARITY_SCENARIO && !selectedScenarios.length) {
+    throw new Error(
+      `No heading-editing scenario matched ${JSON.stringify(process.env.TETHER_PARITY_SCENARIO)}. `
+      + `Available scenarios: ${scenarios.map(({ name }) => name).join(", ")}`
+    );
+  }
+  const mismatches = [];
+
+  for (let index = 0; index < selectedScenarios.length; index += 1) {
+    const scenario = selectedScenarios[index];
+    const titleStart = scenario.source.indexOf(visibleText);
+    const nativeStart = titleStart + Math.min(scenario.anchorOffset, scenario.headOffset);
+    const nativeEnd = titleStart + Math.max(scenario.anchorOffset, scenario.headOffset);
+    const nativeDirection = scenario.anchorOffset > scenario.headOffset ? "backward" : "forward";
+    const controlId = `tether-native-heading-edit-${index}`;
+
+    await startSession(scenario.source, visibleText);
+    await evaluate(`(() => {
+      const control = document.createElement("textarea");
+      control.id = ${JSON.stringify(controlId)};
+      control.style.position = "fixed";
+      control.style.left = "-10000px";
+      control.value = ${JSON.stringify(scenario.source)};
+      document.body.append(control);
+      control.focus();
+      control.setSelectionRange(${nativeStart}, ${nativeEnd}, ${JSON.stringify(nativeDirection)});
+      return true;
+    })()`);
+    if (scenario.keyCode) {
+      await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
+    } else {
+      await cdp.send("Input.insertText", { text: scenario.replacement });
+    }
+    const nativeState = await evaluate(`(() => {
+      const control = document.querySelector(${JSON.stringify(`#${controlId}`)});
+      if (!control) return null;
+      const state = {
+        source: control.value,
+        selectionStart: control.selectionStart,
+        selectionEnd: control.selectionEnd,
+        selectionDirection: control.selectionDirection
+      };
+      control.remove();
+      return state;
+    })()`);
+
+    await placeSelectionInText(
+      visibleText,
+      scenario.anchorOffset,
+      scenario.headOffset,
+      ".ProseMirror",
+      scenario.selector
+    );
+    const beforeEdit = await editorState();
+    if (scenario.keyCode) {
+      // Feed the identical platform event path to the textarea and Tether.
+      // Synthetic CDP modifier deletion can invoke a different Chromium
+      // editing command than Electron's native macOS key dispatch.
+      await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
+    } else {
+      await dispatchTextKey(scenario.replacement, "KeyX", 88);
+    }
+    const nativeChanged = nativeState.source !== scenario.source;
+    if (nativeChanged) {
+      try {
+        await waitForSaveState(false);
+      } catch (error) {
+        throw new Error(
+          `${scenario.name} remained clean instead of producing ${JSON.stringify(nativeState.source)}`
+          + `\nBefore edit: ${JSON.stringify(beforeEdit)}`
+          + `\nAfter edit: ${JSON.stringify(await editorState().catch(() => null))}`,
+          { cause: error }
+        );
+      }
+    } else {
+      await delay(200);
+      const unchangedState = await editorState();
+      if (unchangedState.dirty) {
+        throw new Error(
+          `${scenario.name} changed rendered Markdown even though the native source edit was a no-op: ${
+            JSON.stringify(unchangedState)
+          }`
+        );
+      }
+    }
+    const beforeSave = await editorState();
+    if (nativeChanged) {
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      try {
+        await waitForCompletedSave(nativeState.source);
+      } catch (error) {
+        throw new Error(
+          `${scenario.name} did not save the native source result ${JSON.stringify(nativeState.source)}`
+          + `\nBefore edit: ${JSON.stringify(beforeEdit)}`
+          + `\nBefore save: ${JSON.stringify(beforeSave)}`,
+          { cause: error }
+        );
+      }
+    }
+    const renderedSource = await readFile(samplePath, "utf8");
+    if (renderedSource !== nativeState.source) {
+      mismatches.push({
+        scenario: scenario.name,
+        expectedSource: nativeState.source,
+        actualSource: renderedSource,
+        nativeSelection: {
+          start: nativeState.selectionStart,
+          end: nativeState.selectionEnd,
+          direction: nativeState.selectionDirection
+        },
+        beforeEdit,
+        afterEdit: await editorState().catch(() => null),
+        sourceControl: await sourceControlState().catch(() => null)
+      });
+    }
+    await stopSession(true);
+  }
+
+  if (mismatches.length) {
+    throw new Error(
+      `Rendered heading edits diverged from a native source textarea:\n${
         JSON.stringify(mismatches, null, 2)
       }`
     );
@@ -7863,10 +8164,11 @@ async function verifyCodeNativeControlShortcuts() {
       throw new Error(`${shortcut.name} did not synchronize its marker insertion`, { cause: error });
     }
     await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-    await waitFor(
-      async () => (await readFile(samplePath, "utf8").catch(() => fixture)) !== fixture,
-      `${shortcut.name} comparison did not save its marker insertion`
-    );
+    // A writeFile save can be observed after truncation but before the new
+    // bytes land. Waiting merely for "not the fixture" therefore admits a
+    // transient empty file and creates a false parity mismatch. Require the
+    // exact native-control result before inspecting the saved source.
+    await waitForCompletedSave(expectedSource);
     const actualSource = await readFile(samplePath, "utf8");
     if (actualSource !== expectedSource) {
       mismatches.push({
@@ -8623,6 +8925,11 @@ async function run() {
     console.log("Verified rendered heading navigation matches a native source textarea.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "heading-native-editing") {
+    await verifyPlatformNativeHeadingEditing();
+    console.log("Verified rendered heading edits match a native source textarea.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "rendered-pointer-selection") {
     await verifyRenderedPointerSelection();
     console.log("Verified pointer selection across rendered inline Markdown preserves exact source.");
@@ -9002,6 +9309,7 @@ async function run() {
   await verifyRenderedPointerInsertion();
   await verifyHeadingSourceEditing();
   await verifyPlatformNativeHeadingNavigation();
+  await verifyPlatformNativeHeadingEditing();
   await verifySourceControlImeEditing();
   await verifyHeadingSourcePresentation();
   await verifyInlineSourcePresentation();
