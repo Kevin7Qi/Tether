@@ -503,6 +503,15 @@ async function dispatchTextKey(text, code, virtualKeyCode) {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...common });
 }
 
+async function dispatchImeText(text) {
+  await cdp.send("Input.imeSetComposition", {
+    text,
+    selectionStart: text.length,
+    selectionEnd: text.length
+  });
+  await cdp.send("Input.insertText", { text });
+}
+
 async function dispatchEnterKey(modifiers = 0) {
   const common = {
     key: "Enter",
@@ -3866,6 +3875,96 @@ async function verifyStructuralMarkerNavigation() {
   );
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave(editedHeading);
+  await stopSession();
+}
+
+async function verifySourceControlImeEditing() {
+  const originalBlock = "> Title\r\n> =====";
+  const editedBlock = "> 章节\r\n> =====";
+  await startSession(`${originalBlock}\r\n`, "Title");
+  await placeCaretInText("Title", 0, ".ProseMirror", "h1");
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === originalBlock
+      && state.selectionStart === 1 && state.selectionEnd === 1,
+    "Quoted CRLF setext heading did not expose its physical source before IME editing"
+  );
+  const selected = await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.tetherSetPhysicalSourceSelection?.(2, 7, "forward");
+    return control?.tetherGetPhysicalSourceState?.() || null;
+  })()`);
+  if (
+    selected?.start !== 2
+    || selected?.end !== 7
+    || selected?.value !== originalBlock
+  ) {
+    throw new Error(`IME heading setup lost its physical selection: ${JSON.stringify(selected)}`);
+  }
+
+  await dispatchImeText("章节");
+  await waitForSourceControl(
+    (state) => state?.active && state.value === editedBlock
+      && state.selectionStart === 4 && state.selectionEnd === 4,
+    "IME composition did not replace the rendered heading title in physical source"
+  );
+  await waitForSaveState(false);
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === originalBlock
+      && state.selectionStart === 2 && state.selectionEnd === 7,
+    "Undo did not restore the pre-composition heading source and selection"
+  );
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === editedBlock
+      && state.selectionStart === 4 && state.selectionEnd === 4,
+    "Redo did not restore the committed IME heading edit"
+  );
+
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(`${editedBlock}\r\n`);
+  await stopSession();
+
+  const originalInline = "**bold**";
+  const editedInline = "**强调**";
+  await startSession(`Before ${originalInline} after.\n`, "Before bold after.");
+  await placeCaretInText("Before ", "Before ".length);
+  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === originalInline
+      && state.selectionStart === 1 && state.selectionEnd === 1,
+    "Strong source did not open before inline IME editing"
+  );
+  const selectedInline = await evaluate(`(() => {
+    const control = document.querySelector(".tether-continuous-source");
+    control?.tetherSetPhysicalSourceSelection?.(2, 6, "forward");
+    return control?.tetherGetPhysicalSourceState?.() || null;
+  })()`);
+  if (selectedInline?.start !== 2 || selectedInline?.end !== 6) {
+    throw new Error(`Inline IME setup lost its delimiter-aware selection: ${JSON.stringify(selectedInline)}`);
+  }
+  await dispatchImeText("强调");
+  await waitForSourceControl(
+    (state) => state?.active && state.value === editedInline
+      && state.selectionStart === 4 && state.selectionEnd === 4,
+    "IME composition did not preserve inline emphasis delimiters"
+  );
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === originalInline
+      && state.selectionStart === 2 && state.selectionEnd === 6,
+    "Undo did not restore inline source before IME composition"
+  );
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === editedInline
+      && state.selectionStart === 4 && state.selectionEnd === 4,
+    "Redo did not restore inline IME composition"
+  );
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(`Before ${editedInline} after.\n`);
   await stopSession();
 }
 
@@ -7277,6 +7376,11 @@ async function run() {
     console.log("Verified rendered structural markers navigate one physical source byte at a time.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "source-control-ime-editing") {
+    await verifySourceControlImeEditing();
+    console.log("Verified IME composition preserves nested CRLF headings and inline delimiters.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "inline-cross-boundary-selection") {
     await verifyInlineCrossBoundarySelection();
     console.log("Verified inline source selections cross rendered boundaries exactly.");
@@ -7373,6 +7477,7 @@ async function run() {
   await verifyInlineEditing();
   await verifyRenderedPointerInsertion();
   await verifyHeadingSourceEditing();
+  await verifySourceControlImeEditing();
   await verifyRenderedPointerSelection();
   await stopSession();
   await verifyInlineBoundaryNavigation();
