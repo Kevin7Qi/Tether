@@ -1424,13 +1424,15 @@ async function verifyHeadingSourceEditing() {
       name: "ATX H2 start",
       source: "## Title\n",
       selector: "h2",
-      expected: "##Title\n"
+      expected: "##Title\n",
+      history: true
     },
     {
       name: "closed ATX H3 start",
       source: "### Title ###\n",
       selector: "h3",
-      expected: "###Title ###\n"
+      expected: "###Title ###\n",
+      history: true
     },
     {
       name: "quoted closed ATX start",
@@ -1446,13 +1448,15 @@ async function verifyHeadingSourceEditing() {
       expected: "- ##Title\n",
       reparsedSelector: "li p",
       reparsedText: "##Title",
-      reparsedCaretOffset: 2
+      reparsedCaretOffset: 2,
+      history: true
     },
     {
       name: "quoted setext start",
       source: "> Title\n> =====\n",
       selector: "h1",
-      expected: ">Title\n> =====\n"
+      expected: ">Title\n> =====\n",
+      history: true
     }
   ];
 
@@ -1499,19 +1503,22 @@ async function verifyHeadingSourceEditing() {
       name: "closed ATX end",
       source: "## Title ##\n",
       selector: "h2",
-      expected: "## Title##\n"
+      expected: "## Title##\n",
+      history: true
     },
     {
       name: "quoted closed ATX end",
       source: "> ## Title ##\n",
       selector: "h2",
-      expected: "> ## Title##\n"
+      expected: "> ## Title##\n",
+      history: true
     },
     {
       name: "quoted setext end",
       source: "> Title\n> =====\n",
       selector: "h1",
-      expected: "> Title> =====\n"
+      expected: "> Title> =====\n",
+      history: true
     }
   ];
   for (const testCase of deleteCases) {
@@ -1521,6 +1528,16 @@ async function verifyHeadingSourceEditing() {
     await waitForSaveState(false);
     await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
     await waitForCompletedSave(testCase.expected);
+    if (testCase.history) {
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.source);
+      await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+      await waitForSaveState(false);
+      await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+      await waitForCompletedSave(testCase.expected);
+    }
     await stopSession();
   }
 
@@ -1542,6 +1559,14 @@ async function verifyHeadingSourceEditing() {
   await startSession(setextSource, "Title");
   await placeCaretInText("Title", "Title".length, ".ProseMirror", "h1");
   await dispatchKey({ key: "Delete", code: "Delete", virtualKeyCode: 46 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave("Title=====\n");
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(setextSource);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
   await waitForSaveState(false);
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave("Title=====\n");
@@ -6931,6 +6956,12 @@ async function verifyNestedCodePhysicalSourceEditing() {
         && state.className.includes(scenario.sourceClass),
       `${scenario.name} code navigation skipped its adjacent physical prefix byte`
     );
+    if (scenario.name === "blockquote with prose") {
+      await captureElementsScreenshot(
+        [".tether-continuous-source"],
+        "/tmp/tether-mixed-nested-code-source.png"
+      );
+    }
     for (let index = 1; index < scenario.linePrefix.length; index += 1) {
       await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
     }
