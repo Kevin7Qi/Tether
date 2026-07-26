@@ -2612,8 +2612,15 @@ textarea:focus-visible,
 .tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-code_block {
   border: 1px solid var(--line-strong);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--code) 84%, var(--surface));
-  padding: 12px 14px;
+  background:
+    linear-gradient(
+      to right,
+      transparent 0 42px,
+      color-mix(in srgb, var(--line-strong) 72%, transparent) 42px 43px,
+      transparent 43px
+    ),
+    color-mix(in srgb, var(--code) 84%, var(--surface));
+  padding: 8px 14px 8px 51px;
   font-size: 13px;
   line-height: 1.62;
   tab-size: 2;

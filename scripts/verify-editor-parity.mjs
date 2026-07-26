@@ -2268,6 +2268,114 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p"
     },
     {
+      name: "table cell backward strong word",
+      source: "| Key | Value |\n| --- | --- |\n| A | Before **Beta** after. |\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before Beta".length,
+      visibleHead: "Before ".length,
+      sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before **Beta".length,
+      sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before **".length,
+      selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p"
+    },
+    {
+      name: "table cell strong word Backspace",
+      source: "| Key | Value |\n| --- | --- |\n| A | Before **Beta** after. |\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before **".length,
+      sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before **Beta".length,
+      selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p",
+      keyCode: "Backspace",
+      nativeModifiers: []
+    },
+    {
+      name: "table cell backward strong word Delete",
+      source: "| Key | Value |\n| --- | --- |\n| A | Before **Beta** after. |\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before Beta".length,
+      visibleHead: "Before ".length,
+      sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before **Beta".length,
+      sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before **".length,
+      selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p",
+      keyCode: "Delete",
+      nativeModifiers: []
+    },
+    {
+      name: "table cell emphasis word",
+      source: "| Key | Value |\n| --- | --- |\n| A | Before _Beta_ after. |\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before _".length,
+      sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before _Beta".length,
+      selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p"
+    },
+    {
+      name: "table cell inline-code word",
+      source: "| Key | Value |\n| --- | --- |\n| A | Before `Beta` after. |\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before `".length,
+      sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before `Beta".length,
+      selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p"
+    },
+    {
+      name: "table cell link label",
+      source: "| Key | Value |\n| --- | --- |\n| A | Before [Beta](https://example.com) after. |\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before [".length,
+      sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before [Beta".length,
+      selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p"
+    },
+    {
+      name: "table cell entity",
+      source: "| Key | Value |\n| --- | --- |\n| A | Before &copy; after. |\n",
+      visibleText: "Before © after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before ©".length,
+      sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before ".length,
+      sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before &copy;".length,
+      selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p"
+    },
+    {
+      name: "table cell strong ArrowRight into opening marker",
+      source: "| Key | Value |\n| --- | --- |\n| A | Before **Beta** after. |\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before ".length,
+      sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before ".length,
+      sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before ".length,
+      selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p",
+      keyCode: "Right",
+      nativeModifiers: [],
+      renderedKey: "ArrowRight",
+      renderedCode: "ArrowRight",
+      virtualKeyCode: 39,
+      modifiers: 0,
+      insertAfterKey: true
+    },
+    {
+      name: "table cell strong ArrowLeft into closing marker",
+      source: "| Key | Value |\n| --- | --- |\n| A | Before **Beta** after. |\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before Beta".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before **Beta**".length,
+      sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before **Beta**".length,
+      selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p",
+      keyCode: "Left",
+      nativeModifiers: [],
+      renderedKey: "ArrowLeft",
+      renderedCode: "ArrowLeft",
+      virtualKeyCode: 37,
+      modifiers: 0,
+      insertAfterKey: true
+    },
+    {
       name: "footnote definition strong word",
       source: "Reference[^n].\n\n[^n]: Before **Beta** after.\n",
       visibleText: "Before Beta after.",
@@ -7855,14 +7963,18 @@ async function verifyCodeSourcePresentationFixture({
   const rendered = await evaluate(`(() => {
     const block = document.querySelector(".milkdown-code-block");
     const scroller = block?.querySelector(".cm-scroller");
+    const line = block?.querySelector(".cm-line");
     const rect = block?.getBoundingClientRect();
-    if (!block || !scroller || !rect) return null;
+    const lineRect = line?.getBoundingClientRect();
+    if (!block || !scroller || !rect || !lineRect) return null;
     const style = getComputedStyle(block);
     const textStyle = getComputedStyle(scroller);
     return {
       left: rect.left,
       right: rect.right,
       width: rect.width,
+      textInsetLeft: lineRect.left - rect.left,
+      textInsetTop: lineRect.top - rect.top,
       backgroundColor: style.backgroundColor,
       borderRadius: style.borderRadius,
       borderTopWidth: style.borderTopWidth,
@@ -7905,10 +8017,16 @@ async function verifyCodeSourcePresentationFixture({
     const rect = control?.getBoundingClientRect();
     if (!prose || !control || !rect) return null;
     const style = getComputedStyle(control);
+    const borderLeft = Number.parseFloat(style.borderLeftWidth) || 0;
+    const borderTop = Number.parseFloat(style.borderTopWidth) || 0;
+    const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+    const paddingTop = Number.parseFloat(style.paddingTop) || 0;
     return {
       left: rect.left,
       right: rect.right,
       width: rect.width,
+      textInsetLeft: borderLeft + paddingLeft,
+      textInsetTop: borderTop + paddingTop,
       backgroundColor: style.backgroundColor,
       borderRadius: style.borderRadius,
       borderTopWidth: style.borderTopWidth,
@@ -7938,6 +8056,8 @@ async function verifyCodeSourcePresentationFixture({
     && Math.abs(rendered.left - source.left) <= 0.5
     && Math.abs(rendered.right - source.right) <= 0.5
     && Math.abs(rendered.width - source.width) <= 0.5
+    && Math.abs(rendered.textInsetLeft - source.textInsetLeft) <= 0.5
+    && Math.abs(rendered.textInsetTop - source.textInsetTop) <= 0.5
     && rendered.backgroundColor === source.backgroundColor
     && rendered.borderRadius === source.borderRadius
     && rendered.borderTopWidth === source.borderTopWidth

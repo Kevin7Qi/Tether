@@ -283,6 +283,7 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.doesNotMatch(surface, /feature\/block-edit/);
   assert.doesNotMatch(surface, /addFeature\(blockEdit/);
   assert.match(styles, /textarea\.tether-continuous-source\.is-code_block/);
+  assert.match(styles, /textarea\.tether-continuous-source\.is-code_block\s*\{[^}]*padding:\s*8px 14px 8px 51px/s);
   assert.match(styles, /\.tether-source-hidden\s*\{[^}]*display:\s*none !important/s);
   assert.match(syntax, /editor\.scrollHeight \+ borderHeight/);
   assert.match(verifier, /TETHER_PARITY_CASE === "code-source-presentation"/);
