@@ -669,7 +669,8 @@ export function activeMarkdownBlockSyntax(state) {
       from: $from.before($from.depth),
       to: $from.after($from.depth),
       kind: "block",
-      name: "heading"
+      name: "heading",
+      headingDepth: $from.parent.attrs.depth ?? $from.parent.attrs.level
     };
   }
 
@@ -2917,6 +2918,7 @@ export function sourceFaithfulHeadingBoundaryDeletionTarget(
     to: segment.position + segment.node.nodeSize,
     kind: "block",
     name: segment.node.type.name,
+    headingDepth: $from.parent.attrs.depth ?? $from.parent.attrs.level,
     source,
     sourceStart: segment.from,
     documentSource: physicalDocumentSource,
@@ -5490,6 +5492,7 @@ function continuousSourceEditor(
   kind,
   name,
   label,
+  presentationClass,
   initialCaret,
   initialDeleteDirection,
   initialSelectionDirection,
@@ -5516,7 +5519,12 @@ function continuousSourceEditor(
 ) {
   const isBlock = kind === "block";
   const editor = document.createElement(isBlock ? "textarea" : "input");
-  editor.className = `tether-continuous-source is-${kind} is-${name}`;
+  editor.className = [
+    "tether-continuous-source",
+    `is-${kind}`,
+    `is-${name}`,
+    presentationClass
+  ].filter(Boolean).join(" ");
   if (!isBlock) editor.type = "text";
   let physicalValue = source;
   editor.value = sourceControlDisplayValue(physicalValue);
@@ -5572,10 +5580,13 @@ function continuousSourceEditor(
   // that key advances from the requested physical source offset.
   applyStartingSelection();
 
+  const minimumBlockHeight = presentationClass?.includes("is-heading-source")
+    ? 0
+    : 28;
   const resize = () => {
     if (isBlock) {
       editor.style.height = "0";
-      editor.style.height = `${Math.max(28, editor.scrollHeight)}px`;
+      editor.style.height = `${Math.max(minimumBlockHeight, editor.scrollHeight)}px`;
     } else {
       editor.style.width = `${Math.max(3, Math.min(72, editor.value.length + 1))}ch`;
     }
@@ -9002,6 +9013,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const serializer = ctx.get(serializerCtx);
         const source = continuousMarkdownSource(state, unit, serializer);
         const sourceName = unit.name || unit.names?.[0] || "markdown";
+        const sourcePresentationClass = sourceName === "heading"
+          && Number.isInteger(unit.headingDepth)
+          ? `is-heading-source is-heading-depth-${unit.headingDepth}`
+          : "";
         const initialCaret = sourceCaretOffset(
           state,
           unit,
@@ -9725,6 +9740,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           unit.kind,
           sourceName,
           `${unit.name || unit.names?.join(" ") || "Markdown"} source`,
+          sourcePresentationClass,
           initialCaret,
           pluginState.initialDeleteDirection,
           pluginState.initialSelectionDirection,

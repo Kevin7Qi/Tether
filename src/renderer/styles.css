@@ -2478,6 +2478,51 @@ textarea:focus-visible,
   white-space: pre;
 }
 
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-heading-source {
+  min-height: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--ui);
+  font-weight: 600;
+  line-height: 1.18;
+}
+
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-heading-depth-1 {
+  margin: 0 0 14px;
+  font-size: 34px;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-heading-depth-2 {
+  margin: 32px 0 10px;
+  font-size: 21px;
+  letter-spacing: -0.015em;
+}
+
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-heading-depth-3 {
+  margin: 23px 0 8px;
+  font-size: 18px;
+}
+
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-heading-depth-4 {
+  margin: 21px 0 7px;
+  font-size: 16.5px;
+}
+
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-heading-depth-5 {
+  margin: 19px 0 6px;
+  color: var(--ink2);
+  font-size: 15px;
+}
+
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-heading-depth-6 {
+  margin: 18px 0 6px;
+  color: var(--ink2);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+}
+
 .tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-code_block {
   border: 1px solid var(--line-strong);
   border-radius: 5px;

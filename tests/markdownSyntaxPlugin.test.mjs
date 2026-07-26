@@ -910,7 +910,13 @@ test("activeMarkdownBlockSyntax exposes the complete heading as one block", () =
     blockSchema.node("heading", { level: 2 }, [blockSchema.text("Heading")])
   ]);
   const syntax = activeMarkdownBlockSyntax(EditorState.create({ doc, selection: textSelection(doc, "Heading") }));
-  assert.deepEqual(syntax, { from: 0, to: doc.firstChild.nodeSize, kind: "block", name: "heading" });
+  assert.deepEqual(syntax, {
+    from: 0,
+    to: doc.firstChild.nodeSize,
+    kind: "block",
+    name: "heading",
+    headingDepth: 2
+  });
 });
 
 test("activeMarkdownBlockSyntax exposes a fenced code block as one block", () => {

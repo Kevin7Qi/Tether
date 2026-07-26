@@ -1684,6 +1684,7 @@ async function verifyInlineBoundaryNavigation() {
 async function verifyPlatformNativeInlineBoundaryNavigation() {
   const fixtures = [
     { name: "strong", source: "**bold**" },
+    { name: "strong CJK", source: "**中文测试**" },
     { name: "link", source: "[guide](https://example.com)" },
     { name: "inline-code", source: "`code`" },
     { name: "strikethrough", source: "~~gone~~" }
@@ -2010,7 +2011,10 @@ async function verifyPlatformNativeInlineBoundaryNavigation() {
     await dispatchTextKey("x", "KeyX", 88);
     await waitForSaveState(false);
     await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-    await waitForSaveState(true);
+    // The button can become disabled as soon as the renderer dispatches Save,
+    // before the main-process write is observable on disk. Require both sides
+    // of the save contract so a slow IPC round trip cannot look like data loss.
+    await waitForCompletedSave(nativeSource);
     const renderedSource = await readFile(samplePath, "utf8");
     if (renderedSource !== nativeSource) {
       mismatches.push({
@@ -3968,6 +3972,85 @@ async function verifySourceControlImeEditing() {
   await stopSession();
 }
 
+async function verifyHeadingSourcePresentation() {
+  const fixtures = [
+    { depth: 1, source: "# Primary #", visible: "Primary", selector: "h1" },
+    { depth: 2, source: "## Section ##", visible: "Section", selector: "h2" },
+    { depth: 6, source: "###### Detail", visible: "Detail", selector: "h6" }
+  ];
+  const styleSnapshot = (selector) => evaluate(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) return null;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return {
+      fontFamily: style.fontFamily,
+      fontSize: style.fontSize,
+      fontWeight: style.fontWeight,
+      lineHeight: style.lineHeight,
+      letterSpacing: style.letterSpacing,
+      color: style.color,
+      marginTop: style.marginTop,
+      marginBottom: style.marginBottom,
+      height: rect.height
+    };
+  })()`);
+
+  for (const fixture of fixtures) {
+    await startSession(`${fixture.source}\n`, fixture.visible);
+    const rendered = await styleSnapshot(fixture.selector);
+    await placeCaretInText(
+      fixture.visible,
+      0,
+      ".ProseMirror",
+      fixture.selector
+    );
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === fixture.source,
+      `Heading ${fixture.depth} did not expose its physical source for presentation QA`
+    );
+    const sourceControl = await styleSnapshot(
+      `.tether-continuous-source.is-heading-source.is-heading-depth-${fixture.depth}`
+    );
+    const comparableProperties = [
+      "fontFamily",
+      "fontSize",
+      "fontWeight",
+      "lineHeight",
+      "letterSpacing",
+      "color",
+      "marginTop",
+      "marginBottom"
+    ];
+    const mismatches = comparableProperties.filter((property) =>
+      rendered?.[property] !== sourceControl?.[property]
+    );
+    if (
+      !rendered
+      || !sourceControl
+      || mismatches.length
+      // Textarea controls retain a small platform-native internal line box;
+      // keep it visually negligible while requiring every typography and
+      // margin property to match the rendered heading exactly.
+      || Math.abs(rendered.height - sourceControl.height) > 4
+    ) {
+      throw new Error(
+        `Heading ${fixture.depth} source presentation shifted hierarchy: ${
+          JSON.stringify({ mismatches, rendered, sourceControl })
+        }`
+      );
+    }
+    if (process.env.TETHER_PARITY_SCREENSHOT && fixture.depth === 2) {
+      await captureElementsScreenshot(
+        [`.tether-continuous-source.is-heading-depth-${fixture.depth}`],
+        process.env.TETHER_PARITY_SCREENSHOT
+      );
+    }
+    await stopSession();
+  }
+}
+
 async function verifyBlockAtomTraversal() {
   const fixture = "Before.\r\n\r\n* * *\r\n\r\nAfter.\r\n";
   const ruleSource = "* * *";
@@ -5799,6 +5882,46 @@ async function verifyCodeEditing() {
   await waitForCompletedSave(codeFixture);
 }
 
+async function verifyCodeImeEditing() {
+  const replacement = "// 中文注释";
+  const editedFixture = variantCodeFixture.replace("const answer = 42;", replacement);
+  await startSession(variantCodeFixture, "const answer = 42;");
+  await waitFor(
+    () => evaluate(`Boolean(document.querySelector(".milkdown-code-block .cm-content"))`),
+    "CRLF fenced code did not mount before IME editing"
+  );
+  await clickElement(".milkdown-code-block .cm-content");
+  await waitFor(
+    () => evaluate(`document.activeElement?.matches?.(".cm-content")`),
+    "CodeMirror did not receive focus before IME editing"
+  );
+  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+  await dispatchKey({ key: "End", code: "End", virtualKeyCode: 35, modifiers: 8 });
+  await dispatchImeText(replacement);
+  await waitFor(
+    () => evaluate(`document.querySelector(".cm-content")?.textContent === ${JSON.stringify(replacement)}`),
+    "IME composition did not replace the selected fenced-code line"
+  );
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedFixture);
+
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitFor(
+    () => evaluate(`document.querySelector(".cm-content")?.textContent === "const answer = 42;"`),
+    "Undo did not restore fenced code before IME composition"
+  );
+  await waitForSaveState(false);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitFor(
+    () => evaluate(`document.querySelector(".cm-content")?.textContent === ${JSON.stringify(replacement)}`),
+    "Redo did not restore fenced-code IME composition"
+  );
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedFixture);
+  await stopSession();
+}
+
 async function verifyFenceVariantEditing() {
   await startSession(variantCodeFixture, "const answer = 42;");
   await focusCodeBoundary("end");
@@ -6718,10 +6841,10 @@ async function verifyPlatformNativeModifiedEnterShortcuts() {
   }
   await stopSession();
 
-  const saveAndRead = async () => {
+  const saveAndRead = async (expectedSource) => {
     await waitForSaveState(false);
     await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-    await waitForSaveState(true);
+    await waitForCompletedSave(expectedSource);
     return readFile(samplePath, "utf8");
   };
   const mismatches = [];
@@ -6733,7 +6856,7 @@ async function verifyPlatformNativeModifiedEnterShortcuts() {
     await placeCaretInText("bravo", 2);
     await dispatchEnterKey(shortcut.modifiers);
     await dispatchTextKey("X", "KeyX", 88);
-    const proseSource = await saveAndRead();
+    const proseSource = await saveAndRead(expected);
     if (proseSource !== expected) {
       mismatches.push({
         shortcut: shortcut.name,
@@ -6751,8 +6874,8 @@ async function verifyPlatformNativeModifiedEnterShortcuts() {
     await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
     await dispatchEnterKey(shortcut.modifiers);
     await dispatchTextKey("X", "KeyX", 88);
-    const codeSource = await saveAndRead();
     const expectedCodeSource = codeFixture.replace(content, expected);
+    const codeSource = await saveAndRead(expectedCodeSource);
     if (codeSource !== expectedCodeSource) {
       mismatches.push({
         shortcut: shortcut.name,
@@ -6833,10 +6956,10 @@ async function verifyPlatformNativeNavigationShortcuts() {
   }
   await stopSession();
 
-  const saveAndRead = async () => {
+  const saveAndRead = async (expectedSource) => {
     await waitForSaveState(false);
     await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-    await waitForSaveState(true);
+    await waitForCompletedSave(expectedSource);
     return readFile(samplePath, "utf8");
   };
   const dispatchNavigation = async (shortcut) => {
@@ -6857,7 +6980,7 @@ async function verifyPlatformNativeNavigationShortcuts() {
     await startSession(content, "bravo");
     await placeCaretInText("bravo", 2);
     await dispatchNavigation(shortcut);
-    const proseSource = await saveAndRead();
+    const proseSource = await saveAndRead(native.value);
     if (proseSource !== native.value) {
       mismatches.push({
         shortcut: shortcut.name,
@@ -6875,8 +6998,8 @@ async function verifyPlatformNativeNavigationShortcuts() {
     await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
     await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
     await dispatchNavigation(shortcut);
-    const codeSource = await saveAndRead();
     const expectedCodeSource = codeFixture.replace(content, native.value);
+    const codeSource = await saveAndRead(expectedCodeSource);
     if (codeSource !== expectedCodeSource) {
       mismatches.push({
         shortcut: shortcut.name,
@@ -6941,10 +7064,10 @@ async function verifyPlatformNativeNavigationShortcutGroup({
   }
   await stopSession();
 
-  const saveAndRead = async () => {
+  const saveAndRead = async (expectedSource) => {
     await waitForSaveState(false);
     await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-    await waitForSaveState(true);
+    await waitForCompletedSave(expectedSource);
     return readFile(samplePath, "utf8");
   };
   const dispatchNavigation = async (shortcut) => {
@@ -6965,7 +7088,7 @@ async function verifyPlatformNativeNavigationShortcutGroup({
     await startSession(content, activeLine);
     await placeCaretInText(activeLine, caretInLine);
     await dispatchNavigation(shortcut);
-    const proseSource = await saveAndRead();
+    const proseSource = await saveAndRead(native.value);
     if (proseSource !== native.value) {
       mismatches.push({
         shortcut: shortcut.name,
@@ -6984,8 +7107,8 @@ async function verifyPlatformNativeNavigationShortcutGroup({
       await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
     }
     await dispatchNavigation(shortcut);
-    const codeSource = await saveAndRead();
     const expectedCodeSource = codeFixture.replace(content, native.value);
+    const codeSource = await saveAndRead(expectedCodeSource);
     if (codeSource !== expectedCodeSource) {
       mismatches.push({
         shortcut: shortcut.name,
@@ -7101,6 +7224,19 @@ async function verifyPlatformNativeOptionNavigationShortcuts() {
     activeLine,
     caretInLine,
     shortcuts
+  });
+
+  const unicodeContent = "alpha one-two\n前言 中文测试，next_word\n尾声 omega";
+  const unicodeActiveLine = "前言 中文测试，next_word";
+  const unicodeCaretInLine = unicodeActiveLine.indexOf("测试");
+  await verifyPlatformNativeNavigationShortcutGroup({
+    label: "Unicode Option",
+    content: unicodeContent,
+    activeLine: unicodeActiveLine,
+    caretInLine: unicodeCaretInLine,
+    shortcuts: shortcuts.filter(({ key }) =>
+      ["ArrowLeft", "ArrowRight"].includes(key)
+    )
   });
 }
 
@@ -7246,6 +7382,11 @@ async function run() {
     console.log("Verified empty and populated fenced-code editing retain document Undo history.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "code-ime-editing") {
+    await verifyCodeImeEditing();
+    console.log("Verified fenced-code IME composition preserves CRLF source and history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "code-jump-navigation") {
     await verifyCodeJumpNavigation();
     console.log("Verified code line, word, and document jumps traverse physical fence source.");
@@ -7381,6 +7522,11 @@ async function run() {
     console.log("Verified IME composition preserves nested CRLF headings and inline delimiters.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "heading-source-presentation") {
+    await verifyHeadingSourcePresentation();
+    console.log("Verified active heading source retains its rendered visual hierarchy.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "inline-cross-boundary-selection") {
     await verifyInlineCrossBoundarySelection();
     console.log("Verified inline source selections cross rendered boundaries exactly.");
@@ -7478,6 +7624,7 @@ async function run() {
   await verifyRenderedPointerInsertion();
   await verifyHeadingSourceEditing();
   await verifySourceControlImeEditing();
+  await verifyHeadingSourcePresentation();
   await verifyRenderedPointerSelection();
   await stopSession();
   await verifyInlineBoundaryNavigation();
@@ -7546,6 +7693,7 @@ async function run() {
   await verifyLayeredCodeSourceHistory();
   await verifyEmptyCodeEditing();
   await verifyCodeEditing();
+  await verifyCodeImeEditing();
   await stopSession();
   await verifyFenceVariantEditing();
   await verifyCodeCrlfClipboard();
