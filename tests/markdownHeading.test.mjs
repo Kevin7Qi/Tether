@@ -39,6 +39,7 @@ import {
   documentPositionAtSourceOffset,
   documentSourceSegments,
   documentSourceUnitBoundaryNavigationOffset,
+  headingSourceMarkerRange,
   plainTextMarkdownSourceSelection,
   plainTextMarkdownSourceToken,
   replaceSourceSelectionTransaction,
@@ -59,6 +60,16 @@ function roundTrip(markdown) {
     .use(remarkStringify, tetherStringifyOptions({}));
   return processor.processSync(markdown).toString();
 }
+
+test("heading source marker ranges isolate the ATX marker and following gap", () => {
+  assert.deepEqual(headingSourceMarkerRange("## Title ##", 2), { start: 0, end: 3 });
+  assert.deepEqual(headingSourceMarkerRange("> ## Quoted", 2), { start: 2, end: 5 });
+  assert.deepEqual(headingSourceMarkerRange("- ## Listed", 2), { start: 2, end: 5 });
+  assert.deepEqual(headingSourceMarkerRange("7) ## Ordered", 2), { start: 3, end: 6 });
+  assert.deepEqual(headingSourceMarkerRange("###### Detail", 6), { start: 0, end: 7 });
+  assert.equal(headingSourceMarkerRange("Title\n=====", 1), null);
+  assert.equal(headingSourceMarkerRange("### Wrong depth", 2), null);
+});
 
 async function milkdownTransformer() {
   const nativeSetTimeout = globalThis.setTimeout;

@@ -2069,6 +2069,23 @@ textarea:focus-visible,
   text-transform: uppercase;
 }
 
+/* A heading that is the first line of a list item belongs to that item line;
+   ProseMirror's list schema inserts an empty paragraph before it. Collapse
+   only that synthetic carrier so the bullet/number labels the visible title. */
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .content-dom
+  > p:has(> br.ProseMirror-trailingBreak:only-child):has(+ :is(h1, h2, h3, h4, h5, h6)) {
+  display: none;
+}
+
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .content-dom > h1:first-of-type,
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .content-dom > h2:first-of-type,
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .content-dom > h3:first-of-type,
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .content-dom > h4:first-of-type,
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .content-dom > h5:first-of-type,
+.tether-wysiwyg .ProseMirror .milkdown-list-item-block .content-dom > h6:first-of-type {
+  margin-top: 0;
+}
+
 .tether-wysiwyg .ProseMirror h1::before,
 .tether-wysiwyg .ProseMirror h2::before,
 .tether-wysiwyg .ProseMirror h3::before,
@@ -2271,6 +2288,32 @@ textarea:focus-visible,
   font-weight: 500;
   white-space: nowrap;
 }
+
+/* Center every marker on the first heading line, whose line box varies by
+   heading depth instead of using the ordinary 1.72em prose line. */
+.tether-wysiwyg .ProseMirror .list-item:has(
+  > .children > .content-dom > h1:first-of-type
+) > .label-wrapper > .label { --tether-list-marker-shift: 5.4px; }
+
+.tether-wysiwyg .ProseMirror .list-item:has(
+  > .children > .content-dom > h2:first-of-type
+) > .label-wrapper > .label { --tether-list-marker-shift: -1.8px; }
+
+.tether-wysiwyg .ProseMirror .list-item:has(
+  > .children > .content-dom > h3:first-of-type
+) > .label-wrapper > .label { --tether-list-marker-shift: -3.6px; }
+
+.tether-wysiwyg .ProseMirror .list-item:has(
+  > .children > .content-dom > h4:first-of-type
+) > .label-wrapper > .label { --tether-list-marker-shift: -4.5px; }
+
+.tether-wysiwyg .ProseMirror .list-item:has(
+  > .children > .content-dom > h5:first-of-type
+) > .label-wrapper > .label { --tether-list-marker-shift: -5.3px; }
+
+.tether-wysiwyg .ProseMirror .list-item:has(
+  > .children > .content-dom > h6:first-of-type
+) > .label-wrapper > .label { --tether-list-marker-shift: -6.5px; }
 
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="4"],
 .tether-wysiwyg .ProseMirror .milkdown-list-item-block .label.ordered[data-marker-digits="5"],
@@ -2559,18 +2602,26 @@ textarea:focus-visible,
   margin-bottom: 0;
 }
 
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source:is(
+  .is-heading-context-bullet_list,
+  .is-heading-context-ordered_list
+) {
+  margin-top: 0;
+}
+
 .tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-code_block {
   border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--code) 82%, var(--surface));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--code) 84%, var(--surface));
   padding: 12px 14px;
   font-size: 13px;
-  line-height: 1.65;
+  line-height: 1.62;
   tab-size: 2;
 }
 
 .tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-code_block:focus {
-  border-color: color-mix(in srgb, var(--accent) 48%, var(--line-strong));
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line-strong));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .tether-wysiwyg .ProseMirror .tether-reference-definition {
@@ -2584,7 +2635,7 @@ textarea:focus-visible,
 }
 
 .tether-wysiwyg .ProseMirror .tether-source-hidden {
-  display: none;
+  display: none !important;
 }
 
 /* A cross-block source selection represents the Markdown newline, not the

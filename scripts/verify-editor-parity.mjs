@@ -4187,6 +4187,18 @@ async function verifyHeadingSourcePresentation() {
     },
     {
       depth: 1,
+      source: "- # Listed primary",
+      visible: "Listed primary",
+      selector: "li h1"
+    },
+    {
+      depth: 6,
+      source: "7) ###### Ordered detail",
+      visible: "Ordered detail",
+      selector: "li h6"
+    },
+    {
+      depth: 1,
       source: "> Setext\n> ======",
       visible: "Setext",
       selector: "blockquote h1",
@@ -4205,6 +4217,44 @@ async function verifyHeadingSourcePresentation() {
     if (!element) return null;
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
+    const listItem = element.closest(".list-item");
+    const listLabelRect = listItem?.querySelector(":scope > .label-wrapper > .label")
+      ?.getBoundingClientRect() || null;
+    let textLeft = null;
+    if (element.matches("textarea.tether-continuous-source.is-heading-source")) {
+      const depth = Number(element.className.match(/is-heading-depth-(\\d)/)?.[1]);
+      const match = Number.isInteger(depth)
+        ? new RegExp("(^|[^#])(#{" + depth + "})([\\t ]+)").exec(element.value)
+        : null;
+      if (match) {
+        const markerEnd = match.index + match[1].length + match[2].length + match[3].length;
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
+        context.font = style.fontStyle + " " + style.fontWeight + " "
+          + style.fontSize + " " + style.fontFamily;
+        const prefix = element.value.slice(0, markerEnd);
+        const letterSpacing = Number.parseFloat(style.letterSpacing || "0") || 0;
+        textLeft = rect.left
+          + (Number.parseFloat(style.borderLeftWidth || "0") || 0)
+          + (Number.parseFloat(style.paddingLeft || "0") || 0)
+          + context.measureText(prefix).width
+          + Math.max(0, prefix.length - 1) * letterSpacing
+          - element.scrollLeft;
+      }
+    } else {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.data) continue;
+        const range = document.createRange();
+        range.setStart(node, 0);
+        range.setEnd(node, 1);
+        const textRect = range.getBoundingClientRect();
+        if (textRect.height > 0) {
+          textLeft = textRect.left;
+          break;
+        }
+      }
+    }
     return {
       fontFamily: style.fontFamily,
       fontSize: style.fontSize,
@@ -4214,13 +4264,32 @@ async function verifyHeadingSourcePresentation() {
       color: style.color,
       marginTop: style.marginTop,
       marginBottom: style.marginBottom,
-      height: rect.height
+      height: rect.height,
+      top: rect.top,
+      left: rect.left,
+      right: rect.right,
+      textLeft,
+      headingSourceShift: element.dataset.headingSourceShift || null,
+      headingSourceVerticalShift: element.dataset.headingSourceVerticalShift || null,
+      listMarkerCenter: listLabelRect ? listLabelRect.top + listLabelRect.height / 2 : null,
+      headingLineCenter: element.matches("h1, h2, h3, h4, h5, h6")
+        ? rect.top + Number.parseFloat(style.lineHeight) / 2
+        : null,
+      listHtml: listItem?.innerHTML || null
     };
   })()`);
 
   for (const fixture of fixtures) {
     await startSession(`${fixture.source}\n`, fixture.visible);
     const rendered = await styleSnapshot(`.tether-wysiwyg .ProseMirror ${fixture.selector}`);
+    const shouldPresent = fixture.presentation !== false;
+    if (process.env.TETHER_PARITY_SCREENSHOT && fixture.depth === 2 && shouldPresent) {
+      const renderedPath = process.env.TETHER_PARITY_SCREENSHOT.replace(
+        /(\.png)?$/,
+        "-rendered.png"
+      );
+      await captureElementsScreenshot([".ProseMirror"], renderedPath);
+    }
     await placeCaretInText(
       fixture.visible,
       0,
@@ -4236,7 +4305,6 @@ async function verifyHeadingSourcePresentation() {
       () => evaluate(`document.querySelector(".tether-continuous-source")?.getBoundingClientRect().height > 10`),
       `Heading ${fixture.depth} source control did not settle its visual line box`
     );
-    const shouldPresent = fixture.presentation !== false;
     if (!shouldPresent) {
       const incorrectlyStyled = await evaluate(
         `Boolean(document.querySelector(".tether-continuous-source.is-heading-source"))`
@@ -4262,30 +4330,37 @@ async function verifyHeadingSourcePresentation() {
       "lineHeight",
       "letterSpacing",
       "color",
-      "marginTop",
       "marginBottom"
     ];
     const mismatches = comparableProperties.filter((property) =>
       rendered?.[property] !== sourceControl?.[property]
     );
+    const listMarkerAligned = rendered?.listMarkerCenter == null
+      || Math.abs(rendered.listMarkerCenter - rendered.headingLineCenter) <= 1;
     if (
       !rendered
       || !sourceControl
       || mismatches.length
+      || !listMarkerAligned
       // Textarea controls retain a small platform-native internal line box;
       // keep it visually negligible while requiring every typography and
       // margin property to match the rendered heading exactly.
       || Math.abs(rendered.height - sourceControl.height) > 4
+      || Math.abs(
+        (rendered.top + rendered.height / 2)
+        - (sourceControl.top + sourceControl.height / 2)
+      ) > 1.25
+      || Math.abs(rendered.textLeft - sourceControl.textLeft) > 0.75
     ) {
       throw new Error(
         `Heading ${fixture.depth} ${JSON.stringify(fixture.source)} source presentation shifted hierarchy: ${
-          JSON.stringify({ mismatches, rendered, sourceControl, sourceControlClass })
+          JSON.stringify({ mismatches, listMarkerAligned, rendered, sourceControl, sourceControlClass })
         }`
       );
     }
     if (process.env.TETHER_PARITY_SCREENSHOT && fixture.depth === 2) {
       await captureElementsScreenshot(
-        [`.tether-continuous-source.is-heading-depth-${fixture.depth}`],
+        [".ProseMirror"],
         process.env.TETHER_PARITY_SCREENSHOT
       );
     }
@@ -6574,6 +6649,116 @@ async function verifyCodeBlockLayout() {
   await stopSession();
 }
 
+async function verifyCodeSourcePresentation() {
+  const content = [
+    "const first = 1;",
+    "const second = 2;",
+    "return first + second;"
+  ].join("\n");
+  const blockSource = `\`\`\`js\n${content}\n\`\`\``;
+  const fixture = `Before.\n\n${blockSource}\n\nAfter.\n`;
+
+  await startSession(fixture, "const first = 1;");
+  const rendered = await evaluate(`(() => {
+    const block = document.querySelector(".milkdown-code-block");
+    const scroller = block?.querySelector(".cm-scroller");
+    const rect = block?.getBoundingClientRect();
+    if (!block || !scroller || !rect) return null;
+    const style = getComputedStyle(block);
+    const textStyle = getComputedStyle(scroller);
+    return {
+      left: rect.left,
+      right: rect.right,
+      width: rect.width,
+      backgroundColor: style.backgroundColor,
+      borderRadius: style.borderRadius,
+      borderTopWidth: style.borderTopWidth,
+      fontFamily: textStyle.fontFamily,
+      fontSize: textStyle.fontSize,
+      lineHeight: textStyle.lineHeight
+    };
+  })()`);
+
+  await clickElement(".milkdown-code-block .cm-line:first-child");
+  await waitFor(
+    () => evaluate(`document.activeElement?.matches?.(".cm-content")`),
+    "fenced-source presentation could not focus the first rendered code line"
+  );
+  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === blockSource,
+    "fenced-code boundary did not expose its exact physical source"
+  );
+  await waitFor(
+    () => evaluate(`(() => {
+      const control = document.querySelector("textarea.tether-continuous-source.is-code_block");
+      return control && control.scrollHeight <= control.clientHeight + 1;
+    })()`),
+    "active fenced source did not resize to its complete physical content"
+  );
+  const source = await evaluate(`(() => {
+    const prose = document.querySelector(".ProseMirror");
+    const control = document.querySelector("textarea.tether-continuous-source.is-code_block");
+    const rect = control?.getBoundingClientRect();
+    if (!prose || !control || !rect) return null;
+    const style = getComputedStyle(control);
+    return {
+      left: rect.left,
+      right: rect.right,
+      width: rect.width,
+      backgroundColor: style.backgroundColor,
+      borderRadius: style.borderRadius,
+      borderTopWidth: style.borderTopWidth,
+      fontFamily: style.fontFamily,
+      fontSize: style.fontSize,
+      lineHeight: style.lineHeight,
+      scrollHeight: control.scrollHeight,
+      clientHeight: control.clientHeight,
+      documentOverflow: prose.scrollWidth - prose.clientWidth,
+      renderedBlocks: Array.from(
+        prose.querySelectorAll(".milkdown-code-block"),
+        (block) => {
+          const blockRect = block.getBoundingClientRect();
+          return {
+            className: block.className,
+            parentClassName: block.parentElement?.className || null,
+            previousClassName: block.previousElementSibling?.className || null,
+            display: getComputedStyle(block).display,
+            height: blockRect.height
+          };
+        }
+      )
+    };
+  })()`);
+  const visuallyContinuous = rendered
+    && source
+    && Math.abs(rendered.left - source.left) <= 0.5
+    && Math.abs(rendered.right - source.right) <= 0.5
+    && Math.abs(rendered.width - source.width) <= 0.5
+    && rendered.backgroundColor === source.backgroundColor
+    && rendered.borderRadius === source.borderRadius
+    && rendered.borderTopWidth === source.borderTopWidth
+    && rendered.fontFamily === source.fontFamily
+    && rendered.fontSize === source.fontSize
+    && rendered.lineHeight === source.lineHeight
+    && source.scrollHeight <= source.clientHeight + 1
+    && source.documentOverflow <= 1
+    && source.renderedBlocks.every(({ display, height }) => display === "none" || height === 0);
+  if (!visuallyContinuous) {
+    throw new Error(`active fenced source diverged from its rendered code block: ${
+      JSON.stringify({ rendered, source })
+    }`);
+  }
+  if (process.env.TETHER_PARITY_SCREENSHOT) {
+    await captureElementsScreenshot(
+      ["textarea.tether-continuous-source.is-code_block"],
+      process.env.TETHER_PARITY_SCREENSHOT
+    );
+  }
+  await stopSession();
+}
+
 async function verifyMultilineCodeBlockLayout() {
   const lines = [
     "const first = 1;",
@@ -7933,6 +8118,11 @@ async function run() {
     console.log("Verified compact, balanced single-line fenced-code spacing.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "code-source-presentation") {
+    await verifyCodeSourcePresentation();
+    console.log("Verified active fenced source retains its rendered code-block presentation.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "multiline-code-block-layout") {
     await verifyMultilineCodeBlockLayout();
     console.log("Verified multiline fenced-code alignment and contained horizontal scrolling.");
@@ -8217,6 +8407,7 @@ async function run() {
   await verifyFenceVariantEditing();
   await verifyCodeCrlfClipboard();
   await verifyCodeBlockLayout();
+  await verifyCodeSourcePresentation();
   await verifyMultilineCodeBlockLayout();
   await verifyCodeLanguagePickerPresentation();
   await verifyCodeLanguagePickerSourceFidelity();

@@ -147,6 +147,7 @@ const inactivePluginState = () => ({
   initialSourceSelection: null,
   initialPointerSelection: 0,
   focusLock: false,
+  headingTargetGeometry: null,
   sourceSelection: null
 });
 
@@ -162,6 +163,7 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
     initialPointerSelection = 0,
     focusLock = false
   } = options;
+  const headingTargetGeometry = renderedHeadingClientGeometry(view, position);
   const resolved = view.state.doc.resolve(Math.min(position, view.state.doc.content.size));
   const selection = markdownSourceSelectionAt(view.state.doc, resolved.pos, atomPosition);
   view.dispatch(
@@ -178,7 +180,8 @@ export function activateMarkdownSourceAt(view, position, options = {}) {
         initialSelectionDirection,
         initialSourceSelection,
         initialPointerSelection,
-        focusLock
+        focusLock,
+        headingTargetGeometry
       })
   );
   view.focus();
@@ -5619,12 +5622,67 @@ export function finishUnchangedSourceHandoff(
   else handoff();
 }
 
+export function headingSourceMarkerRange(source, depth) {
+  const level = Number(depth);
+  if (!Number.isInteger(level) || level < 1 || level > 6) return null;
+  const match = new RegExp(`(^|[^#])(#{${level}})([\\t ]+)`).exec(String(source ?? ""));
+  if (!match) return null;
+  const start = match.index + match[1].length;
+  return { start, end: start + match[2].length + match[3].length };
+}
+
+function renderedHeadingClientGeometry(view, position = view?.state?.selection?.from) {
+  if (!view?.state?.doc || !Number.isFinite(position)) return null;
+  const bounded = Math.max(0, Math.min(position, view.state.doc.content.size));
+  const $position = view.state.doc.resolve(bounded);
+  let headingDepth = null;
+  for (let depth = $position.depth; depth > 0; depth -= 1) {
+    if ($position.node(depth).type.name === "heading") {
+      headingDepth = depth;
+      break;
+    }
+  }
+  if (headingDepth == null) return null;
+
+  // The browser selection is the most precise route through custom list and
+  // quote node views: `nodeDOM(position)` can legitimately return their
+  // implementation wrapper for a nested heading boundary.
+  const domSelection = view.dom.ownerDocument.getSelection();
+  const anchor = domSelection?.anchorNode;
+  const anchorElement = anchor?.nodeType === 1 ? anchor : anchor?.parentElement;
+  const selectedHeading = anchorElement?.closest?.("h1, h2, h3, h4, h5, h6");
+  const headingPosition = $position.before(headingDepth);
+  const nodeDom = view.nodeDOM(headingPosition);
+  const heading = selectedHeading && view.dom.contains(selectedHeading)
+    ? selectedHeading
+    : nodeDom?.matches?.("h1, h2, h3, h4, h5, h6")
+      ? nodeDom
+      : nodeDom?.querySelector?.("h1, h2, h3, h4, h5, h6");
+  if (!heading) return null;
+  const walker = heading.ownerDocument.createTreeWalker(heading, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!node.data) continue;
+    const range = heading.ownerDocument.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, 1);
+    const rect = range.getBoundingClientRect();
+    if (rect.height > 0) {
+      return {
+        textLeft: rect.left,
+        blockTop: heading.getBoundingClientRect().top
+      };
+    }
+  }
+  return null;
+}
+
 function continuousSourceEditor(
   source,
   kind,
   name,
   label,
   presentationClass,
+  headingTargetGeometry,
   initialCaret,
   initialDeleteDirection,
   initialSelectionDirection,
@@ -5715,10 +5773,63 @@ function continuousSourceEditor(
   const minimumBlockHeight = presentationClass?.includes("is-heading-source")
     ? 0
     : 28;
+  const headingDepth = Number(
+    presentationClass?.match(/(?:^|\s)is-heading-depth-(\d)(?:\s|$)/)?.[1]
+  );
+  const alignHeadingSource = () => {
+    if (
+      !editor.isConnected
+      || !Number.isFinite(headingTargetGeometry?.textLeft)
+      || !Number.isFinite(headingTargetGeometry?.blockTop)
+      || !Number.isInteger(headingDepth)
+    ) return;
+    editor.style.removeProperty("transform");
+    editor.style.removeProperty("width");
+    editor.style.removeProperty("margin-top");
+    delete editor.dataset.headingSourceShift;
+    delete editor.dataset.headingSourceVerticalShift;
+    const marker = headingSourceMarkerRange(physicalValue, headingDepth);
+    if (!marker) return;
+    const style = getComputedStyle(editor);
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const titlePrefix = editor.value.slice(0, marker.end);
+    const letterSpacing = Number.parseFloat(style.letterSpacing || "0") || 0;
+    const prefixWidth = context.measureText(titlePrefix).width
+      + Math.max(0, titlePrefix.length - 1) * letterSpacing;
+    let rect = editor.getBoundingClientRect();
+    const baseMarginTop = Number.parseFloat(style.marginTop || "0") || 0;
+    let adjustedMarginTop = baseMarginTop;
+    for (let pass = 0; pass < 3; pass += 1) {
+      const residual = headingTargetGeometry.blockTop - rect.top;
+      if (Math.abs(residual) <= 0.01) break;
+      adjustedMarginTop += residual;
+      editor.style.marginTop = `${adjustedMarginTop}px`;
+      rect = editor.getBoundingClientRect();
+    }
+    const textInset = (Number.parseFloat(style.borderLeftWidth || "0") || 0)
+      + (Number.parseFloat(style.paddingLeft || "0") || 0);
+    const shift = headingTargetGeometry.textLeft - (rect.left + textInset + prefixWidth);
+    const rootRight = editor.closest(".ProseMirror")?.getBoundingClientRect().right;
+    editor.style.transform = `translateX(${shift}px)`;
+    if (Number.isFinite(rootRight)) {
+      editor.style.width = `${Math.max(1, rootRight - rect.left - shift)}px`;
+    }
+    editor.dataset.headingSourceShift = String(shift);
+    editor.dataset.headingSourceVerticalShift = String(adjustedMarginTop - baseMarginTop);
+  };
   const resize = () => {
     if (isBlock) {
       editor.style.height = "0";
-      editor.style.height = `${Math.max(minimumBlockHeight, editor.scrollHeight)}px`;
+      const style = getComputedStyle(editor);
+      const borderHeight = (Number.parseFloat(style.borderTopWidth || "0") || 0)
+        + (Number.parseFloat(style.borderBottomWidth || "0") || 0);
+      editor.style.height = `${
+        Math.max(minimumBlockHeight, editor.scrollHeight + borderHeight)
+      }px`;
+      alignHeadingSource();
     } else {
       editor.style.width = `${Math.max(3, Math.min(72, editor.value.length + 1))}ch`;
     }
@@ -7927,6 +8038,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             initialSourceSelection: meta.initialSourceSelection ?? null,
             initialPointerSelection: meta.initialPointerSelection ?? 0,
             focusLock: Boolean(meta.focusLock),
+            headingTargetGeometry: meta.headingTargetGeometry ?? null,
             sourceSelection: null
           };
         }
@@ -7953,6 +8065,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             initialSourceSelection: null,
             initialPointerSelection: 0,
             focusLock: false,
+            headingTargetGeometry: null,
             sourceSelection: null
           };
         }
@@ -7972,6 +8085,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             initialSourceSelection: null,
             initialPointerSelection: 0,
             focusLock: false,
+            headingTargetGeometry: null,
             sourceSelection: null
           };
         }
@@ -9162,6 +9276,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const sourcePresentationClass = [headingPresentationClass, inlinePresentationClass]
           .filter(Boolean)
           .join(" ");
+        const headingTargetGeometry = headingPresentationClass
+          ? pluginState.headingTargetGeometry
+            ?? renderedHeadingClientGeometry(editorView)
+          : null;
         const initialCaret = sourceCaretOffset(
           state,
           unit,
@@ -9886,6 +10004,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           sourceName,
           `${unit.name || unit.names?.join(" ") || "Markdown"} source`,
           sourcePresentationClass,
+          headingTargetGeometry,
           initialCaret,
           pluginState.initialDeleteDirection,
           pluginState.initialSelectionDirection,

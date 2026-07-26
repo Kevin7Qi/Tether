@@ -234,7 +234,9 @@ test("WYSIWYG tables use content-driven columns instead of equal fixed widths", 
 test("fenced code blocks keep readable source typography and focused-only line feedback", () => {
   const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
   const codeEditor = fs.readFileSync(path.join(root, "src", "renderer", "lib", "codeEditor.js"), "utf8");
+  const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
+  const verifier = fs.readFileSync(path.join(root, "scripts", "verify-editor-parity.mjs"), "utf8");
 
   assert.match(styles, /milkdown-code-block \.cm-scroller\s*\{[^}]*font-size:\s*13px[^}]*font-weight:\s*400/s);
   assert.match(styles, /milkdown-code-block \.cm-content\s*\{[^}]*min-height:\s*1\.62em/s);
@@ -280,6 +282,10 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.doesNotMatch(surface, /feature\/block-edit/);
   assert.doesNotMatch(surface, /addFeature\(blockEdit/);
   assert.match(styles, /textarea\.tether-continuous-source\.is-code_block/);
+  assert.match(styles, /\.tether-source-hidden\s*\{[^}]*display:\s*none !important/s);
+  assert.match(syntax, /editor\.scrollHeight \+ borderHeight/);
+  assert.match(verifier, /TETHER_PARITY_CASE === "code-source-presentation"/);
+  assert.match(verifier, /rendered\.backgroundColor === source\.backgroundColor/);
   assert.match(surface, /use\(sourceFaithfulFenceRemark\)/);
   assert.match(surface, /use\(sourceFaithfulCodeBlockSchema\)/);
   assert.match(surface, /remove\(createCodeBlockInputRule\)/);
@@ -362,6 +368,11 @@ test("rendered lists use compact indentation and intentional marker colors", () 
   assert.match(styles, /\.milkdown-list-item-block li \.label-wrapper \.label\s*\{[^}]*height:\s*100%[^}]*align-items:\s*center[^}]*justify-content:\s*center[^}]*padding:\s*0[^}]*text-align:\s*center[^}]*line-height:\s*1[^}]*translateY\(var\(--tether-list-marker-shift, 2px\)\)/s);
   assert.match(styles, /\.label\.bullet,\s*\.tether-wysiwyg \.ProseMirror \.milkdown-list-item-block \.label\.ordered\s*\{[^}]*color:\s*var\(--ink\)/s);
   assert.match(styles, /\.milkdown-list-item-block \.label svg\s*\{[^}]*display:\s*block[^}]*width:\s*16px[^}]*height:\s*16px/s);
+  assert.match(styles, /\.milkdown-list-item-block \.content-dom > h1:first-of-type,[\s\S]*\.content-dom > h6:first-of-type\s*\{[^}]*margin-top:\s*0/s);
+  assert.match(styles, /p:has\(> br\.ProseMirror-trailingBreak:only-child\):has\(\+ :is\(h1, h2, h3, h4, h5, h6\)\)\s*\{[^}]*display:\s*none/s);
+  assert.match(styles, /\.content-dom > h1:first-of-type[\s\S]*--tether-list-marker-shift:\s*5\.4px/s);
+  assert.match(styles, /\.content-dom > h6:first-of-type[\s\S]*--tether-list-marker-shift:\s*-6\.5px/s);
+  assert.match(styles, /textarea\.tether-continuous-source:is\([\s\S]*is-heading-context-bullet_list[\s\S]*is-heading-context-ordered_list[\s\S]*\)\s*\{[^}]*margin-top:\s*0/s);
   assert.match(styles, /\.label\.ordered\s*\{[^}]*justify-content:\s*center[^}]*font-variant-numeric:\s*tabular-nums/s);
   assert.match(styles, /\.label\.ordered\s*\{[^}]*--tether-list-marker-shift:\s*2\.1px/s);
   assert.match(styles, /\.label\.ordered\s*\{[^}]*width:\s*max-content[^}]*min-width:\s*var\(--tether-list-marker-width\)[^}]*white-space:\s*nowrap/s);
