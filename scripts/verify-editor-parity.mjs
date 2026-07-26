@@ -4449,6 +4449,109 @@ async function verifyInlineSourcePresentation() {
   }
 }
 
+async function verifyLongInlineSourceContainment() {
+  const destination = `https://example.test/${"deep-path/".repeat(18)}document.md?${
+    "long-query=value&".repeat(8)
+  }final=true`;
+  const token = `[Guide](${destination})`;
+  const source = `A short prefix ${token} suffix.\n`;
+  const selectionStart = token.indexOf("deep-path/") + 5;
+  const selectionEnd = selectionStart + 54;
+  const replacement = "X";
+  const editedToken = `${token.slice(0, selectionStart)}${replacement}${token.slice(selectionEnd)}`;
+  const editedSource = source.replace(token, editedToken);
+
+  await startSession(source, "A short prefix Guide suffix.");
+  await placeCaretInText(" suffix.", 0);
+  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+  await waitForSourceControl(
+    (state) => state?.active && state.value === token
+      && state.selectionStart === token.length - 1 && state.selectionEnd === token.length - 1,
+    "long inline link did not expose its exact closing-delimiter boundary"
+  );
+
+  const geometry = await evaluate(`(() => {
+    const root = document.querySelector(".ProseMirror");
+    const control = document.querySelector("input.tether-continuous-source");
+    const paragraph = control?.closest("p");
+    if (!root || !control || !paragraph) return null;
+    const rootRect = root.getBoundingClientRect();
+    const controlRect = control.getBoundingClientRect();
+    const paragraphRect = paragraph.getBoundingClientRect();
+    return {
+      root: {
+        left: rootRect.left,
+        right: rootRect.right,
+        clientWidth: root.clientWidth,
+        scrollWidth: root.scrollWidth
+      },
+      paragraph: {
+        left: paragraphRect.left,
+        right: paragraphRect.right,
+        clientWidth: paragraph.clientWidth,
+        scrollWidth: paragraph.scrollWidth
+      },
+      control: {
+        left: controlRect.left,
+        right: controlRect.right,
+        clientWidth: control.clientWidth,
+        scrollWidth: control.scrollWidth,
+        scrollLeft: control.scrollLeft
+      }
+    };
+  })()`);
+  const contained = geometry
+    && geometry.root.scrollWidth <= geometry.root.clientWidth + 1
+    && geometry.paragraph.scrollWidth <= geometry.paragraph.clientWidth + 1
+    && geometry.control.left >= geometry.paragraph.left - 1
+    && geometry.control.right <= geometry.paragraph.right + 1
+    && geometry.control.scrollWidth > geometry.control.clientWidth + 1
+    && geometry.control.scrollLeft > 0;
+  if (!contained) {
+    throw new Error(`long inline Markdown source escaped or displaced its document column: ${
+      JSON.stringify(geometry)
+    }`);
+  }
+  if (process.env.TETHER_PARITY_SCREENSHOT) {
+    await captureElementsScreenshot([".ProseMirror p"], process.env.TETHER_PARITY_SCREENSHOT);
+  }
+
+  await evaluate(`(() => {
+    const control = document.querySelector("input.tether-continuous-source");
+    control?.tetherSetPhysicalSourceSelection?.(
+      ${selectionStart},
+      ${selectionEnd},
+      "forward"
+    );
+  })()`);
+  await waitForSourceControl(
+    (state) => state?.active && state.selectionStart === selectionStart
+      && state.selectionEnd === selectionEnd && state.selectionDirection === "forward",
+    "long inline source did not retain an exact selection inside its scrolled destination"
+  );
+  const copied = await dispatchCopyAndCaptureText();
+  if (copied !== token.slice(selectionStart, selectionEnd)) {
+    throw new Error(
+      `long inline source Copy emitted ${JSON.stringify(copied)} instead of ${
+        JSON.stringify(token.slice(selectionStart, selectionEnd))
+      }`
+    );
+  }
+  await cdp.send("Input.insertText", { text: replacement });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedSource);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(source);
+  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+  await waitForSaveState(false);
+  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+  await waitForCompletedSave(editedSource);
+  await stopSession();
+}
+
 async function verifyBlockAtomTraversal() {
   const fixture = "Before.\r\n\r\n* * *\r\n\r\nAfter.\r\n";
   const ruleSource = "* * *";
@@ -7935,6 +8038,11 @@ async function run() {
     console.log("Verified active inline source retains its rendered typography.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "long-inline-source-containment") {
+    await verifyLongInlineSourceContainment();
+    console.log("Verified long inline Markdown source stays contained and preserves exact editing history.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "inline-cross-boundary-selection") {
     await verifyInlineCrossBoundarySelection();
     console.log("Verified inline source selections cross rendered boundaries exactly.");
@@ -8035,6 +8143,7 @@ async function run() {
   await verifySourceControlImeEditing();
   await verifyHeadingSourcePresentation();
   await verifyInlineSourcePresentation();
+  await verifyLongInlineSourceContainment();
   await verifyRenderedPointerSelection();
   await stopSession();
   await verifyInlineBoundaryNavigation();

@@ -342,9 +342,13 @@ test("fenced code blocks keep readable source typography and focused-only line f
   assert.match(surface, /use\(sourceFaithfulOrderedListSplitKeymap\)/);
 });
 
-test("long inline Markdown source stays inside the document column", () => {
+test("long inline Markdown source has real containment and source-fidelity coverage", () => {
   const styles = fs.readFileSync(path.join(root, "src", "renderer", "styles.css"), "utf8");
+  const verifier = fs.readFileSync(path.join(root, "scripts", "verify-editor-parity.mjs"), "utf8");
   assert.match(styles, /input\.tether-continuous-source\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/s);
+  assert.match(verifier, /TETHER_PARITY_CASE === "long-inline-source-containment"/);
+  assert.match(verifier, /geometry\.paragraph\.scrollWidth <= geometry\.paragraph\.clientWidth \+ 1/);
+  assert.match(verifier, /dispatchCopyAndCaptureText\(\)[\s\S]*waitForCompletedSave\(editedSource\)/);
 });
 
 test("rendered lists use compact indentation and intentional marker colors", () => {
