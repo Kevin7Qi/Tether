@@ -649,6 +649,7 @@ async function connectRendererTarget(excludedTargetId = null) {
 }
 
 async function startSession(fixture, visibleText, options = {}) {
+  const startupAttempt = Number(options.__startupAttempt) || 0;
   // Reuse each invisible Electron host for a bounded fixture group, replacing
   // only its offscreen BrowserWindow until the isolation threshold is reached.
   if (child && sessionWindowCount >= maxWindowsPerElectronSession) {
@@ -714,14 +715,32 @@ async function startSession(fixture, visibleText, options = {}) {
 
   // Every fixture gets a clean offscreen BrowserWindow, renderer process, and
   // editor history even when the background host is reused.
-  await waitFor(
-    () => evaluate(`typeof window.remoteMarkdown?.saveLocalSample === "function"`),
-    "Tether native sample API did not become ready"
-  );
-  await waitFor(
-    () => evaluate(`Boolean(document.querySelector(".tether-wysiwyg.is-ready .ProseMirror") && !document.querySelector(".document-loading"))`),
-    "Tether editor did not become ready"
-  );
+  try {
+    await waitFor(
+      () => evaluate(`typeof window.remoteMarkdown?.saveLocalSample === "function"`),
+      "Tether native sample API did not become ready"
+    );
+    await waitFor(
+      () => evaluate(`Boolean(document.querySelector(".tether-wysiwyg.is-ready .ProseMirror") && !document.querySelector(".document-loading"))`),
+      "Tether editor did not become ready"
+    );
+  } catch (error) {
+    const failedOutput = electronOutput;
+    await stopSession(true);
+    if (startupAttempt < 2) {
+      console.warn(
+        `Retrying stalled hidden Electron fixture (${startupAttempt + 1}/2): ${error.message}`
+      );
+      return startSession(fixture, visibleText, {
+        ...options,
+        __startupAttempt: startupAttempt + 1
+      });
+    }
+    throw new Error(
+      `${error.message} after ${startupAttempt + 1} hidden-host attempts`
+      + `\nElectron output:\n${failedOutput}`
+    );
+  }
   try {
     await waitFor(
       () => evaluate(`document.querySelector(".tether-wysiwyg-host")?.tetherGetLoadedSource?.() === ${JSON.stringify(expectedSource)}`),
@@ -1144,6 +1163,34 @@ async function verifyRenderedPointerInsertion() {
       expected: "AlphaX Beta\n---\n"
     },
     {
+      name: "quoted ATX heading",
+      source: "> ## Alpha Beta\n",
+      visible: "Alpha Beta",
+      offset: 5,
+      expected: "> ## AlphaX Beta\n"
+    },
+    {
+      name: "list ATX heading",
+      source: "- ## Alpha Beta\n",
+      visible: "Alpha Beta",
+      offset: 5,
+      expected: "- ## AlphaX Beta\n"
+    },
+    {
+      name: "ordered-list ATX heading",
+      source: "7) ## Alpha Beta\n",
+      visible: "Alpha Beta",
+      offset: 5,
+      expected: "7) ## AlphaX Beta\n"
+    },
+    {
+      name: "quoted setext heading",
+      source: "> Alpha Beta\n> ---\n",
+      visible: "Alpha Beta",
+      offset: 5,
+      expected: "> AlphaX Beta\n> ---\n"
+    },
+    {
       name: "strong",
       source: "Before **bold** after.\n",
       visible: "bold",
@@ -1306,7 +1353,9 @@ async function verifyHeadingSourceEditing() {
       source: "- ## Title\n",
       selector: "h2",
       expected: "- ##Title\n",
-      exactDraftControl: true
+      reparsedSelector: "li p",
+      reparsedText: "##Title",
+      reparsedCaretOffset: 2
     },
     {
       name: "quoted setext start",
@@ -1323,10 +1372,19 @@ async function verifyHeadingSourceEditing() {
     await startSession(testCase.source, "Title");
     await placeCaretInText("Title", 0, ".ProseMirror", testCase.selector);
     await dispatchKey({ key: "Backspace", code: "Backspace", virtualKeyCode: 8 });
-    if (testCase.exactDraftControl) {
-      await waitForSourceControl(
-        (state) => state?.active && state.value === testCase.expected.trimEnd(),
-        `${testCase.name} did not retain the exact nested heading draft`
+    if (testCase.reparsedSelector) {
+      await waitFor(
+        () => evaluate(`(() => {
+          const reparsed = document.querySelector(${JSON.stringify(testCase.reparsedSelector)});
+          const selection = window.getSelection();
+          return reparsed?.textContent === ${JSON.stringify(testCase.reparsedText)}
+            && !document.querySelector(".tether-continuous-source")
+            && reparsed.contains(selection?.anchorNode)
+            && selection?.anchorNode?.textContent === ${JSON.stringify(testCase.reparsedText)}
+            && selection?.anchorOffset === ${testCase.reparsedCaretOffset}
+            && selection?.isCollapsed;
+        })()`),
+        `${testCase.name} did not reparse invalid heading syntax while preserving its exact caret`
       );
     }
     await waitForSaveState(false);
@@ -3857,29 +3915,71 @@ async function verifyStructuralMarkerNavigation() {
     await stopSession();
   }
 
-  const editedHeading = "> ## NTitle ##\n";
-  await startSession("> ## Title ##\n", "Title");
-  await placeCaretInText("Title", 0, ".ProseMirror", "h2");
-  await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
-  await waitForSourceControl(
-    (state) => state?.active && state.value === "> ## Title ##"
-      && state.selectionStart === 4 && state.selectionEnd === 4,
-    "Quoted heading did not expose its complete physical source before editing"
-  );
-  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
-  await waitForSourceControl(
-    (state) => state?.active && state.selectionStart === 5 && state.selectionEnd === 5,
-    "Quoted heading source did not navigate from its final prefix byte to title text"
-  );
-  await dispatchTextKey("N", "KeyN", 78);
-  await waitForSourceControl(
-    (state) => state?.active && state.value === "> ## NTitle ##"
-      && state.selectionStart === 6 && state.selectionEnd === 6,
-    "Typing in a quoted heading did not preserve its quote and ATX markers"
-  );
-  await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
-  await waitForCompletedSave(editedHeading);
-  await stopSession();
+  const nestedHeadingEdits = [
+    {
+      name: "quoted",
+      source: "> ## Title ##",
+      edited: "> ## NTitle ##",
+      prefixCaret: 4
+    },
+    {
+      name: "listed",
+      source: "- ## Title",
+      edited: "- ## NTitle",
+      prefixCaret: 4
+    },
+    {
+      name: "ordered-list",
+      source: "7) ## Title",
+      edited: "7) ## NTitle",
+      prefixCaret: 5
+    }
+  ];
+  for (const fixture of nestedHeadingEdits) {
+    await startSession(`${fixture.source}\n`, "Title");
+    await placeCaretInText("Title", 0, ".ProseMirror", "h2");
+    await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
+    await waitForSourceControl(
+      (state) => state?.active && state.value === fixture.source
+        && state.selectionStart === fixture.prefixCaret
+        && state.selectionEnd === fixture.prefixCaret,
+      `${fixture.name} heading did not expose its complete physical source before editing`
+    );
+    const presentationClass = await evaluate(
+      `document.querySelector(".tether-continuous-source")?.className || ""`
+    );
+    if (!presentationClass.includes("is-heading-depth-2")) {
+      throw new Error(
+        `${fixture.name} heading lost its rendered hierarchy in source mode: ${presentationClass}`
+      );
+    }
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    await waitForSourceControl(
+      (state) => state?.active
+        && state.selectionStart === fixture.prefixCaret + 1
+        && state.selectionEnd === fixture.prefixCaret + 1,
+      `${fixture.name} heading source did not navigate from its final prefix byte to title text`
+    );
+    await dispatchTextKey("N", "KeyN", 78);
+    await waitForSourceControl(
+      (state) => state?.active && state.value === fixture.edited
+        && state.selectionStart === fixture.prefixCaret + 2
+        && state.selectionEnd === fixture.prefixCaret + 2,
+      `Typing in a ${fixture.name} heading did not preserve its structural and ATX markers`
+    );
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(`${fixture.edited}\n`);
+
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(`${fixture.source}\n`);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(`${fixture.edited}\n`);
+    await stopSession();
+  }
 }
 
 async function verifySourceControlImeEditing() {
@@ -3976,7 +4076,39 @@ async function verifyHeadingSourcePresentation() {
   const fixtures = [
     { depth: 1, source: "# Primary #", visible: "Primary", selector: "h1" },
     { depth: 2, source: "## Section ##", visible: "Section", selector: "h2" },
-    { depth: 6, source: "###### Detail", visible: "Detail", selector: "h6" }
+    { depth: 6, source: "###### Detail", visible: "Detail", selector: "h6" },
+    {
+      depth: 2,
+      source: "> ## Quoted ##",
+      visible: "Quoted",
+      selector: "blockquote h2"
+    },
+    {
+      depth: 2,
+      source: "- ## Listed",
+      visible: "Listed",
+      selector: "li h2"
+    },
+    {
+      depth: 2,
+      source: "7) ## Ordered",
+      visible: "Ordered",
+      selector: "li h2"
+    },
+    {
+      depth: 1,
+      source: "> Setext\n> ======",
+      visible: "Setext",
+      selector: "blockquote h1",
+      presentation: false
+    },
+    {
+      depth: 2,
+      source: "> ## Mixed\n>\n> Body",
+      visible: "Mixed",
+      selector: "blockquote h2",
+      presentation: false
+    }
   ];
   const styleSnapshot = (selector) => evaluate(`(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
@@ -4010,8 +4142,28 @@ async function verifyHeadingSourcePresentation() {
       (state) => state?.active && state.value === fixture.source,
       `Heading ${fixture.depth} did not expose its physical source for presentation QA`
     );
+    await waitFor(
+      () => evaluate(`document.querySelector(".tether-continuous-source")?.getBoundingClientRect().height > 10`),
+      `Heading ${fixture.depth} source control did not settle its visual line box`
+    );
+    const shouldPresent = fixture.presentation !== false;
+    if (!shouldPresent) {
+      const incorrectlyStyled = await evaluate(
+        `Boolean(document.querySelector(".tether-continuous-source.is-heading-source"))`
+      );
+      if (incorrectlyStyled) {
+        throw new Error(
+          `Multiline heading source ${JSON.stringify(fixture.source)} styled every physical line as one heading`
+        );
+      }
+      await stopSession();
+      continue;
+    }
     const sourceControl = await styleSnapshot(
       `.tether-continuous-source.is-heading-source.is-heading-depth-${fixture.depth}`
+    );
+    const sourceControlClass = await evaluate(
+      `document.querySelector(".tether-continuous-source")?.className ?? null`
     );
     const comparableProperties = [
       "fontFamily",
@@ -4036,8 +4188,8 @@ async function verifyHeadingSourcePresentation() {
       || Math.abs(rendered.height - sourceControl.height) > 4
     ) {
       throw new Error(
-        `Heading ${fixture.depth} source presentation shifted hierarchy: ${
-          JSON.stringify({ mismatches, rendered, sourceControl })
+        `Heading ${fixture.depth} ${JSON.stringify(fixture.source)} source presentation shifted hierarchy: ${
+          JSON.stringify({ mismatches, rendered, sourceControl, sourceControlClass })
         }`
       );
     }

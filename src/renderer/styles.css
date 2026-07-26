@@ -2523,6 +2523,10 @@ textarea:focus-visible,
   letter-spacing: 0.06em;
 }
 
+.tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-heading-context-blockquote {
+  margin-bottom: 0;
+}
+
 .tether-wysiwyg .ProseMirror textarea.tether-continuous-source.is-code_block {
   border: 1px solid var(--line-strong);
   border-radius: 5px;

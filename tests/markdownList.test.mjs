@@ -46,6 +46,7 @@ import {
   annotateBulletListMarkers,
   isInteractiveTaskMarker,
   listItemTextStart,
+  preserveCompactHeadingListItemSource,
   renderedListItemLabel,
   sourceFaithfulBulletListSchema,
   sourceFaithfulBulletRemark,
@@ -74,6 +75,44 @@ import {
   structuralEnterEdit,
   structuralSourceHandoffTarget
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
+
+test("single-line ATX list headings retain their physical item layout after edits", () => {
+  assert.equal(
+    preserveCompactHeadingListItemSource(
+      "-  ## Alpha Beta",
+      "-\n  ## AlphaX Beta"
+    ),
+    "-  ## AlphaX Beta"
+  );
+  assert.equal(
+    preserveCompactHeadingListItemSource(
+      "7) \t### Title ###",
+      "7)\n   ### New title ###"
+    ),
+    "7) \t### New title ###"
+  );
+  assert.equal(
+    preserveCompactHeadingListItemSource(
+      "- ## Title",
+      "-\n  paragraph\n\n  ## Title"
+    ),
+    null
+  );
+  assert.equal(
+    preserveCompactHeadingListItemSource(
+      "- Title\n  ---",
+      "-\n  Title\n  ---"
+    ),
+    null
+  );
+  assert.equal(
+    preserveCompactHeadingListItemSource(
+      "- paragraph",
+      "-\n  changed"
+    ),
+    null
+  );
+});
 
 test("only task markers consume pointer interaction", () => {
   assert.equal(isInteractiveTaskMarker({ attrs: { checked: null, listType: "bullet" } }), false);

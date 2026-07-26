@@ -151,6 +151,7 @@ import {
   replaceSourceSelectionTransaction,
   structuralMarkerBackspaceKeymap
 } from "./lib/markdownSyntaxPlugin.js";
+import { pendingSourceDraftDecision } from "./lib/sourceDraft.js";
 
 function replaceAllMarkdown(markdown) {
   return (ctx) => {
@@ -2002,16 +2003,6 @@ export default function WysiwygSurface({
           // The view may be between replacement and teardown. The loaded
           // source still supplies the correct terminal-newline convention.
         }
-        if (
-          pendingSourceDraftRef.current != null
-          && currentView?.dom?.querySelector?.(".tether-continuous-source")
-        ) {
-          // The ProseMirror document intentionally remains unchanged while a
-          // raw source control contains an in-progress (possibly malformed)
-          // draft. A late model serialization must not overwrite that newer
-          // literal source or clear the dirty state.
-          return;
-        }
         const markdown = exactCommittedMarkdown(
           currentView,
           currentDoc,
@@ -2022,6 +2013,18 @@ export default function WysiwygSurface({
             currentDoc,
             baselineSourceRef.current
           );
+        const draftDecision = pendingSourceDraftDecision(
+          pendingSourceDraftRef.current,
+          markdown,
+          Boolean(currentView?.dom?.querySelector?.(".tether-continuous-source"))
+        );
+        // The first draft event can precede the decoration widget's mount.
+        // Until that control is visible—or its exact bytes have reached the
+        // ProseMirror model—never let stale serialization overwrite the
+        // user's activation-time deletion. Once the model catches up after a
+        // commit, clear the draft guard so ordinary rendered edits can resume.
+        if (draftDecision.suppressModelUpdate) return;
+        if (draftDecision.settled) pendingSourceDraftRef.current = null;
         lastMarkdownRef.current = markdown;
         if (
           lastFocusedCodeTarget
@@ -2165,6 +2168,13 @@ export default function WysiwygSurface({
     const crepe = crepeRef.current;
     if (!crepe || state !== "ready") return;
     const nextMarkdown = content || "";
+    if (nextMarkdown === pendingSourceDraftRef.current) {
+      // onChange echoes a live source draft back through React. Replacing the
+      // ProseMirror document here would reparse malformed in-progress syntax
+      // and destroy the temporary control before the user can finish it.
+      lastMarkdownRef.current = nextMarkdown;
+      return;
+    }
     if (nextMarkdown === lastMarkdownRef.current) return;
 
     applyingExternalRef.current = true;

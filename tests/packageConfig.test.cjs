@@ -38,7 +38,8 @@ test("Markdown files can open from the OS, app menu, or drag and drop", () => {
   assert.match(app, /Drop Markdown file to open/);
   assert.match(styles, /\.file-drop-overlay/);
   assert.match(surface, /if \(lastMarkdownRef\.current !== nextMarkdown\)/);
-  assert.match(surface, /pendingSourceDraftRef\.current != null/);
+  assert.match(surface, /pendingSourceDraftDecision\(/);
+  assert.match(surface, /nextMarkdown === pendingSourceDraftRef\.current/);
 });
 
 test("real Electron editor verification keeps its windows hidden", () => {
@@ -68,6 +69,8 @@ test("real Electron editor verification keeps its windows hidden", () => {
   assert.match(verifier, /TETHER_PARITY_WINDOWS_PER_PROCESS \|\| "0"/);
   assert.match(verifier, /maxWindowsPerElectronSession[\s\S]*?: 4;/);
   assert.match(verifier, /sessionWindowCount >= maxWindowsPerElectronSession/);
+  assert.match(verifier, /startupAttempt < 2/);
+  assert.match(verifier, /Retrying stalled hidden Electron fixture/);
   assert.match(verifier, /async function stopSession\(force = false\)/);
   assert.match(verifier, /await stopSession\(true\)/);
   assert.match(verifier, /process\.exit\(exitCode\)/);

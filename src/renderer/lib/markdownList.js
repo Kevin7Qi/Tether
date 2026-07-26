@@ -551,6 +551,25 @@ export const sourceFaithfulUpperTaskInputRule = $inputRule(() => new InputRule(
   (state, _match, start, end) => uppercaseTaskTransaction(state, start, end)
 ));
 
+export function preserveCompactHeadingListItemSource(
+  originalSource,
+  serializedSource
+) {
+  if (
+    typeof originalSource !== "string"
+    || typeof serializedSource !== "string"
+    || /[\r\n]/.test(originalSource)
+  ) return null;
+  const original = originalSource.match(
+    /^(?:[-+*]|\d{1,9}[.)])([ \t]+)(?=#{1,6}(?:[ \t]+|$))/
+  );
+  const serialized = serializedSource.match(
+    /^((?:[-+*]|\d{1,9}[.)]))\r?\n[ \t]+(#{1,6}(?:[ \t]+|$)[^\r\n]*)$/
+  );
+  if (!original || !serialized) return null;
+  return `${serialized[1]}${original[1]}${serialized[2]}`;
+}
+
 export function sourceFaithfulListItemHandler(node, parent, state, info) {
   if (
     node.listItemSource != null
@@ -576,6 +595,11 @@ export function sourceFaithfulListItemHandler(node, parent, state, info) {
     ...info,
     ...tracker.current()
   });
+  const compactHeading = preserveCompactHeadingListItemSource(
+    node.listItemSource,
+    value
+  );
+  if (compactHeading != null) return compactHeading;
   if (!checkable) return value;
 
   const withCheckbox = value.replace(

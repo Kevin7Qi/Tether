@@ -243,25 +243,33 @@ test("nested heading boundaries edit the nearest byte in their enclosing physica
       source: "> ## Title ##\n",
       direction: "backward",
       offset: 0,
-      expected: "> ##Title ##"
+      expected: "> ##Title ##",
+      headingPresentation: true,
+      headingPresentationContext: "blockquote"
     },
     {
       source: "> Title\n> =====\n",
       direction: "backward",
       offset: 0,
-      expected: ">Title\n> ====="
+      expected: ">Title\n> =====",
+      headingPresentation: false,
+      headingPresentationContext: null
     },
     {
       source: "> ## Title ##\n",
       direction: "forward",
       offset: "Title".length,
-      expected: "> ## Title##"
+      expected: "> ## Title##",
+      headingPresentation: true,
+      headingPresentationContext: "blockquote"
     },
     {
       source: "> Title\n> =====\n",
       direction: "forward",
       offset: "Title".length,
-      expected: "> Title> ====="
+      expected: "> Title> =====",
+      headingPresentation: false,
+      headingPresentationContext: null
     }
   ];
 
@@ -282,6 +290,14 @@ test("nested heading boundaries edit the nearest byte in their enclosing physica
     assert.equal(target.source, testCase.source.trimEnd());
     assert.equal(target.unit.documentSource, testCase.source);
     assert.equal(target.unit.sourceStart, 0);
+    assert.equal(
+      target.unit.headingPresentation,
+      testCase.headingPresentation
+    );
+    assert.equal(
+      target.unit.headingPresentationContext,
+      testCase.headingPresentationContext
+    );
     const navigationTarget = structuralBoundarySourceTarget(
       state,
       testCase.direction === "backward" ? "ArrowLeft" : "ArrowRight",
@@ -299,6 +315,26 @@ test("nested heading boundaries edit the nearest byte in their enclosing physica
       testCase.expected
     );
   }
+});
+
+test("a mixed structural container does not style all source lines as a heading", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "> ## Title\n>\n> Body\n";
+  const doc = parse(source);
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, textPosition(doc, "Title"))
+  });
+  const target = sourceFaithfulHeadingBoundaryDeletionTarget(
+    state,
+    serialize,
+    "backward",
+    parse
+  );
+  assert.ok(target);
+  assert.equal(target.source, source.trimEnd());
+  assert.equal(target.unit.headingPresentation, false);
+  assert.equal(target.unit.headingPresentationContext, null);
 });
 
 test("heading literals navigate and edit through their exact physical source", async () => {

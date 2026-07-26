@@ -1695,6 +1695,8 @@ export function activateMarkdownSourceDeletionAt(
   // Publish from the originating key event. A decoration widget can be
   // replaced several times before its focus frame, so making the temporary
   // control responsible for this first change can lose the deletion entirely.
+  // The surface's pending-draft guard keeps this event authoritative even
+  // before the replacement widget becomes observable in the DOM.
   if (draft != null) publishMarkdownSourceDraft(view, draft);
 }
 
@@ -2913,12 +2915,22 @@ export function sourceFaithfulHeadingBoundaryDeletionTarget(
   // A heading may live inside a quote or list. Editing only the nested
   // ProseMirror node would discard the physical container prefixes, so expose
   // the complete root source segment that actually contains the caret.
+  // A one-line segment containing the selected heading cannot contain another
+  // block, even when a custom list node view adds implementation-only wrappers.
+  // Multiline Setext and mixed structural sources deliberately stay neutral:
+  // one textarea cannot apply heading typography to only one physical line.
+  const headingPresentation = !/[\r\n]/.test(source);
   const unit = {
     from: segment.position,
     to: segment.position + segment.node.nodeSize,
     kind: "block",
     name: segment.node.type.name,
     headingDepth: $from.parent.attrs.depth ?? $from.parent.attrs.level,
+    headingPresentation,
+    headingPresentationContext: headingPresentation
+      && segment.node.type.name !== "heading"
+      ? segment.node.type.name
+      : null,
     source,
     sourceStart: segment.from,
     documentSource: physicalDocumentSource,
@@ -9013,9 +9025,16 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const serializer = ctx.get(serializerCtx);
         const source = continuousMarkdownSource(state, unit, serializer);
         const sourceName = unit.name || unit.names?.[0] || "markdown";
-        const sourcePresentationClass = sourceName === "heading"
+        const headingPresentationClass = !/[\r\n]/.test(source)
+          && (sourceName === "heading" || unit.headingPresentation)
           && Number.isInteger(unit.headingDepth)
-          ? `is-heading-source is-heading-depth-${unit.headingDepth}`
+          ? [
+              "is-heading-source",
+              `is-heading-depth-${unit.headingDepth}`,
+              unit.headingPresentationContext
+                ? `is-heading-context-${unit.headingPresentationContext}`
+                : ""
+            ].filter(Boolean).join(" ")
           : "";
         const initialCaret = sourceCaretOffset(
           state,
@@ -9740,7 +9759,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           unit.kind,
           sourceName,
           `${unit.name || unit.names?.join(" ") || "Markdown"} source`,
-          sourcePresentationClass,
+          headingPresentationClass,
           initialCaret,
           pluginState.initialDeleteDirection,
           pluginState.initialSelectionDirection,
