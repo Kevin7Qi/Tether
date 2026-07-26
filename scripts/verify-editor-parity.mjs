@@ -2117,6 +2117,162 @@ async function verifyPlatformNativeHeadingEditing() {
   }
 }
 
+async function verifyPlatformNativeFormattedHeadingEditing() {
+  const fixtures = [
+    {
+      name: "strong title word",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha ".length,
+      visibleHead: "Alpha Beta".length,
+      sourceAnchor: "## Alpha **".length,
+      sourceHead: "## Alpha **Beta".length
+    },
+    {
+      name: "backward strong title",
+      source: "## Alpha **Beta** Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha Beta Gamma".length,
+      visibleHead: 0,
+      sourceAnchor: "## Alpha **Beta** Gamma".length,
+      sourceHead: "## ".length
+    },
+    {
+      name: "entity title",
+      source: "## Alpha &copy; Beta ##\nAfter.\n",
+      visibleText: "Alpha © Beta",
+      visibleAnchor: 0,
+      visibleHead: "Alpha © Beta".length,
+      sourceAnchor: "## ".length,
+      sourceHead: "## Alpha &copy; Beta".length
+    },
+    {
+      name: "escaped title",
+      source: "## Alpha \\*Beta\\* Gamma ##\nAfter.\n",
+      visibleText: "Alpha *Beta* Gamma",
+      visibleAnchor: 0,
+      visibleHead: "Alpha *Beta* Gamma".length,
+      sourceAnchor: "## ".length,
+      sourceHead: "## Alpha \\*Beta\\* Gamma".length
+    },
+    {
+      name: "inline-code title",
+      source: "## Alpha `Beta` Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: 0,
+      visibleHead: "Alpha Beta Gamma".length,
+      sourceAnchor: "## ".length,
+      sourceHead: "## Alpha `Beta` Gamma".length
+    },
+    {
+      name: "link title",
+      source: "## Alpha [Beta](https://example.com) Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: 0,
+      visibleHead: "Alpha Beta Gamma".length,
+      sourceAnchor: "## ".length,
+      sourceHead: "## Alpha [Beta](https://example.com) Gamma".length
+    },
+    {
+      name: "entity Option-Backspace",
+      source: "## Alpha &copy; Beta ##\nAfter.\n",
+      visibleText: "Alpha © Beta",
+      visibleAnchor: "Alpha ©".length,
+      visibleHead: "Alpha ©".length,
+      sourceAnchor: "## Alpha &copy;".length,
+      sourceHead: "## Alpha &copy;".length,
+      keyCode: "Backspace",
+      nativeModifiers: ["alt"]
+    },
+    {
+      name: "inline-code Option-Delete",
+      source: "## Alpha `Beta` Gamma ##\nAfter.\n",
+      visibleText: "Alpha Beta Gamma",
+      visibleAnchor: "Alpha ".length,
+      visibleHead: "Alpha ".length,
+      sourceAnchor: "## Alpha ".length,
+      sourceHead: "## Alpha ".length,
+      keyCode: "Delete",
+      nativeModifiers: ["alt"]
+    }
+  ];
+  const scenarios = process.env.TETHER_PARITY_SCENARIO
+    ? fixtures.filter(({ name }) => name.includes(process.env.TETHER_PARITY_SCENARIO))
+    : fixtures;
+  if (process.env.TETHER_PARITY_SCENARIO && !scenarios.length) {
+    throw new Error(
+      `No formatted-heading scenario matched ${JSON.stringify(process.env.TETHER_PARITY_SCENARIO)}. `
+      + `Available scenarios: ${fixtures.map(({ name }) => name).join(", ")}`
+    );
+  }
+  const mismatches = [];
+
+  for (let index = 0; index < scenarios.length; index += 1) {
+    const scenario = scenarios[index];
+    const sourceStart = Math.min(scenario.sourceAnchor, scenario.sourceHead);
+    const sourceEnd = Math.max(scenario.sourceAnchor, scenario.sourceHead);
+    const direction = scenario.sourceAnchor > scenario.sourceHead ? "backward" : "forward";
+    const controlId = `tether-native-formatted-heading-${index}`;
+
+    await startSession(scenario.source, scenario.visibleText);
+    await evaluate(`(() => {
+      const control = document.createElement("textarea");
+      control.id = ${JSON.stringify(controlId)};
+      control.style.position = "fixed";
+      control.style.left = "-10000px";
+      control.value = ${JSON.stringify(scenario.source)};
+      document.body.append(control);
+      control.focus();
+      control.setSelectionRange(${sourceStart}, ${sourceEnd}, ${JSON.stringify(direction)});
+      return true;
+    })()`);
+    if (scenario.keyCode) {
+      await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
+    } else {
+      await cdp.send("Input.insertText", { text: "x" });
+    }
+    const expectedSource = await evaluate(
+      `document.querySelector(${JSON.stringify(`#${controlId}`)})?.value ?? null`
+    );
+    await evaluate(`document.querySelector(${JSON.stringify(`#${controlId}`)})?.remove()`);
+
+    await placeSelectionInText(
+      scenario.visibleText,
+      scenario.visibleAnchor,
+      scenario.visibleHead,
+      ".ProseMirror",
+      "h2"
+    );
+    if (scenario.keyCode) {
+      await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
+    } else {
+      await dispatchTextKey("x", "KeyX", 88);
+    }
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    try {
+      await waitForCompletedSave(expectedSource);
+    } catch (error) {
+      mismatches.push({
+        scenario: scenario.name,
+        expectedSource,
+        actualSource: await readFile(samplePath, "utf8").catch(() => null),
+        editor: await editorState().catch(() => null),
+        sourceControl: await sourceControlState().catch(() => null)
+      });
+    }
+    await stopSession(true);
+  }
+
+  if (mismatches.length) {
+    throw new Error(
+      `Formatted heading edits diverged from a native source textarea:\n${
+        JSON.stringify(mismatches, null, 2)
+      }`
+    );
+  }
+}
+
 async function verifyRenderedPointerSelection() {
   const source = "Before **bold** after.\n";
   const selectionStart = "Before".length;
@@ -8930,6 +9086,11 @@ async function run() {
     console.log("Verified rendered heading edits match a native source textarea.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "formatted-heading-native-editing") {
+    await verifyPlatformNativeFormattedHeadingEditing();
+    console.log("Verified formatted heading edits match exact native Markdown source.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "rendered-pointer-selection") {
     await verifyRenderedPointerSelection();
     console.log("Verified pointer selection across rendered inline Markdown preserves exact source.");
@@ -9310,6 +9471,7 @@ async function run() {
   await verifyHeadingSourceEditing();
   await verifyPlatformNativeHeadingNavigation();
   await verifyPlatformNativeHeadingEditing();
+  await verifyPlatformNativeFormattedHeadingEditing();
   await verifySourceControlImeEditing();
   await verifyHeadingSourcePresentation();
   await verifyInlineSourcePresentation();

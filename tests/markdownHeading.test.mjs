@@ -22,8 +22,15 @@ import {
   headingAttr,
   headingIdGenerator,
   paragraphSchema,
+  strongAttr,
   textSchema
 } from "@milkdown/kit/preset/commonmark";
+import {
+  sourceFaithfulAttentionRemark,
+  sourceFaithfulAttentionSerializer,
+  sourceFaithfulStrongSchema,
+  serializationAttentionGroupSchema
+} from "../src/renderer/lib/markdownAttention.js";
 import {
   sourceFaithfulBlockquoteRemark,
   sourceFaithfulBlockquoteSchema
@@ -46,6 +53,8 @@ import {
   replaceSourceSelectionTransaction,
   sourceControlInitialDeletion,
   sourceFaithfulHeadingBoundaryDeletionTarget,
+  sourceSelectionFromDocumentSelection,
+  sourceSelectionText,
   structuralBoundarySourceTarget
 } from "../src/renderer/lib/markdownSyntaxPlugin.js";
 
@@ -91,7 +100,12 @@ async function milkdownTransformer() {
     textSchema,
     blockquoteAttr,
     headingAttr,
+    strongAttr,
     headingIdGenerator,
+    sourceFaithfulAttentionRemark,
+    sourceFaithfulStrongSchema,
+    serializationAttentionGroupSchema,
+    sourceFaithfulAttentionSerializer,
     sourceFaithfulHeadingRemark,
     sourceFaithfulBlockquoteRemark,
     sourceFaithfulBlockquoteSchema,
@@ -460,6 +474,30 @@ test("plain heading selections retain exact source when an edit leaves leading w
       source.replace("Alpha", "")
     );
   }
+});
+
+test("a complete rendered heading mark selects only its visible source content", async () => {
+  const { parse, serialize } = await milkdownTransformer();
+  const source = "## Alpha **Beta** Gamma ##\n\nAfter.\n";
+  const doc = parse(source);
+  const markStart = textPosition(doc, "Beta");
+  const state = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, markStart, markStart + "Beta".length)
+  });
+  const sourceSelection = sourceSelectionFromDocumentSelection(state, serialize);
+
+  assert.equal(sourceSelectionText(sourceSelection), "Beta");
+  const transaction = replaceSourceSelectionTransaction(
+    state,
+    sourceSelection,
+    "x",
+    parse
+  );
+  assert.equal(
+    transaction.getMeta(exactSourceReplacementMeta)?.source,
+    "## Alpha **x** Gamma ##\n\nAfter.\n"
+  );
 });
 
 test("setext heading content retains physical entities above its underline", async () => {

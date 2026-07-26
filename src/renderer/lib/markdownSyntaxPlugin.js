@@ -1361,7 +1361,14 @@ export function sourceAwareClipboardText(state, serializer) {
   return source.replace(/\r?\n$/, "");
 }
 
-function serializedCaretOffset(state, unit, source, position, serializer) {
+function serializedCaretOffset(
+  state,
+  unit,
+  source,
+  position,
+  serializer,
+  preferredMarks = null
+) {
   if (unit.kind === "block" && position <= unit.from) return 0;
   let marker = "\uE000";
   while (source.includes(marker)) marker += "\uE001";
@@ -1369,10 +1376,14 @@ function serializedCaretOffset(state, unit, source, position, serializer) {
   // Raw paragraph metadata deliberately replays the untouched physical source.
   // Invalidate it for this synthetic probe so the serializer includes the
   // marker and can reveal the caret's true offset around inline delimiters.
-  const transaction = invalidateParagraphSource(
-    state.tr.insertText(marker, position, position),
-    position
-  );
+  const insertion = Array.isArray(preferredMarks)
+    ? state.tr.replaceRangeWith(
+        position,
+        position,
+        state.schema.text(marker, preferredMarks)
+      )
+    : state.tr.insertText(marker, position, position);
+  const transaction = invalidateParagraphSource(insertion, position);
   const markedState = { schema: state.schema, doc: transaction.doc };
   const markerInsideUnit = position >= unit.from && position < unit.to;
   const markedUnit = {
@@ -1493,7 +1504,8 @@ export function sourceCaretOffset(
   source,
   clickPosition,
   explicitOffset = null,
-  serializer = null
+  serializer = null,
+  preferredMarks = null
 ) {
   if (Number.isFinite(explicitOffset)) {
     return Math.max(0, Math.min(source.length, explicitOffset));
@@ -1516,7 +1528,14 @@ export function sourceCaretOffset(
   if (exactBoundary != null) return exactBoundary;
   if (serializer && position >= unit.from && position <= unit.to) {
     try {
-      const serializedOffset = serializedCaretOffset(state, unit, source, position, serializer);
+      const serializedOffset = serializedCaretOffset(
+        state,
+        unit,
+        source,
+        position,
+        serializer,
+        preferredMarks
+      );
       if (serializedOffset != null) return serializedOffset;
     } catch {
       // Fall through to the text-based mapping for unusual custom nodes.
@@ -4054,7 +4073,13 @@ export function preserveDocumentSourceNoopBoundary(view, event, serializer) {
   return true;
 }
 
-export function documentSourceOffsetAtPosition(state, position, serializer, affinity = "forward") {
+export function documentSourceOffsetAtPosition(
+  state,
+  position,
+  serializer,
+  affinity = "forward",
+  preferredMarks = null
+) {
   const documentSource = documentSourceSegments(state, serializer);
   if (!documentSource) return null;
   const bounded = Math.max(0, Math.min(position, state.doc.content.size));
@@ -4092,7 +4117,15 @@ export function documentSourceOffsetAtPosition(state, position, serializer, affi
       );
       return tableOffset == null ? null : segment.from + tableOffset;
     }
-    const offset = sourceCaretOffset(state, unit, source, bounded, null, serializer);
+    const offset = sourceCaretOffset(
+      state,
+      unit,
+      source,
+      bounded,
+      null,
+      serializer,
+      preferredMarks
+    );
     const approximateOffset = segment.from + Math.max(0, Math.min(source.length, offset));
     const codeBlock = enclosingCodeBlock(state.doc, bounded);
     const physicalOffset = codeBlock
@@ -4615,8 +4648,28 @@ export function sourceSelectionFromDocumentSelection(
       boundary: 0
     };
   }
-  const from = documentSourceOffsetAtPosition(state, selection.from, serializer, "forward");
-  const to = documentSourceOffsetAtPosition(state, selection.to, serializer, "backward");
+  const forwardMarks = selection.$from.nodeAfter?.isText
+    && selection.$from.nodeAfter.marks.some((mark) => supportedMarks.includes(mark.type.name))
+    ? selection.$from.nodeAfter.marks
+    : null;
+  const backwardMarks = selection.$to.nodeBefore?.isText
+    && selection.$to.nodeBefore.marks.some((mark) => supportedMarks.includes(mark.type.name))
+    ? selection.$to.nodeBefore.marks
+    : null;
+  const from = documentSourceOffsetAtPosition(
+    state,
+    selection.from,
+    serializer,
+    "forward",
+    forwardMarks
+  );
+  const to = documentSourceOffsetAtPosition(
+    state,
+    selection.to,
+    serializer,
+    "backward",
+    backwardMarks
+  );
   if (from == null || to == null || from > to) return null;
   const forward = selection.anchor <= selection.head;
   const crossedBoundary = documentSource.segments
