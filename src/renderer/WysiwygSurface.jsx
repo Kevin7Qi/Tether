@@ -78,6 +78,7 @@ import { sourceFaithfulInlineMathSchema, sourceFaithfulMathRemark } from "./lib/
 import { sourceFaithfulParagraphRemark, sourceFaithfulParagraphSchema } from "./lib/markdownParagraph.js";
 import {
   documentGaps,
+  markdownSnapshotDocumentsEqual,
   normalizeEmptyMarkdownDocument,
   sourceFaithfulDocumentRemark,
   sourceFaithfulDocumentSchema
@@ -138,6 +139,7 @@ import {
   markdownSyntaxPlugin,
   isSourceInputComposing,
   physicalCodeSourceUnitAtPosition,
+  physicalCodeContentSourceOffset,
   preserveDocumentSourceNoopBoundary,
   sourceCaretOffset,
   sourceDocumentJumpEdge,
@@ -286,12 +288,14 @@ function exactCommittedMarkdown(
   fallbackSource = null
 ) {
   const draft = view?.dom?.tetherCommittedSourceDraft;
-  return (
-    typeof draft?.markdown === "string"
-    && draft.doc?.eq?.(doc)
-  )
-    ? normalizeSerializedMarkdown(draft.markdown, doc, fallbackSource)
-    : null;
+  if (
+    typeof draft?.markdown !== "string"
+    || !markdownSnapshotDocumentsEqual(draft.doc, doc)
+  ) return null;
+  // Synthetic trailing paragraphs are editing chrome, not Markdown. Reattach
+  // the exact draft to the current snapshot once that is the only difference.
+  draft.doc = doc;
+  return normalizeSerializedMarkdown(draft.markdown, doc, fallbackSource);
 }
 
 export default function WysiwygSurface({
@@ -384,18 +388,30 @@ export default function WysiwygSurface({
         } catch {
           return null;
         }
+        const settledDoc = markSyntheticTrailingParagraph(crepe, true);
         const committedMarkdown = exactCommittedMarkdown(
           view,
-          view?.state?.doc,
+          settledDoc,
           baselineSourceRef.current
         );
-        const settledDoc = markSyntheticTrailingParagraph(crepe, true);
-        const serializedMarkdown = normalizeSerializedMarkdown(
+        if (committedMarkdown != null) {
+          // An exact edit already carries the complete physical file and a
+          // matching document snapshot. Serializing it again would normalize
+          // details such as CRLF, quote prefixes, and fence spelling.
+          lastMarkdownRef.current = committedMarkdown;
+          if (committedMarkdown === baselineSourceRef.current) {
+            pendingSourceDraftRef.current = null;
+            return hasUserChangeRef.current ? baselineSourceRef.current : null;
+          }
+          pendingSourceDraftRef.current = null;
+          hasUserChangeRef.current = true;
+          return committedMarkdown;
+        }
+        const markdown = normalizeSerializedMarkdown(
           crepe.getMarkdown(),
           settledDoc,
           baselineSourceRef.current
         );
-        const markdown = committedMarkdown ?? serializedMarkdown;
         const pendingSourceDraft = pendingSourceDraftRef.current;
         lastMarkdownRef.current = markdown;
         if (markdown === baselineMarkdownRef.current) {
@@ -995,6 +1011,53 @@ export default function WysiwygSurface({
       if (typeof event.data !== "string" || event.data === "") return;
       replaceCodeSourceOnlyInsertion(event, event.data);
     };
+    const codePhysicalSourceSelection = (view, codeBlock, selection, serializer) => {
+      const documentSource = documentSourceSegments(view.state, serializer);
+      if (!documentSource) return null;
+      const sourceOffset = (position) => documentSourceOffsetAtPosition(
+        view.state,
+        codeContentSourcePosition(codeBlock.position, position),
+        serializer,
+        "forward"
+      );
+      const fallbackAnchor = sourceOffset(selection.anchor);
+      const fallbackHead = sourceOffset(selection.head);
+      if (!Number.isFinite(fallbackAnchor) || !Number.isFinite(fallbackHead)) return null;
+
+      const committed = view.dom.tetherCommittedSourceDraft;
+      const exactFullSource = typeof committed?.markdown === "string"
+        && committed.doc?.eq?.(view.state.doc)
+        ? committed.markdown
+        : baselineDocRef.current?.eq?.(view.state.doc)
+          ? baselineSourceRef.current
+          : null;
+      if (typeof exactFullSource === "string") {
+        const exactAnchor = physicalCodeContentSourceOffset(
+          codeBlock.node,
+          selection.anchor,
+          exactFullSource,
+          fallbackAnchor
+        );
+        const exactHead = physicalCodeContentSourceOffset(
+          codeBlock.node,
+          selection.head,
+          exactFullSource,
+          fallbackHead
+        );
+        if (Number.isFinite(exactAnchor) && Number.isFinite(exactHead)) {
+          return {
+            anchor: exactAnchor,
+            head: exactHead,
+            fullSource: exactFullSource
+          };
+        }
+      }
+      return {
+        anchor: fallbackAnchor,
+        head: fallbackHead,
+        fullSource: documentSource.fullSource
+      };
+    };
     const replaceCodeSourceTransfer = (event, replacement) => {
       if (
         readOnlyRef.current
@@ -1017,32 +1080,23 @@ export default function WysiwygSurface({
       }
       if (!codeBlock) return false;
       const selection = codeView.state.selection.main;
-      const documentSource = documentSourceSegments(view.state, serializer);
-      const sourceAnchor = documentSourceOffsetAtPosition(
-        view.state,
-        codeContentSourcePosition(codeBlock.position, selection.anchor),
-        serializer,
-        "forward"
+      const physicalSelection = codePhysicalSourceSelection(
+        view,
+        codeBlock,
+        selection,
+        serializer
       );
-      const sourceHead = documentSourceOffsetAtPosition(
-        view.state,
-        codeContentSourcePosition(codeBlock.position, selection.head),
-        serializer,
-        "forward"
-      );
-      if (
-        !documentSource
-        || !Number.isFinite(sourceAnchor)
-        || !Number.isFinite(sourceHead)
-      ) return false;
+      if (!physicalSelection) return false;
       const sourceSelection = {
-        anchor: sourceAnchor,
-        head: sourceHead,
-        fullSource: documentSource.fullSource,
+        ...physicalSelection,
         boundary: codeContentSourcePosition(codeBlock.position, selection.head)
       };
       codeSourceOnlyHistory = null;
-      if (!view.dom.tetherReplaceExactSourceSelection?.(sourceSelection, replacement)) return false;
+      if (!view.dom.tetherReplaceExactSourceSelection?.(
+        sourceSelection,
+        replacement,
+        { renderedCaret: true }
+      )) return false;
       event.preventDefault();
       event.stopImmediatePropagation();
       return true;
@@ -1077,34 +1131,20 @@ export default function WysiwygSurface({
       }
       if (!codeBlock) return;
 
-      const documentSource = documentSourceSegments(view.state, serializer);
-      const sourceAnchor = documentSourceOffsetAtPosition(
-        view.state,
-        codeContentSourcePosition(codeBlock.position, selection.anchor),
-        serializer,
-        "forward"
+      const physicalSelection = codePhysicalSourceSelection(
+        view,
+        codeBlock,
+        selection,
+        serializer
       );
-      const sourceHead = documentSourceOffsetAtPosition(
-        view.state,
-        codeContentSourcePosition(codeBlock.position, selection.head),
-        serializer,
-        "forward"
-      );
-      if (
-        !documentSource
-        || !Number.isFinite(sourceAnchor)
-        || !Number.isFinite(sourceHead)
-      ) return;
-
+      if (!physicalSelection) return;
       const sourceSelection = {
-        anchor: sourceAnchor,
-        head: sourceHead,
-        fullSource: documentSource.fullSource,
+        ...physicalSelection,
         boundary: codeContentSourcePosition(codeBlock.position, selection.head)
       };
-      const selectedText = documentSource.fullSource.slice(
-        Math.min(sourceAnchor, sourceHead),
-        Math.max(sourceAnchor, sourceHead)
+      const selectedText = sourceSelection.fullSource.slice(
+        Math.min(sourceSelection.anchor, sourceSelection.head),
+        Math.max(sourceSelection.anchor, sourceSelection.head)
       );
       if (!selectedText) return;
 
@@ -1115,7 +1155,11 @@ export default function WysiwygSurface({
       if (event.type === "cut") {
         if (readOnlyRef.current) return;
         codeSourceOnlyHistory = null;
-        if (!view.dom.tetherReplaceExactSourceSelection?.(sourceSelection, "")) return;
+        if (!view.dom.tetherReplaceExactSourceSelection?.(
+          sourceSelection,
+          "",
+          { renderedCaret: true }
+        )) return;
       }
       event.preventDefault();
       event.stopImmediatePropagation();

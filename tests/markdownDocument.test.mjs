@@ -20,6 +20,7 @@ import { strongAttr, strongSchema, textSchema } from "@milkdown/kit/preset/commo
 import {
   annotateDocumentGaps,
   documentGaps,
+  markdownSnapshotDocumentsEqual,
   normalizeEmptyMarkdownDocument,
   sourceFaithfulDocumentRemark,
   sourceFaithfulDocumentSchema
@@ -190,6 +191,24 @@ test("a marked editor-only trailing paragraph never leaks into Markdown source",
       tetherSyntheticTrailing: true
     });
   }), source);
+});
+
+test("exact Markdown snapshots ignore only a synthetic trailing paragraph", async () => {
+  const { parse } = await milkdownTransformer();
+  const doc = parse("After\n");
+  const synthetic = doc.type.schema.nodes.paragraph.create({
+    tetherSyntheticTrailing: true
+  });
+  const withEditorChrome = doc.type.create(doc.attrs, [doc.firstChild, synthetic]);
+  assert.equal(markdownSnapshotDocumentsEqual(doc, withEditorChrome), true);
+  assert.equal(markdownSnapshotDocumentsEqual(withEditorChrome, doc), true);
+
+  const realParagraph = doc.type.schema.nodes.paragraph.create(
+    null,
+    doc.type.schema.text("Changed")
+  );
+  const changed = doc.type.create(doc.attrs, [doc.firstChild, realParagraph]);
+  assert.equal(markdownSnapshotDocumentsEqual(doc, changed), false);
 });
 
 test("Milkdown carries exact root gaps in document attrs", async () => {

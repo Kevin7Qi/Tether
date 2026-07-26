@@ -29,6 +29,7 @@ export { sourceTabEdit } from "./sourceEditing.js";
 const markdownSyntaxKey = new PluginKey("TETHER_MARKDOWN_SYNTAX");
 export const externalMarkdownTransactionMeta = "tetherExternalMarkdown";
 export const markdownSourceDraftEvent = "tether-markdown-source-draft";
+export const exactSourceReplacementMeta = "tetherExactSourceReplacement";
 
 export function activeDocumentSourceSelection(state) {
   return state ? markdownSyntaxKey.getState(state)?.sourceSelection || null : null;
@@ -3452,9 +3453,16 @@ export function sourceLineEndingAt(source, offset) {
   return lineBreak > 0 && value[lineBreak - 1] === "\r" ? "\r\n" : "\n";
 }
 
-export function sourceSelectionAfterEdit(transaction, editSelection, serializer) {
+export function sourceSelectionAfterEdit(
+  transaction,
+  editSelection,
+  serializer,
+  exactFullSource = null
+) {
   if (!transaction?.doc || !editSelection || typeof serializer !== "function") return null;
-  const fullSource = serializeMarkdownDocument(transaction.doc, serializer);
+  const fullSource = typeof exactFullSource === "string"
+    ? exactFullSource
+    : serializeMarkdownDocument(transaction.doc, serializer);
   const caret = sourceEditCaretOffset(editSelection, fullSource);
   if (!Number.isFinite(caret)) return null;
   return {
@@ -4139,7 +4147,10 @@ function physicalCodeContentDocumentOffset(
     || storedContentOffsets.some((offset) => !Number.isFinite(offset))
   ) return null;
 
-  const text = codeNode.textContent;
+  // CodeMirror exposes LF-based offsets even when the parsed Markdown code
+  // node retains CRLF bytes. Normalize only the offset coordinate space; the
+  // physical source and returned document offsets remain byte-exact.
+  const text = codeNode.textContent.replace(/\r\n?/g, "\n");
   const boundedHead = Math.max(0, Math.min(text.length, contentHead));
   const beforeHead = text.slice(0, boundedHead);
   const lineIndex = beforeHead.split("\n").length - 1;
@@ -4184,6 +4195,76 @@ function physicalCodeContentDocumentOffset(
     visibleLine
     && documentSource.fullSource.slice(contentStart, contentStart + visibleLine.length)
       !== visibleLine
+  ) return null;
+  return contentStart + Math.min(column, visibleLine.length);
+}
+
+export function physicalCodeContentSourceOffset(
+  codeNode,
+  contentHead,
+  fullSource,
+  approximateOffset = null
+) {
+  const physicalSource = codeNode?.attrs?.fencePhysicalSource;
+  const storedStart = codeNode?.attrs?.fencePhysicalSourceStart;
+  let storedContentOffsets;
+  try {
+    storedContentOffsets = JSON.parse(codeNode?.attrs?.fencePhysicalContentOffsets || "null");
+  } catch {
+    return null;
+  }
+  if (
+    typeof fullSource !== "string"
+    || typeof physicalSource !== "string"
+    || !physicalSource.length
+    || !Number.isFinite(storedStart)
+    || !Array.isArray(storedContentOffsets)
+    || storedContentOffsets.some((offset) => !Number.isFinite(offset))
+  ) return null;
+
+  const text = codeNode.textContent.replace(/\r\n?/g, "\n");
+  const boundedHead = Math.max(0, Math.min(text.length, contentHead));
+  const beforeHead = text.slice(0, boundedHead);
+  const lineIndex = beforeHead.split("\n").length - 1;
+  const lineStart = beforeHead.lastIndexOf("\n") + 1;
+  const column = boundedHead - lineStart;
+  const visibleLine = text.split("\n")[lineIndex] ?? "";
+  const storedContentStart = storedContentOffsets[lineIndex];
+  if (!Number.isFinite(storedContentStart)) return null;
+
+  const candidates = [];
+  if (
+    storedStart >= 0
+    && fullSource.slice(storedStart, storedStart + physicalSource.length) === physicalSource
+  ) {
+    // Exact parsed source coordinates are stronger than proximity. This is
+    // especially important when identical fenced blocks occur more than once.
+    candidates.push(storedStart);
+  } else {
+    for (
+      let index = fullSource.indexOf(physicalSource);
+      index >= 0;
+      index = fullSource.indexOf(physicalSource, index + 1)
+    ) {
+      candidates.push(index);
+    }
+  }
+  if (!candidates.length) return null;
+
+  const candidateOffset = (candidate) => (
+    candidate + storedContentStart - storedStart + Math.min(column, visibleLine.length)
+  );
+  const actualStart = candidates.reduce((best, candidate) => (
+    !Number.isFinite(approximateOffset)
+    || Math.abs(candidateOffset(candidate) - approximateOffset)
+      < Math.abs(candidateOffset(best) - approximateOffset)
+      ? candidate
+      : best
+  ));
+  const contentStart = actualStart + storedContentStart - storedStart;
+  if (
+    visibleLine
+    && fullSource.slice(contentStart, contentStart + visibleLine.length) !== visibleLine
   ) return null;
   return contentStart + Math.min(column, visibleLine.length);
 }
@@ -5350,7 +5431,12 @@ export function replaceSourceSelectionTransaction(
     0,
     Math.min(caret ?? sourceSelection.boundary, transaction.doc.content.size)
   );
-  return transaction.setSelection(Selection.near(transaction.doc.resolve(caret), 1));
+  return transaction
+    .setSelection(Selection.near(transaction.doc.resolve(caret), 1))
+    .setMeta(exactSourceReplacementMeta, {
+      source: nextSource,
+      caretSourceOffset
+    });
 }
 
 function inlineSourceValueEditFromDocument(
@@ -6001,7 +6087,6 @@ function continuousSourceEditor(
   const alignHeadingSource = () => {
     if (
       !editor.isConnected
-      || !Number.isFinite(headingTargetGeometry?.textLeft)
       || !Number.isFinite(headingTargetGeometry?.blockTop)
       || !Number.isInteger(headingDepth)
     ) return;
@@ -6013,14 +6098,6 @@ function continuousSourceEditor(
     const marker = headingSourceMarkerRange(physicalValue, headingDepth);
     if (!marker) return;
     const style = getComputedStyle(editor);
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-    const titlePrefix = editor.value.slice(0, marker.end);
-    const letterSpacing = Number.parseFloat(style.letterSpacing || "0") || 0;
-    const prefixWidth = context.measureText(titlePrefix).width
-      + Math.max(0, titlePrefix.length - 1) * letterSpacing;
     let rect = editor.getBoundingClientRect();
     const baseMarginTop = Number.parseFloat(style.marginTop || "0") || 0;
     let adjustedMarginTop = baseMarginTop;
@@ -6031,15 +6108,13 @@ function continuousSourceEditor(
       editor.style.marginTop = `${adjustedMarginTop}px`;
       rect = editor.getBoundingClientRect();
     }
-    const textInset = (Number.parseFloat(style.borderLeftWidth || "0") || 0)
-      + (Number.parseFloat(style.paddingLeft || "0") || 0);
-    const shift = headingTargetGeometry.textLeft - (rect.left + textInset + prefixWidth);
-    const rootRight = editor.closest(".ProseMirror")?.getBoundingClientRect().right;
-    editor.style.transform = `translateX(${shift}px)`;
-    if (Number.isFinite(rootRight)) {
-      editor.style.width = `${Math.max(1, rootRight - rect.left - shift)}px`;
-    }
-    editor.dataset.headingSourceShift = String(shift);
+    // Source mode must expose every physical prefix byte. Aligning the title
+    // text itself used to translate ATX and enclosing list/quote markers past
+    // the left edge, so entering a heading made `##`, `7)`, or `>` disappear
+    // and horizontal caret movement visibly jumped the line. Preserve the
+    // rendered vertical position, but let the complete source begin at the
+    // block's natural left edge just like a normal text editor.
+    editor.dataset.headingSourceShift = "0";
     editor.dataset.headingSourceVerticalShift = String(adjustedMarginTop - baseMarginTop);
   };
   const alignBlockSource = () => {
@@ -7757,22 +7832,33 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     return true;
   };
 
-  const rememberExactEdit = (sourceSelection, transaction, afterSourceSelection = null) => {
+  const rememberExactEdit = (
+    sourceSelection,
+    transaction,
+    exactAfterSource = null,
+    afterSourceSelection = null
+  ) => {
     if (!sourceSelection || !transaction?.docChanged) return;
     const beforeSource = sourceSelection.fullSource;
     const serializer = ctx.get(serializerCtx);
-    const afterSource = serializeMarkdownDocument(transaction.doc, serializer);
+    const exactReplacement = transaction.getMeta(exactSourceReplacementMeta);
+    const afterSource = typeof exactAfterSource === "string"
+      ? exactAfterSource
+      : serializeMarkdownDocument(transaction.doc, serializer);
     if (beforeSource === afterSource) return;
-    const afterState = EditorState.create({
-      doc: transaction.doc,
-      selection: transaction.selection
-    });
-    const mappedCaret = documentSourceOffsetAtPosition(
-      afterState,
-      transaction.selection.head,
-      serializer,
-      "forward"
-    );
+    const mappedCaret = Number.isFinite(exactReplacement?.caretSourceOffset)
+      ? exactReplacement.caretSourceOffset
+      : typeof exactAfterSource === "string"
+        ? null
+      : documentSourceOffsetAtPosition(
+          EditorState.create({
+            doc: transaction.doc,
+            selection: transaction.selection
+          }),
+          transaction.selection.head,
+          serializer,
+          "forward"
+        );
     const afterCaret = Number.isFinite(mappedCaret)
       ? mappedCaret
       : sourceEditCaretOffset(sourceSelection, afterSource);
@@ -7855,7 +7941,10 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     { isolatedHistory = false, renderedCaret = false } = {}
   ) => {
     const serializer = ctx.get(serializerCtx);
-    const afterSource = serializeMarkdownDocument(transaction.doc, serializer);
+    const exactReplacement = transaction.getMeta(exactSourceReplacementMeta);
+    const afterSource = typeof exactReplacement?.source === "string"
+      ? exactReplacement.source
+      : serializeMarkdownDocument(transaction.doc, serializer);
     const afterSelection = requestedAfterSelection?.fullSource === afterSource
       ? {
           ...requestedAfterSelection,
@@ -7865,7 +7954,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             Math.min(transaction.selection.head, transaction.doc.content.size)
           )
         }
-      : sourceSelectionAfterEdit(transaction, editSelection, serializer);
+      : sourceSelectionAfterEdit(transaction, editSelection, serializer, afterSource);
     const afterState = { doc: transaction.doc, selection: transaction.selection };
     const afterTarget = afterSelection
       ? documentSourceTarget(afterState, afterSelection.head, serializer, "forward")
@@ -7878,10 +7967,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         || sourceAtomNames.has(afterTarget.node.type.name)
       ))
     );
+    const explicitAfterSelection = requestedAfterSelection?.fullSource === afterSource
+      ? afterSelection
+      : null;
     rememberExactEdit(
       historySelection,
       transaction,
-      preserveSourcePosition ? afterSelection : null
+      typeof exactReplacement?.source === "string" ? exactReplacement.source : null,
+      explicitAfterSelection || (preserveSourcePosition ? afterSelection : null)
     );
     const useIsolatedHistory = isolatedHistory || sourceSelectionSpansDocumentUnits(
       view.state,
@@ -7907,6 +8000,14 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
     // installed by this exact transaction so that reconciliation cannot delete
     // the adjacent fenced node or replace the document from stale rendered DOM.
     protectedExactSource = afterSource;
+    // The exact source replacement is more authoritative than serializing its
+    // parsed representation. Attach it before dispatch so synchronous
+    // markdownUpdated listeners cannot normalize untouched CRLF, indentation,
+    // or container-prefix bytes around the edit.
+    view.dom.tetherCommittedSourceDraft = {
+      doc: transaction.doc,
+      markdown: afterSource
+    };
     exactSourceDispatchDepth += 1;
     try {
       view.dispatch(transaction.scrollIntoView());
@@ -8447,7 +8548,11 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const serializer = ctx.get(serializerCtx);
         protectedExactSource = serializeMarkdownDocument(currentView.state.doc, serializer);
       };
-      const replaceExactSourceSelection = (sourceSelection, replacement) => {
+      const replaceExactSourceSelection = (
+        sourceSelection,
+        replacement,
+        { renderedCaret = false } = {}
+      ) => {
         const currentView = editorView || view;
         if (
           !currentView.editable
@@ -8467,7 +8572,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           sourceSelection,
           sourceSelection,
           null,
-          { isolatedHistory: true }
+          { isolatedHistory: true, renderedCaret }
         );
         return true;
       };
@@ -8955,6 +9060,15 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           }
           if (isEditorHistoryShortcut(event)) {
             protectedExactSource = null;
+            // A rendered edit can leave a one-shot physical-source handoff for
+            // the immediately following key. Undo/redo changes both the
+            // document snapshot and its selection, so that pre-history caret
+            // must never be reused after history returns to the same source.
+            // Otherwise a list continuation can type before its required
+            // marker space (`4)x Beta`) even though redo visibly restored the
+            // caret before `Beta`.
+            pendingRenderedSourceSelection = null;
+            pendingRenderedTypingSelection = null;
             const command = codeOuterHistoryDirection(event);
             if (runBoundaryHistory(command)) {
               event.preventDefault();

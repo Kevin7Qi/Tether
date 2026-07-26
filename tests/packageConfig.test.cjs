@@ -434,10 +434,14 @@ test("CodeMirror text insertion at an immediate closing fence edits literal Mark
 test("CodeMirror clipboard operations use physical Markdown source ranges", () => {
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
   assert.match(surface, /const handleCodeSourceClipboard = \(event\) =>/);
-  assert.match(surface, /documentSourceOffsetAtPosition\([\s\S]*selection\.anchor/);
-  assert.match(surface, /documentSourceOffsetAtPosition\([\s\S]*selection\.head/);
+  assert.match(surface, /const codePhysicalSourceSelection = \(view, codeBlock, selection, serializer\) =>/);
+  assert.match(surface, /physicalCodeContentSourceOffset\([\s\S]*selection\.anchor/);
+  assert.match(surface, /physicalCodeContentSourceOffset\([\s\S]*selection\.head/);
   assert.match(surface, /event\.clipboardData\.setData\("text\/plain", selectedText\)/);
-  assert.match(surface, /tetherReplaceExactSourceSelection\?\.\(sourceSelection, ""\)/);
+  assert.match(
+    surface,
+    /tetherReplaceExactSourceSelection\?\.\([\s\S]*sourceSelection,[\s\S]*""[\s\S]*renderedCaret: true/
+  );
   assert.match(surface, /addEventListener\("copy", handleCodeSourceClipboard, true\)/);
   assert.match(surface, /addEventListener\("cut", handleCodeSourceClipboard, true\)/);
   assert.match(surface, /removeEventListener\("copy", handleCodeSourceClipboard, true\)/);
@@ -448,10 +452,16 @@ test("CodeMirror plain-text paste uses canonical Markdown source history", () =>
   const surface = fs.readFileSync(path.join(root, "src", "renderer", "WysiwygSurface.jsx"), "utf8");
   const syntax = fs.readFileSync(path.join(root, "src", "renderer", "lib", "markdownSyntaxPlugin.js"), "utf8");
   assert.match(surface, /const replaceCodeSourceTransfer = \(event, replacement\) =>/);
-  assert.match(surface, /documentSourceOffsetAtPosition\([\s\S]*codeContentSourcePosition\(codeBlock\.position, selection\.anchor\)/);
-  assert.match(surface, /tetherReplaceExactSourceSelection\?\.\(sourceSelection, replacement\)/);
+  assert.match(surface, /codePhysicalSourceSelection\([\s\S]*selection,[\s\S]*serializer/);
+  assert.match(
+    surface,
+    /tetherReplaceExactSourceSelection\?\.\([\s\S]*sourceSelection,[\s\S]*replacement,[\s\S]*renderedCaret: true/
+  );
   assert.match(surface, /replaceCodeSourceOnlyInsertion\(event, text\)[\s\S]*replaceCodeSourceTransfer\(event, text\)/);
-  assert.match(syntax, /const replaceExactSourceSelection = \(sourceSelection, replacement\) =>/);
+  assert.match(
+    syntax,
+    /const replaceExactSourceSelection = \([\s\S]*sourceSelection,[\s\S]*replacement,[\s\S]*renderedCaret = false/
+  );
   assert.match(syntax, /dispatchExactEdit\([\s\S]*\{ isolatedHistory: true \}/);
   assert.match(syntax, /tetherReplaceExactSourceSelection = replaceExactSourceSelection/);
 });

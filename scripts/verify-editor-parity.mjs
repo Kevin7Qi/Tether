@@ -269,6 +269,9 @@ async function editorState() {
       status: document.querySelector(".status-copy")?.textContent || null,
       exactSourceSelection: root?.tetherGetActiveSourceSelection?.() || null,
       committedSourceDraft: root?.tetherCommittedSourceDraft?.markdown ?? null,
+      committedSourceDraftMatches: Boolean(
+        root?.tetherCommittedSourceDraft?.doc?.eq?.(root?.pmViewDesc?.node)
+      ),
       documentAttrs: root?.pmViewDesc?.node?.attrs || null,
       baselineSource: host?.tetherGetLoadedSource?.() || null,
       text: root?.textContent || null,
@@ -1571,6 +1574,246 @@ async function verifyHeadingSourceEditing() {
   await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
   await waitForCompletedSave("Title=====\n");
   await stopSession();
+}
+
+async function verifyPlatformNativeHeadingNavigation() {
+  const fixtures = [
+    {
+      name: "closed ATX",
+      source: "## Alpha Beta ##\nAfter.\n",
+      selector: "h2"
+    },
+    {
+      name: "quoted closed ATX",
+      source: "> ### Alpha Beta ###\nAfter.\n",
+      selector: "h3"
+    },
+    {
+      name: "unordered-list ATX",
+      source: "- ## Alpha Beta ##\nAfter.\n",
+      selector: "h2"
+    },
+    {
+      name: "ordered-list ATX",
+      source: "1. ## Alpha Beta ##\nAfter.\n",
+      selector: "h2"
+    },
+    {
+      name: "quoted Setext",
+      source: "> Alpha Beta\n> ==========\nAfter.\n",
+      selector: "h1"
+    }
+  ];
+  const visibleText = "Alpha Beta";
+  const actions = [
+    {
+      name: "ArrowLeft from content start",
+      visibleOffset: 0,
+      keyCode: "Left",
+      key: "ArrowLeft",
+      code: "ArrowLeft",
+      virtualKeyCode: 37,
+      nativeModifiers: [],
+      modifiers: 0
+    },
+    {
+      name: "Shift-ArrowLeft from content start",
+      visibleOffset: 0,
+      keyCode: "Left",
+      key: "ArrowLeft",
+      code: "ArrowLeft",
+      virtualKeyCode: 37,
+      nativeModifiers: ["shift"],
+      modifiers: 8
+    },
+    {
+      name: "ArrowRight from content end",
+      visibleOffset: visibleText.length,
+      keyCode: "Right",
+      key: "ArrowRight",
+      code: "ArrowRight",
+      virtualKeyCode: 39,
+      nativeModifiers: [],
+      modifiers: 0
+    },
+    {
+      name: "Shift-ArrowRight from content end",
+      visibleOffset: visibleText.length,
+      keyCode: "Right",
+      key: "ArrowRight",
+      code: "ArrowRight",
+      virtualKeyCode: 39,
+      nativeModifiers: ["shift"],
+      modifiers: 8
+    },
+    {
+      name: "Option-ArrowLeft from content end",
+      visibleOffset: visibleText.length,
+      keyCode: "Left",
+      key: "ArrowLeft",
+      code: "ArrowLeft",
+      virtualKeyCode: 37,
+      nativeModifiers: ["alt"],
+      modifiers: 1
+    },
+    {
+      name: "Shift-Option-ArrowLeft from content end",
+      visibleOffset: visibleText.length,
+      keyCode: "Left",
+      key: "ArrowLeft",
+      code: "ArrowLeft",
+      virtualKeyCode: 37,
+      nativeModifiers: ["shift", "alt"],
+      modifiers: 9
+    },
+    {
+      name: "Option-ArrowRight from content start",
+      visibleOffset: 0,
+      keyCode: "Right",
+      key: "ArrowRight",
+      code: "ArrowRight",
+      virtualKeyCode: 39,
+      nativeModifiers: ["alt"],
+      modifiers: 1
+    },
+    {
+      name: "Shift-Option-ArrowRight from content start",
+      visibleOffset: 0,
+      keyCode: "Right",
+      key: "ArrowRight",
+      code: "ArrowRight",
+      virtualKeyCode: 39,
+      nativeModifiers: ["shift", "alt"],
+      modifiers: 9
+    },
+    {
+      name: "Command-ArrowLeft from content middle",
+      visibleOffset: "Alpha".length,
+      keyCode: "Left",
+      key: "ArrowLeft",
+      code: "ArrowLeft",
+      virtualKeyCode: 37,
+      nativeModifiers: ["meta"],
+      modifiers: 4
+    },
+    {
+      name: "Shift-Command-ArrowLeft from content middle",
+      visibleOffset: "Alpha".length,
+      keyCode: "Left",
+      key: "ArrowLeft",
+      code: "ArrowLeft",
+      virtualKeyCode: 37,
+      nativeModifiers: ["shift", "meta"],
+      modifiers: 12
+    },
+    {
+      name: "Command-ArrowRight from content middle",
+      visibleOffset: "Alpha".length,
+      keyCode: "Right",
+      key: "ArrowRight",
+      code: "ArrowRight",
+      virtualKeyCode: 39,
+      nativeModifiers: ["meta"],
+      modifiers: 4
+    },
+    {
+      name: "Shift-Command-ArrowRight from content middle",
+      visibleOffset: "Alpha".length,
+      keyCode: "Right",
+      key: "ArrowRight",
+      code: "ArrowRight",
+      virtualKeyCode: 39,
+      nativeModifiers: ["shift", "meta"],
+      modifiers: 12
+    }
+  ];
+  const scenarios = fixtures.flatMap((fixture) => actions.map((action) => ({
+    ...fixture,
+    ...action,
+    name: `${fixture.name} ${action.name}`
+  })));
+  const selectedScenarios = process.env.TETHER_PARITY_SCENARIO
+    ? scenarios.filter(({ name }) => name.includes(process.env.TETHER_PARITY_SCENARIO))
+    : scenarios;
+  const mismatches = [];
+
+  for (let index = 0; index < selectedScenarios.length; index += 1) {
+    const scenario = selectedScenarios[index];
+    const sourceCaret = scenario.source.indexOf(visibleText) + scenario.visibleOffset;
+    const controlId = `tether-native-heading-${index}`;
+    await startSession(scenario.source, visibleText);
+    await evaluate(`(() => {
+      const control = document.createElement("textarea");
+      control.id = ${JSON.stringify(controlId)};
+      control.style.position = "fixed";
+      control.style.left = "-10000px";
+      control.value = ${JSON.stringify(scenario.source)};
+      document.body.append(control);
+      control.focus();
+      control.setSelectionRange(${sourceCaret}, ${sourceCaret});
+      return true;
+    })()`);
+    await dispatchNativeKey(scenario.keyCode, scenario.nativeModifiers);
+    await cdp.send("Input.insertText", { text: "x" });
+    const nativeState = await evaluate(`(() => {
+      const control = document.querySelector(${JSON.stringify(`#${controlId}`)});
+      if (!control) return null;
+      const state = {
+        source: control.value,
+        selectionStart: control.selectionStart,
+        selectionEnd: control.selectionEnd,
+        selectionDirection: control.selectionDirection
+      };
+      control.remove();
+      return state;
+    })()`);
+
+    await placeCaretInText(
+      visibleText,
+      scenario.visibleOffset,
+      ".ProseMirror",
+      scenario.selector
+    );
+    await dispatchKey({
+      key: scenario.key,
+      code: scenario.code,
+      virtualKeyCode: scenario.virtualKeyCode,
+      modifiers: scenario.modifiers
+    });
+    const renderedNavigation = {
+      editor: await editorState().catch(() => null),
+      sourceControl: await sourceControlState().catch(() => null)
+    };
+    await dispatchTextKey("x", "KeyX", 88);
+    await waitForSaveState(false);
+    await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
+    await waitForCompletedSave(nativeState.source);
+    const renderedSource = await readFile(samplePath, "utf8");
+    if (renderedSource !== nativeState.source) {
+      mismatches.push({
+        scenario: scenario.name,
+        expectedSource: nativeState.source,
+        actualSource: renderedSource,
+        nativeSelectionAfterInsert: {
+          start: nativeState.selectionStart,
+          end: nativeState.selectionEnd,
+          direction: nativeState.selectionDirection
+        },
+        renderedNavigation,
+        postSaveState: await editorState().catch(() => null),
+        postSaveSourceControl: await sourceControlState().catch(() => null)
+      });
+    }
+    await stopSession();
+  }
+
+  if (mismatches.length) {
+    throw new Error(
+      `Rendered heading navigation diverged from a native source textarea:\n${
+        JSON.stringify(mismatches, null, 2)
+      }`
+    );
+  }
 }
 
 async function verifyRenderedPointerSelection() {
@@ -3832,7 +4075,10 @@ async function verifyCodePointerDragCutPaste() {
     await waitForCompletedSave(source);
   };
 
-  for (const scenario of scenarios) {
+  for (const scenario of scenarios.filter((candidate) => (
+    !process.env.TETHER_PARITY_CODE_SCENARIO
+    || candidate.name === process.env.TETHER_PARITY_CODE_SCENARIO
+  ))) {
     const selectedText = codeFixture.slice(scenario.selectionStart, scenario.selectionEnd);
     const cutSource = `${codeFixture.slice(0, scenario.selectionStart)}${codeFixture.slice(scenario.selectionEnd)}`;
 
@@ -4243,6 +4489,7 @@ async function verifyHeadingSourcePresentation() {
     if (!element) return null;
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
+    const rootRect = element.closest(".ProseMirror")?.getBoundingClientRect() || null;
     const listItem = element.closest(".list-item");
     const listLabelRect = listItem?.querySelector(":scope > .label-wrapper > .label")
       ?.getBoundingClientRect() || null;
@@ -4295,6 +4542,14 @@ async function verifyHeadingSourcePresentation() {
       left: rect.left,
       right: rect.right,
       textLeft,
+      sourceStartLeft: element.matches("textarea.tether-continuous-source")
+        ? rect.left
+          + (Number.parseFloat(style.borderLeftWidth || "0") || 0)
+          + (Number.parseFloat(style.paddingLeft || "0") || 0)
+          - element.scrollLeft
+        : null,
+      rootLeft: rootRect?.left ?? null,
+      scrollLeft: element.scrollLeft ?? null,
       headingSourceShift: element.dataset.headingSourceShift || null,
       headingSourceVerticalShift: element.dataset.headingSourceVerticalShift || null,
       listMarkerCenter: listLabelRect ? listLabelRect.top + listLabelRect.height / 2 : null,
@@ -4363,11 +4618,20 @@ async function verifyHeadingSourcePresentation() {
     );
     const listMarkerAligned = rendered?.listMarkerCenter == null
       || Math.abs(rendered.listMarkerCenter - rendered.headingLineCenter) <= 1;
+    const completeSourcePrefixVisible = sourceControl?.sourceStartLeft != null
+      && sourceControl?.rootLeft != null
+      && sourceControl.sourceStartLeft >= sourceControl.rootLeft - 0.75
+      && sourceControl.scrollLeft <= 0.5;
+    const sourceMarkersAdvanceTitle = sourceControl?.textLeft != null
+      && rendered?.textLeft != null
+      && sourceControl.textLeft > rendered.textLeft + 2;
     if (
       !rendered
       || !sourceControl
       || mismatches.length
       || !listMarkerAligned
+      || !completeSourcePrefixVisible
+      || !sourceMarkersAdvanceTitle
       // Textarea controls retain a small platform-native internal line box;
       // keep it visually negligible while requiring every typography and
       // margin property to match the rendered heading exactly.
@@ -4376,11 +4640,43 @@ async function verifyHeadingSourcePresentation() {
         (rendered.top + rendered.height / 2)
         - (sourceControl.top + sourceControl.height / 2)
       ) > 1.25
-      || Math.abs(rendered.textLeft - sourceControl.textLeft) > 0.75
     ) {
       throw new Error(
         `Heading ${fixture.depth} ${JSON.stringify(fixture.source)} source presentation shifted hierarchy: ${
-          JSON.stringify({ mismatches, listMarkerAligned, rendered, sourceControl, sourceControlClass })
+          JSON.stringify({
+            mismatches,
+            listMarkerAligned,
+            completeSourcePrefixVisible,
+            sourceMarkersAdvanceTitle,
+            rendered,
+            sourceControl,
+            sourceControlClass
+          })
+        }`
+      );
+    }
+    await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39 });
+    const beforeLiveEdit = await sourceControlState();
+    await dispatchTextKey("X", "KeyX", 88);
+    const editedSource = `${beforeLiveEdit.value.slice(0, beforeLiveEdit.selectionStart)}X${
+      beforeLiveEdit.value.slice(beforeLiveEdit.selectionEnd)
+    }`;
+    await waitForSourceControl(
+      (state) => state?.active && state.value === editedSource,
+      `Heading ${fixture.depth} did not retain its physical source during a live title edit`
+    );
+    const editedPresentation = await styleSnapshot(
+      `.tether-continuous-source.is-heading-source.is-heading-depth-${fixture.depth}`
+    );
+    if (
+      !editedPresentation
+      || editedPresentation.headingSourceShift !== "0"
+      || editedPresentation.scrollLeft > 0.5
+      || editedPresentation.sourceStartLeft < editedPresentation.rootLeft - 0.75
+    ) {
+      throw new Error(
+        `Heading ${fixture.depth} hid physical prefix bytes after live editing: ${
+          JSON.stringify({ beforeLiveEdit, editedSource, editedPresentation })
         }`
       );
     }
@@ -5431,6 +5727,22 @@ async function verifyStructuralEnterEditing() {
       await waitForSaveState(false);
       await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
       await waitForCompletedSave(testCase.splitSource);
+      const restoredState = await editorState();
+      const expectedRestoredOffset = testCase.splitSource.indexOf("Beta");
+      const restoredExactSelection = restoredState.exactSourceSelection;
+      if (
+        restoredState.followingText !== "Beta"
+        || (restoredExactSelection && (
+          restoredExactSelection.anchor !== expectedRestoredOffset
+          || restoredExactSelection.head !== expectedRestoredOffset
+        ))
+      ) {
+        throw new Error(
+          `${testCase.name} did not restore its rendered continuation caret after redo: ${
+            JSON.stringify(restoredState)
+          }`
+        );
+      }
     }
     await dispatchTextKey("x", "KeyX", 88);
     await waitForSaveState(false);
@@ -6541,48 +6853,113 @@ async function verifyFenceVariantEditing() {
 }
 
 async function verifyCodeCrlfClipboard() {
-  const block = "~~~~js\r\nalpha\r\nbeta\r\n~~~~";
-  const fixture = `Before.\r\n\r\n${block}\r\n\r\nAfter.\r\n`;
-  const cutBlock = "~~~~js\r\na\r\n~~~~";
-  const cutFixture = fixture.replace(block, cutBlock);
   const save = async (source) => {
     await dispatchKey({ key: "s", code: "KeyS", virtualKeyCode: 83, modifiers: 4 });
     await waitForCompletedSave(source);
   };
+  const scenarios = [
+    {
+      name: "root fence",
+      source: [
+        "Before.",
+        "",
+        "~~~~js",
+        "alpha",
+        "beta",
+        "~~~~",
+        "",
+        "After.",
+        ""
+      ].join("\r\n")
+    },
+    {
+      name: "blockquote with prose",
+      source: [
+        "> Intro",
+        ">",
+        "> ~~~~js",
+        "> alpha",
+        "> beta",
+        "> ~~~~~",
+        ">",
+        "> Outro",
+        ""
+      ].join("\r\n")
+    },
+    {
+      name: "multi-item list",
+      source: [
+        "- before",
+        "- ~~~~js",
+        "  alpha",
+        "  beta",
+        "  ~~~~~",
+        "- after",
+        ""
+      ].join("\r\n")
+    },
+    {
+      name: "list and blockquote",
+      source: [
+        "- > ~~~~js",
+        "  > alpha",
+        "  > beta",
+        "  > ~~~~~",
+        ""
+      ].join("\r\n")
+    }
+  ];
 
-  await startSession(fixture, "alpha");
-  await clickElement(".milkdown-code-block .cm-line:first-child");
-  await waitFor(
-    () => evaluate(`document.activeElement?.matches?.(".cm-content")`),
-    "pointer activation did not focus the first CRLF code line"
-  );
-  await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
-  await dispatchKey({ key: "End", code: "End", virtualKeyCode: 35, modifiers: 8 });
-  await dispatchKey({ key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, modifiers: 8 });
-  await dispatchKey({ key: "End", code: "End", virtualKeyCode: 35, modifiers: 8 });
+  for (const scenario of scenarios) {
+    const selectionStart = scenario.source.indexOf("alpha");
+    const selectionEnd = scenario.source.indexOf("beta") + "beta".length;
+    const expected = scenario.source.slice(selectionStart, selectionEnd);
+    const cutSource = `${scenario.source.slice(0, selectionStart)}${
+      scenario.source.slice(selectionEnd)
+    }`;
 
-  const expected = "alpha\r\nbet";
-  const copied = await dispatchSyntheticClipboardAndCaptureText("copy");
-  if (copied !== expected) {
-    throw new Error(
-      `CRLF code Copy emitted ${JSON.stringify(copied)} instead of exact source ${JSON.stringify(expected)}`
+    await startSession(scenario.source, "alpha");
+    await clickElement(".milkdown-code-block .cm-line:first-child");
+    await waitFor(
+      () => evaluate(`document.activeElement?.matches?.(".cm-content")`),
+      `${scenario.name} did not focus its first CRLF code line`
     );
+    await dispatchKey({ key: "Home", code: "Home", virtualKeyCode: 36 });
+    await dispatchKey({ key: "End", code: "End", virtualKeyCode: 35, modifiers: 8 });
+    await dispatchKey({
+      key: "ArrowRight",
+      code: "ArrowRight",
+      virtualKeyCode: 39,
+      modifiers: 8
+    });
+    await dispatchKey({ key: "End", code: "End", virtualKeyCode: 35, modifiers: 8 });
+
+    const copied = await dispatchSyntheticClipboardAndCaptureText("copy");
+    if (copied !== expected) {
+      throw new Error(
+        `${scenario.name} CRLF Copy emitted ${JSON.stringify(copied)} instead of physical source ${
+          JSON.stringify(expected)
+        }`
+      );
+    }
+    const cut = await dispatchSyntheticClipboardAndCaptureText("cut");
+    if (cut !== expected) {
+      throw new Error(
+        `${scenario.name} CRLF Cut emitted ${JSON.stringify(cut)} instead of physical source ${
+          JSON.stringify(expected)
+        }`
+      );
+    }
+    await waitForSaveState(false);
+    await save(cutSource);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
+    await waitForSaveState(false);
+    await save(scenario.source);
+    await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
+    await waitForSaveState(false);
+    await save(cutSource);
+    await stopSession();
   }
-  const cut = await dispatchSyntheticClipboardAndCaptureText("cut");
-  if (cut !== expected) {
-    throw new Error(
-      `CRLF code Cut emitted ${JSON.stringify(cut)} instead of exact source ${JSON.stringify(expected)}`
-    );
-  }
-  await waitForSaveState(false);
-  await save(cutFixture);
-  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 4 });
-  await waitForSaveState(false);
-  await save(fixture);
-  await dispatchKey({ key: "z", code: "KeyZ", virtualKeyCode: 90, modifiers: 12 });
-  await waitForSaveState(false);
-  await save(cutFixture);
-  await stopSession();
 }
 
 async function verifyCodeBlockLayout() {
@@ -6956,12 +7333,6 @@ async function verifyNestedCodePhysicalSourceEditing() {
         && state.className.includes(scenario.sourceClass),
       `${scenario.name} code navigation skipped its adjacent physical prefix byte`
     );
-    if (scenario.name === "blockquote with prose") {
-      await captureElementsScreenshot(
-        [".tether-continuous-source"],
-        "/tmp/tether-mixed-nested-code-source.png"
-      );
-    }
     for (let index = 1; index < scenario.linePrefix.length; index += 1) {
       await dispatchKey({ key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37 });
     }
@@ -8247,6 +8618,11 @@ async function run() {
     console.log("Verified heading boundary edits follow exact physical Markdown source.");
     return;
   }
+  if (process.env.TETHER_PARITY_CASE === "heading-native-navigation") {
+    await verifyPlatformNativeHeadingNavigation();
+    console.log("Verified rendered heading navigation matches a native source textarea.");
+    return;
+  }
   if (process.env.TETHER_PARITY_CASE === "rendered-pointer-selection") {
     await verifyRenderedPointerSelection();
     console.log("Verified pointer selection across rendered inline Markdown preserves exact source.");
@@ -8625,6 +9001,7 @@ async function run() {
   await verifyInlineEditing();
   await verifyRenderedPointerInsertion();
   await verifyHeadingSourceEditing();
+  await verifyPlatformNativeHeadingNavigation();
   await verifySourceControlImeEditing();
   await verifyHeadingSourcePresentation();
   await verifyInlineSourcePresentation();

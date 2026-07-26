@@ -51,6 +51,26 @@ export function normalizeEmptyMarkdownDocument(doc, markdown) {
   return doc.type.create(doc.attrs, [paragraph]);
 }
 
+function withoutSyntheticTrailingParagraph(doc) {
+  const trailing = doc?.lastChild;
+  if (
+    trailing?.type?.name !== "paragraph"
+    || trailing.content.size
+    || !trailing.attrs?.tetherSyntheticTrailing
+  ) return doc;
+  return doc.copy(doc.content.cut(0, doc.content.size - trailing.nodeSize));
+}
+
+export function markdownSnapshotDocumentsEqual(left, right) {
+  if (!left || !right) return false;
+  if (left.eq?.(right)) return true;
+  return Boolean(
+    withoutSyntheticTrailingParagraph(left)?.eq?.(
+      withoutSyntheticTrailingParagraph(right)
+    )
+  );
+}
+
 export const sourceFaithfulDocumentRemark = $remark(
   "tetherSourceFaithfulDocument",
   () => () => annotateDocumentGaps

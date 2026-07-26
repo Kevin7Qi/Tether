@@ -897,10 +897,13 @@ export default function App() {
       }
     }
 
-    window.addEventListener("keydown", onKeyDown);
+    // App-wide commands must precede embedded editors such as CodeMirror.
+    // Otherwise an empty or freshly rebuilt code view can swallow Cmd/Ctrl+S
+    // and leave an exact Markdown edit dirty even though Save was pressed.
+    window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp);
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp);
     };
   }, [

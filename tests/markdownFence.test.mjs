@@ -72,6 +72,7 @@ import {
   documentSourceUnitSegment,
   documentSourceUnitBoundaryNavigationOffset,
   documentSourceUnitStartOffset,
+  physicalCodeContentSourceOffset,
   plainTextMarkdownSourceSelection,
   replaceSourceSelectionTransaction,
   rootBoundarySourceDeletionEdit,
@@ -765,6 +766,36 @@ test("nested code boundaries expose the enclosing physical quote source", async 
     right?.sourceOffset,
     source.indexOf("\n", source.indexOf("const")) + 1
   );
+});
+
+test("nested code selections map through exact CRLF container prefixes", async () => {
+  const { parse } = await milkdownTransformer();
+  const source = [
+    "> Intro",
+    ">",
+    "> ~~~~js",
+    "> alpha",
+    "> beta",
+    "> ~~~~~",
+    ">",
+    "> Outro",
+    ""
+  ].join("\r\n");
+  const doc = parse(source);
+  let code = null;
+  doc.descendants((node) => {
+    if (node.type.name !== "code_block") return true;
+    code = node;
+    return false;
+  });
+  assert.ok(code);
+  assert.equal(code.textContent, "alpha\nbeta");
+
+  const start = physicalCodeContentSourceOffset(code, 0, source);
+  const end = physicalCodeContentSourceOffset(code, "alpha\nbet".length, source);
+  assert.equal(start, source.indexOf("alpha"));
+  assert.equal(end, source.indexOf("beta") + 3);
+  assert.equal(source.slice(start, end), "alpha\r\n> bet");
 });
 
 test("nested code boundaries retain physical prefixes in multi-item containers", async () => {

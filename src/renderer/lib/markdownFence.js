@@ -189,6 +189,13 @@ export function annotateFencedCodeMarkers(tree, file) {
   const lineStarts = sourceLineStarts(source);
   const visit = (node, parent = null) => {
     if (node?.type === "code") {
+      // The rendered code editor uses LF-based document coordinates. Keep
+      // CRLF in the physical fence metadata below, but do not let carriage
+      // returns become semantic code characters that CodeMirror immediately
+      // removes in a second, draft-invalidating transaction.
+      if (typeof node.value === "string" && node.value.includes("\r")) {
+        node.value = node.value.replace(/\r\n?/g, "\n");
+      }
       const startLine = node.position?.start?.line;
       const startColumn = node.position?.start?.column;
       const endLine = node.position?.end?.line;
@@ -219,6 +226,11 @@ export function annotateFencedCodeMarkers(tree, file) {
           node.fenceMetaPrefix = layout.fenceMetaPrefix;
           node.fenceOpeningTrailing = layout.fenceOpeningTrailing;
           if (Number.isFinite(start) && Number.isFinite(end)) {
+            // remark can retain the carriage return in fenced content values
+            // even though physical source lines are split on CRLF. Compare
+            // logical line content only, otherwise every CRLF line misses its
+            // real nested quote/list prefix and falls back to the opening-line
+            // offset.
             const valueLines = String(node.value || "").split("\n");
             const defaultContentStart = openingLineEnd < 0
               ? end
