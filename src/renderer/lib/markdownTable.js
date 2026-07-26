@@ -309,6 +309,19 @@ export function tableCellSourceOffsetAtPosition(
   const before = [...segments].reverse().find((segment) => segment.visibleTo <= offset);
   const after = segments.find((segment) => segment.visibleFrom >= offset);
   if (before && before.visibleTo === offset && after && after.visibleFrom === offset) {
+    // A formatted segment can share its rendered boundary with adjacent plain
+    // text while still having hidden Markdown delimiters between them. Preserve
+    // the same affinity semantics used when that segment fills the whole cell:
+    // backward at its opening means inside the opening wrapper, and forward at
+    // its closing means inside the closing wrapper.
+    if (
+      affinity === "backward"
+      && after.sourceStart < after.contentStart
+    ) return after.contentStart;
+    if (
+      affinity === "forward"
+      && before.contentEnd < before.sourceEnd
+    ) return before.contentEnd;
     return affinity === "backward" ? before.sourceEnd : after.sourceStart;
   }
   const segment = segments.find(({ visibleFrom, visibleTo }) =>

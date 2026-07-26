@@ -2198,6 +2198,86 @@ async function verifyPlatformNativeFormattedHeadingEditing() {
       sourceHead: "## Alpha [Beta](https://example.com) Gamma".length
     },
     {
+      name: "paragraph strong word",
+      source: "Before **Beta** after.\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "Before **".length,
+      sourceHead: "Before **Beta".length,
+      selector: "p"
+    },
+    {
+      name: "quoted paragraph strong word",
+      source: "> Before **Beta** after.\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "> Before **".length,
+      sourceHead: "> Before **Beta".length,
+      selector: "blockquote p"
+    },
+    {
+      name: "bullet item strong word",
+      source: "- Before **Beta** after.\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "- Before **".length,
+      sourceHead: "- Before **Beta".length,
+      selector: "li p"
+    },
+    {
+      name: "ordered item strong word",
+      source: "7) Before **Beta** after.\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "7) Before **".length,
+      sourceHead: "7) Before **Beta".length,
+      selector: "li p"
+    },
+    {
+      name: "task item strong word",
+      source: "- [x] Before **Beta** after.\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "- [x] Before **".length,
+      sourceHead: "- [x] Before **Beta".length,
+      selector: "li p"
+    },
+    {
+      name: "quoted list item strong word",
+      source: "> - Before **Beta** after.\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "> - Before **".length,
+      sourceHead: "> - Before **Beta".length,
+      selector: "blockquote li p"
+    },
+    {
+      name: "table cell strong word",
+      source: "| Key | Value |\n| --- | --- |\n| A | Before **Beta** after. |\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "| Key | Value |\n| --- | --- |\n| A | Before **".length,
+      sourceHead: "| Key | Value |\n| --- | --- |\n| A | Before **Beta".length,
+      selector: ".milkdown-table-block tbody tr:nth-child(2) td:nth-child(2) p"
+    },
+    {
+      name: "footnote definition strong word",
+      source: "Reference[^n].\n\n[^n]: Before **Beta** after.\n",
+      visibleText: "Before Beta after.",
+      visibleAnchor: "Before ".length,
+      visibleHead: "Before Beta".length,
+      sourceAnchor: "Reference[^n].\n\n[^n]: Before **".length,
+      sourceHead: "Reference[^n].\n\n[^n]: Before **Beta".length,
+      selector: 'dl[data-type="footnote_definition"] dd p'
+    },
+    {
       name: "quoted strong title word",
       source: "> ## Alpha **Beta** Gamma ##\nAfter.\n",
       visibleText: "Alpha Beta Gamma",

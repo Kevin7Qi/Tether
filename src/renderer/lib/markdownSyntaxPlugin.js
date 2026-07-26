@@ -4109,11 +4109,14 @@ export function documentSourceOffsetAtPosition(
     };
     const source = documentSource.fullSource.slice(segment.from, segment.to);
     if (segment.node.type.name === "table") {
+      const tableAffinity = preferredMarks?.length
+        ? affinity === "forward" ? "backward" : "forward"
+        : affinity;
       const tableOffset = tableCellSourceOffsetAtPosition(
         state,
         bounded,
         source,
-        affinity
+        tableAffinity
       );
       return tableOffset == null ? null : segment.from + tableOffset;
     }
@@ -4648,11 +4651,13 @@ export function sourceSelectionFromDocumentSelection(
       boundary: 0
     };
   }
-  const forwardMarks = selection.$from.nodeAfter?.isText
+  const forwardMarks = sameTextblock
+    && selection.$from.nodeAfter?.isText
     && selection.$from.nodeAfter.marks.some((mark) => supportedMarks.includes(mark.type.name))
     ? selection.$from.nodeAfter.marks
     : null;
-  const backwardMarks = selection.$to.nodeBefore?.isText
+  const backwardMarks = sameTextblock
+    && selection.$to.nodeBefore?.isText
     && selection.$to.nodeBefore.marks.some((mark) => supportedMarks.includes(mark.type.name))
     ? selection.$to.nodeBefore.marks
     : null;
@@ -4681,6 +4686,24 @@ export function sourceSelectionFromDocumentSelection(
     fullSource: documentSource.fullSource,
     boundary: crossedBoundary ?? selection.from
   };
+}
+
+function documentTextSelectionFromDOM(view) {
+  const domSelection = view?.dom?.ownerDocument?.getSelection?.();
+  const { anchorNode, focusNode } = domSelection || {};
+  if (
+    !anchorNode
+    || !focusNode
+    || !view.dom.contains(anchorNode)
+    || !view.dom.contains(focusNode)
+  ) return null;
+  try {
+    const anchor = view.posAtDOM(anchorNode, domSelection.anchorOffset);
+    const head = view.posAtDOM(focusNode, domSelection.focusOffset);
+    return TextSelection.create(view.state.doc, anchor, head);
+  } catch {
+    return null;
+  }
 }
 
 function literalTextblockSourceMapping(
@@ -8724,6 +8747,44 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
           return;
         }
         if (target?.closest(".cm-content") && !activeSourceSelection) return;
+        const renderedSelection = documentTextSelectionFromDOM(currentView)
+          || currentView.state.selection;
+        if (!activeSourceSelection && !renderedSelection.empty) {
+          const documentSelection = sourceSelectionFromDocumentSelection(
+            currentView.state,
+            ctx.get(serializerCtx),
+            renderedSelection
+          );
+          const plainSelection = documentSelection
+            ? null
+            : plainTextMarkdownSourceSelection(
+                currentView.state,
+                ctx.get(serializerCtx),
+                renderedSelection
+              );
+          const exactSelection = documentSelection || plainSelection;
+          const transaction = exactSelection
+            ? replaceSourceSelectionTransaction(
+                currentView.state,
+                exactSelection,
+                event.key,
+                ctx.get(parserCtx)
+              )
+            : null;
+          if (transaction) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            dispatchExactEdit(
+              currentView,
+              transaction,
+              exactSelection,
+              exactSelection,
+              null,
+              { renderedCaret: true }
+            );
+            return;
+          }
+        }
         if (activeSourceSelection) {
           const transaction = replaceSourceSelectionTransaction(
             currentView.state,
@@ -8785,6 +8846,15 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
             sourceSelection
           })
         );
+      };
+      const captureExactBeforeInput = (event) => {
+        const currentView = editorView || view;
+        const target = event.target instanceof Element ? event.target : null;
+        if (
+          target?.closest("button, input, select, textarea, .cm-content, .tether-continuous-source")
+          || !replaceExactTextInput(currentView, event)
+        ) return;
+        event.stopImmediatePropagation();
       };
       const captureExactNavigation = (event) => {
         const target = event.target instanceof Element ? event.target : null;
@@ -8900,6 +8970,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
       };
       view.dom.addEventListener("keydown", captureExactTyping, true);
       view.dom.addEventListener("keydown", captureExactDeletion, true);
+      view.dom.addEventListener("beforeinput", captureExactBeforeInput, true);
       navigationWindow?.addEventListener("keydown", captureExactNavigation, true);
       navigationWindow?.addEventListener("beforeinput", capturePendingSourceInput, true);
       view.dom.addEventListener("copy", captureExactClipboard, true);
@@ -8929,6 +9000,7 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         destroy() {
           view.dom.removeEventListener("keydown", captureExactTyping, true);
           view.dom.removeEventListener("keydown", captureExactDeletion, true);
+          view.dom.removeEventListener("beforeinput", captureExactBeforeInput, true);
           navigationWindow?.removeEventListener("keydown", captureExactNavigation, true);
           navigationWindow?.removeEventListener("beforeinput", capturePendingSourceInput, true);
           view.dom.removeEventListener("copy", captureExactClipboard, true);
@@ -8964,15 +9036,25 @@ export const markdownSyntaxPlugin = $prose((ctx) => {
         const renderedTyping = Boolean(structuralSourceSelection)
           || sourceSelection === pendingRenderedTypingSelection;
         pendingRenderedTypingSelection = null;
+        // Node views such as Milkdown's table can report the browser's current
+        // replacement range here before ProseMirror's stored selection catches
+        // up. Map the authoritative input bounds so replacing a fully selected
+        // marked cell value edits only its visible source bytes and preserves
+        // the surrounding Markdown delimiters.
+        const inputSelection = TextSelection.create(view.state.doc, _from, _to);
         const documentSelection = sourceSelection
           ? null
-          : sourceSelectionFromDocumentSelection(view.state, ctx.get(serializerCtx));
+          : sourceSelectionFromDocumentSelection(
+              view.state,
+              ctx.get(serializerCtx),
+              inputSelection
+            );
         const plainSelection = sourceSelection || documentSelection
           ? null
           : plainTextMarkdownSourceSelection(
               view.state,
               ctx.get(serializerCtx),
-              TextSelection.create(view.state.doc, _from, _to)
+              inputSelection
             );
         const exactSelection = sourceSelection || documentSelection || plainSelection;
         const transaction = exactSelection

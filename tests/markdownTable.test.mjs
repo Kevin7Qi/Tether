@@ -322,7 +322,7 @@ test("a complete intervening table participates in exact source selection and re
 
 test("formatted and escaped table cells map rendered cursor positions to exact source offsets", async () => {
   const { parse, serialize } = await milkdownTransformer();
-  const table = "| plain | **bold** | `a\\|b` |\n| --- | --- | --- |\n| one | two | three |";
+  const table = "| plain | Before **bold** after | `a\\|b` |\n| --- | --- | --- |\n| one | two | three |";
   const source = `${table}\n\nAfter\n`;
   const doc = parse(source);
   assert.equal(serialize(doc), source);
@@ -361,6 +361,27 @@ test("formatted and escaped table cells map rendered cursor positions to exact s
   assert.equal(
     tableCellSourceOffsetAtPosition(state, code + 3, table, "backward"),
     table.indexOf("`a\\|b`") + "`a\\|b`".length
+  );
+
+  const completeBold = EditorState.create({
+    doc,
+    selection: TextSelection.create(doc, bold, bold + "bold".length)
+  });
+  const completeBoldSource = sourceSelectionFromDocumentSelection(
+    completeBold,
+    serialize
+  );
+  assert.equal(sourceSelectionText(completeBoldSource), "bold");
+  const completeBoldReplacement = replaceSourceSelectionTransaction(
+    completeBold,
+    completeBoldSource,
+    "X",
+    parse
+  );
+  assert.ok(completeBoldReplacement);
+  assert.equal(
+    serialize(completeBoldReplacement.doc),
+    source.replace("**bold**", "**X**")
   );
 
   const selection = EditorState.create({
